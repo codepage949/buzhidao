@@ -39,11 +39,11 @@ const keyboardHook = new Deno.UnsafeCallback(
     const keyCode = (new Deno.UnsafePointerView(lParam as bigint)).getUint32();
 
     if (nCode === 0) {
-      if (wParam === 256n) {
+      if (wParam === 256) {
         if (!pressedMap.get(keyCode)) {
           pressedMap.set(keyCode, true);
         }
-      } else if (wParam === 257n) {
+      } else if (wParam === 257) {
         if (pressedMap.get(keyCode)) {
           pressedMap.set(keyCode, false);
 
@@ -139,16 +139,43 @@ async function translate(text: string) {
               },
             );
             
-            const json = await resp.json();
+            console.log(`${Deno.env.get("INFER_API_URL")!}/infer`, resp.status);
 
-            console.log(`${Deno.env.get("INFER_API_URL")!}/infer`, resp.status, json);
-            
+            let txt = "";
+
+            while (true) {
+              resp = await fetch(
+                `${Deno.env.get("INFER_API_URL")!}/get`,
+                {
+                  method: "get",
+                },
+              );
+
+              txt = await resp.text();
+
+              console.log(`${Deno.env.get("INFER_API_URL")!}/get`, resp.status, txt);
+
+              if (txt.length > 0) {
+                break;
+              }
+
+              await new Promise((ok) => {
+                setTimeout(ok, 1000);
+              });
+            }
+
+            const json = [];
+
+            for (const found of txt.matchAll(/\[\[\[.+?\]\], \('(.+?)'.+\)\]\n/g)) {
+              json.push(found[1]);
+            }
+
             const text = json.join("\n\n");
             const pnin = pinyin(text).flat().join(" ");
             const result = await translate(text);
             let dict = "";
 
-            for (const item of result.dict?.items) {
+            for (const item of (result.dict?.items) ?? []) {
               dict += `## ${item.entry.replace(/<.*?>/g, "")} ${pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ")}\n`;
 
               for (const pos of item.pos) {
