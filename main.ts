@@ -69,7 +69,6 @@ async function translate(text: string) {
       papagoVersion,
     ),
   );
-
   const usp = new URLSearchParams();
 
   usp.set("deviceId", uuid);
@@ -92,18 +91,117 @@ async function translate(text: string) {
     body: usp,
   });
 
+  console.log(Deno.env.get("PAPAGO_API_URL")!, resp.status);
+
   return await resp.json();
 }
 
-(() => {
-  user32.symbols.SetWindowsHookExA(13, keyboardHook.pointer, 0, 0);
+async function makeMessage(txts: string[]) {
+  const joinedTxt = txts.join("\n\n");
+  const pnins = pinyin(joinedTxt).flat().join(" ").split("\n\n");
+  const translateResult = await translate(joinedTxt);
 
+  console.log("translateResult", translateResult);
+
+  const translatedTxts = translateResult.translatedText.split("\n\n");
+  let dict = "";
+
+  for (const item of (translateResult.dict?.items) ?? []) {
+    dict += `## ${item.entry.replace(/<.*?>/g, "")} ${pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ")}\n`;
+
+    for (const pos of item.pos) {
+        for (const meaning of pos.meanings) {
+            dict += `1. ${meaning.meaning.replace(/<.*?>/g, "")}\n`
+        }
+    }
+
+    dict += "\n";
+  }
+
+  const output = [];
+
+  for (let i = 0; i < txts.length; i++) {
+    output.push(
+      [txts[i], pnins[i].trim(), translatedTxts[i]].join("\n"),
+    );
+  }
+
+  return output.join("\n\n") + "\n\n" + dict;
+}
+
+async function* infinity() {
+  while (true) {
+    yield;
+
+    await new Promise((ok) => {
+      setTimeout(ok, 0);
+    });
+  }
+}
+
+function isChinese(text: string) {
+  return (/[\u4e00-\u9fa5]/g).test(text);
+}
+
+async function pollTgMessage() {
+  let offset = 0;
+
+  for await (const _ of infinity()) {
+    const resp = await fetch(
+      `https://api.telegram.org/bot${Deno.env.get(
+        "BOT_TOKEN",
+      )!}/getUpdates?offset=${offset}`,
+      {
+        method: "get",
+      },
+    );
+
+    console.log(`https://api.telegram.org/bot${Deno.env.get(
+      "BOT_TOKEN",
+    )!}/getUpdates?offset=${offset}`, resp.status);
+
+    const update = await resp.json();
+
+    for (const result of update.result) {
+      const message = await makeMessage([result.message.text]);
+      const resp = await fetch(
+        `https://api.telegram.org/bot${Deno.env.get(
+          "BOT_TOKEN",
+        )!}/sendMessage`,
+        {
+          method: "post",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            chat_id: Deno.env.get("CHAT_ID")!,
+            text: message,
+          }),
+        },
+      );
+
+      console.log(`https://api.telegram.org/bot${Deno.env.get(
+        "BOT_TOKEN",
+      )!}/sendMessage`, resp.status, await resp.json());
+
+      offset = result.update_id + 1;
+    }
+
+    await new Promise((ok) => {
+      setTimeout(ok, 300);
+    });
+  }
+}
+
+function setKeyboardHook() {
+  user32.symbols.SetWindowsHookExA(13, keyboardHook.pointer, 0, 0);
+}
+
+async function pumpWsMessage() {
   const msg = new Uint8Array(48);
 
-  const loop = () => {
+  for await (const _ of infinity()) {
     user32.symbols.PeekMessageA(msg, 0, 0, 0, 1);
 
-    (async () => {
+    await (async () => {
       if (isPrtScPressed) {
         isPrtScPressed = false;
 
@@ -111,7 +209,7 @@ async function translate(text: string) {
           isBusy = true;
 
           try {
-            await new Promise((ok) => setTimeout(ok, 500));
+            await new Promise((ok) => setTimeout(ok, 300));
 
             const img = await read();
 
@@ -141,66 +239,52 @@ async function translate(text: string) {
             
             console.log(`${Deno.env.get("INFER_API_URL")!}/infer`, resp.status);
 
-            let txt = "";
+            const detectionMap = new Map();
+            const detections = await resp.json();
 
-            while (true) {
-              resp = await fetch(
-                `${Deno.env.get("INFER_API_URL")!}/get`,
-                {
-                  method: "get",
-                },
-              );
+            for (const detection of detections) {
+              const [leftUpper, , , leftBottom] = detection[0];
+              const [txt] = detection[1];
 
-              txt = await resp.text();
+              if (isChinese(txt)) {
+                let near = null;
 
-              console.log(`${Deno.env.get("INFER_API_URL")!}/get`, resp.status, txt);
-
-              if (txt.length > 0) {
-                break;
-              }
-
-              await new Promise((ok) => {
-                setTimeout(ok, 1000);
-              });
-            }
-
-            const json = [];
-
-            for (const found of txt.matchAll(/\[\[\[.+?\]\], \('(.+?)'.+\)\]\n/g)) {
-              json.push(found[1]);
-            }
-
-            const text = json.join("\n\n");
-            const pnin = pinyin(text).flat().join(" ");
-            const result = await translate(text);
-            let dict = "";
-
-            for (const item of (result.dict?.items) ?? []) {
-              dict += `## ${item.entry.replace(/<.*?>/g, "")} ${pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ")}\n`;
-
-              for (const pos of item.pos) {
-                  for (const meaning of pos.meanings) {
-                      dict += `1. ${meaning.meaning}\n`
+                for (const [candidateDetection] of detectionMap) {
+                  const [x1, y1] = candidateDetection;
+                  const [x2, y2] = leftUpper;
+  
+                  if ((x2 - x1) ** 2 <= parseInt(Deno.env.get("X_DELTA")!) && (y2 - y1) ** 2 <= parseInt(Deno.env.get("Y_DELTA")!)) {
+                    near = candidateDetection;
+  
+                    break;
                   }
+                }
+  
+                if (near) {
+                  const oldTxt = detectionMap.get(near);
+  
+                  detectionMap.set(leftBottom, oldTxt + txt.trim());
+                  detectionMap.delete(near);
+                } else {
+                  detectionMap.set(leftBottom, txt.trim());
+                }
               }
-
-              dict += "\n";
             }
 
-            const translated = result.translatedText;
-            const newText = text.split("\n\n");
-            const newPnin = pnin.split("\n\n");
-            const newTranslated = translated.split("\n\n");
-            const output = [];
+            let message = "no detections.";
 
-            for (let i = 0; i < newText.length; i++) {
-              output.push(
-                [newText[i], newPnin[i], newTranslated[i]].join("\n"),
-              );
+            if (detectionMap.size > 0) {
+              const txts = [];
+
+              for (const [, txt] of detectionMap) {
+                txts.push(txt);
+              }
+
+              message = await makeMessage(txts);
             }
 
             fd = new FormData();
-
+  
             fd.set("chat_id", Deno.env.get("CHAT_ID")!);
             fd.set(
               "photo",
@@ -227,7 +311,7 @@ async function translate(text: string) {
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({
                   chat_id: Deno.env.get("CHAT_ID")!,
-                  text: output.join("\n\n") + dict,
+                  text: message,
                 }),
               },
             );
@@ -241,9 +325,11 @@ async function translate(text: string) {
         }
       }
     })();
+  }
+}
 
-    setTimeout(loop, 0);
-  };
-
-  setTimeout(loop, 0);
+(function main() {
+  pollTgMessage();
+  setKeyboardHook();
+  pumpWsMessage();
 })();
