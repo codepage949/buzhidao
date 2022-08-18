@@ -24,9 +24,13 @@ const user32 = Deno.dlopen(
       result: "i32",
       nonblocking: false,
     },
+    SendInput: {
+      parameters: ["u32", "pointer", "i32"],
+      result: "i32",
+      nonblocking: false,
+    }
   } as const,
 );
-const pressedMap = new Map<number, boolean>();
 let isPrtScPressed = false;
 let isBusy = false;
 const keyboardHook = new Deno.UnsafeCallback(
@@ -37,19 +41,37 @@ const keyboardHook = new Deno.UnsafeCallback(
     lParam: number | bigint,
   ): number | bigint => {
     const keyCode = (new Deno.UnsafePointerView(lParam as bigint)).getUint32();
+    const flags = (new Deno.UnsafePointerView(lParam as bigint)).getUint32(8);
+  
+    if (nCode === 0 && (flags & 0x10) === 0){
+      if (wParam === 257) {
+        if (keyCode === 0x2C) {
+          // NOTE: lParam 포인터의 데이터를 조작하여 alt키를 삽입할 수도 있을지는 모르겠으나
+          //     아직 deno에서 포인터를 통한 데이터 쓰기를 지원하지 않아 sendInput으로 대체
+          const input = new DataView(new Uint8Array(160).buffer);
 
-    if (nCode === 0) {
-      if (wParam === 256) {
-        if (!pressedMap.get(keyCode)) {
-          pressedMap.set(keyCode, true);
+          input.setUint32(0, 1, true);
+          input.setUint16(8, 0x12, true);
+
+          input.setUint32(40 + 0, 1, true);
+          input.setUint16(40 + 8, 0x2C, true);
+
+          input.setUint32(80 + 0, 1, true);
+          input.setUint16(80 + 8, 0x2C, true);
+          input.setUint32(80 + 12, 2, true);
+
+          input.setUint32(120 + 0, 1, true);
+          input.setUint16(120 + 8, 0x12, true);
+          input.setUint32(120 + 12, 2, true);
+          user32.symbols.SendInput(4, new Uint8Array(input.buffer), 40);
+
+          isPrtScPressed = true;
+
+          return 1;
         }
-      } else if (wParam === 257) {
-        if (pressedMap.get(keyCode)) {
-          pressedMap.set(keyCode, false);
-
-          if (keyCode === 0x2C) {
-            isPrtScPressed = true;
-          }
+      } else {
+        if (keyCode === 0x2C) {
+          return 1;
         }
       }
     }
