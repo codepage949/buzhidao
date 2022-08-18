@@ -78,7 +78,7 @@ async function translate(text: string) {
   usp.set("honorific", "false");
   usp.set("instant", "false");
   usp.set("paging", "false");
-  usp.set("source", "zh-CN");
+  usp.set("source", (Deno.env.get("SOURCE") === "en") ? "en" : "zh-CN");
   usp.set("target", "ko");
   usp.set("text", text);
 
@@ -98,7 +98,12 @@ async function translate(text: string) {
 
 async function makeMessage(txts: string[]) {
   const joinedTxt = txts.join("\n\n");
-  const pnins = pinyin(joinedTxt).flat().join(" ").split("\n\n");
+  let pnins: string[];
+
+  if (Deno.env.get("SOURCE")! === "ch") {
+    pnins = pinyin(joinedTxt).flat().join(" ").split("\n\n");
+  }
+  
   const translateResult = await translate(joinedTxt);
 
   console.log("translateResult", translateResult);
@@ -107,7 +112,7 @@ async function makeMessage(txts: string[]) {
   let dict = "";
 
   for (const item of (translateResult.dict?.items) ?? []) {
-    dict += `## ${item.entry.replace(/<.*?>/g, "")} ${pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ")}\n`;
+    dict += `## ${item.entry.replace(/<.*?>/g, "")} ${(Deno.env.get("SOURCE")! === "ch") ? pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ") : ""}\n`;
 
     for (const pos of item.pos) {
         for (const meaning of pos.meanings) {
@@ -121,9 +126,15 @@ async function makeMessage(txts: string[]) {
   const output = [];
 
   for (let i = 0; i < txts.length; i++) {
-    output.push(
-      [txts[i], pnins[i].trim(), translatedTxts[i]].join("\n"),
-    );
+    if (Deno.env.get("SOURCE")! === "ch") {
+      output.push(
+        [txts[i], pnins![i].trim(), translatedTxts[i]].join("\n"),
+      );
+    } else {
+      output.push(
+        [txts[i], translatedTxts[i]].join("\n"),
+      );
+    }
   }
 
   return output.join("\n\n") + "\n\n" + dict;
@@ -139,8 +150,8 @@ async function* infinity() {
   }
 }
 
-function isChinese(text: string) {
-  return (/[\u4e00-\u9fa5]/g).test(text);
+function isSourceLanguage(text: string) {
+  return (Deno.env.get("SOURCE")! === "en") ? (/[a-zA-Z]/g).test(text): (/[\u4e00-\u9fa5]/g).test(text);
 }
 
 async function pollTgMessage() {
@@ -163,25 +174,45 @@ async function pollTgMessage() {
     const update = await resp.json();
 
     for (const result of update.result) {
-      const message = await makeMessage([result.message.text]);
-      const resp = await fetch(
-        `https://api.telegram.org/bot${Deno.env.get(
+      if (Deno.env.get("CHAT_ID")!) {
+        const message = await makeMessage([result.message.text]);
+        const resp = await fetch(
+          `https://api.telegram.org/bot${Deno.env.get(
+            "BOT_TOKEN",
+          )!}/sendMessage`,
+          {
+            method: "post",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              chat_id: Deno.env.get("CHAT_ID")!,
+              text: message,
+            }),
+          },
+        );
+  
+        console.log(`https://api.telegram.org/bot${Deno.env.get(
           "BOT_TOKEN",
-        )!}/sendMessage`,
-        {
-          method: "post",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            chat_id: Deno.env.get("CHAT_ID")!,
-            text: message,
-          }),
-        },
-      );
-
-      console.log(`https://api.telegram.org/bot${Deno.env.get(
-        "BOT_TOKEN",
-      )!}/sendMessage`, resp.status, await resp.json());
-
+        )!}/sendMessage`, resp.status, await resp.json());
+      } else {
+        const resp = await fetch(
+          `https://api.telegram.org/bot${Deno.env.get(
+            "BOT_TOKEN",
+          )!}/sendMessage`,
+          {
+            method: "post",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              chat_id: result.message.chat.id,
+              text: result.message.chat.id,
+            }),
+          },
+        );
+  
+        console.log(`https://api.telegram.org/bot${Deno.env.get(
+          "BOT_TOKEN",
+        )!}/sendMessage`, resp.status, await resp.json());
+      }
+      
       offset = result.update_id + 1;
     }
 
@@ -230,14 +261,14 @@ async function pumpWsMessage() {
             );
 
             let resp = await fetch(
-              `${Deno.env.get("INFER_API_URL")!}/infer`,
+              `${Deno.env.get("INFER_API_URL")!}/infer/${Deno.env.get("SOURCE")!}`,
               {
                 method: "post",
                 body: fd,
               },
             );
             
-            console.log(`${Deno.env.get("INFER_API_URL")!}/infer`, resp.status);
+            console.log(`${Deno.env.get("INFER_API_URL")!}/infer/${Deno.env.get("SOURCE")!}`, resp.status);
 
             const detectionMap = new Map();
             const detections = await resp.json();
@@ -246,7 +277,7 @@ async function pumpWsMessage() {
               const [leftUpper, , , leftBottom] = detection[0];
               const [txt] = detection[1];
 
-              if (isChinese(txt)) {
+              if (isSourceLanguage(txt)) {
                 let near = null;
 
                 for (const [candidateDetection] of detectionMap) {
