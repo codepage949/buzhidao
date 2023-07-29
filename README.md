@@ -1,5 +1,9 @@
 # 메모
 
+## 클라이언트 실행을 위한 필요 설치 프로그램
+
+* vips
+
 ## oracle cloud aarch64 서버에서 동작시키기
 
 * paddlepaddle
