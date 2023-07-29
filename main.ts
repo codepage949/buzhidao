@@ -10,7 +10,7 @@ const user32 = Deno.dlopen(
   "user32.dll",
   {
     PeekMessageA: {
-      parameters: ["pointer", "usize", "u32", "u32", "u32"],
+      parameters: ["buffer", "usize", "u32", "u32", "u32"],
       result: "i32",
       nonblocking: false,
     },
@@ -25,7 +25,7 @@ const user32 = Deno.dlopen(
       nonblocking: false,
     },
     SendInput: {
-      parameters: ["u32", "pointer", "i32"],
+      parameters: ["u32", "buffer", "i32"],
       result: "i32",
       nonblocking: false,
     }
@@ -40,8 +40,8 @@ const keyboardHook = new Deno.UnsafeCallback(
     wParam: number | bigint,
     lParam: number | bigint,
   ): number | bigint => {
-    const keyCode = (new Deno.UnsafePointerView(lParam as bigint)).getUint32();
-    const flags = (new Deno.UnsafePointerView(lParam as bigint)).getUint32(8);
+    const keyCode = (new Deno.UnsafePointerView(Deno.UnsafePointer.create(lParam)!)).getUint32();
+    const flags = (new Deno.UnsafePointerView(Deno.UnsafePointer.create(lParam)!)).getUint32(8);
   
     if (nCode === 0 && (flags & 0x10) === 0){
       if (wParam === 257) {
@@ -295,7 +295,7 @@ async function pumpWsMessage() {
             const detectionMap = new Map();
             const detections = await resp.json();
 
-            for (const detection of detections) {
+            for (const detection of detections[0]) {
               const [leftUpper, , , leftBottom] = detection[0];
               const [txt] = detection[1];
 
