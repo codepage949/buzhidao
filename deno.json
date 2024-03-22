@@ -1,3 +1,13 @@
 {
-    "importMap": "import_map.json"
+  "tasks": {
+    "dev": "deno run --allow-env --allow-net --allow-run --allow-read --allow-write --allow-ffi --unstable-ffi --watch main.ts"
+  },
+  "imports": {
+    "io": "https://deno.land/std@0.220.1/io/mod.ts",
+    "clipboard-image": "https://deno.land/x/clipboard_image@v0.0.1/mod.ts",
+    "dotenv": "https://deno.land/x/dotenv@v3.2.0/mod.ts",
+    "crypto-js": "https://esm.sh/crypto-js@4.1.1",
+    "pinyin": "https://esm.sh/pinyin@2.11.2",
+    "imgScript": "https://deno.land/x/imagescript@1.2.17/mod.ts"
+  }
 }
