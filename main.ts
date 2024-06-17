@@ -1,84 +1,8 @@
-import { read } from "clipboard-image";
-import { copy } from "streams";
 import { config } from "dotenv";
 import cryptoJs from "crypto-js";
 import pinyin from "pinyin";
 
 config({ export: true });
-
-const user32 = Deno.dlopen(
-  "user32.dll",
-  {
-    PeekMessageA: {
-      parameters: ["pointer", "usize", "u32", "u32", "u32"],
-      result: "i32",
-      nonblocking: false,
-    },
-    SetWindowsHookExA: {
-      parameters: ["i32", "function", "usize", "u32"],
-      result: "i32",
-      nonblocking: false,
-    },
-    CallNextHookEx: {
-      parameters: ["usize", "i32", "usize", "usize"],
-      result: "i32",
-      nonblocking: false,
-    },
-    SendInput: {
-      parameters: ["u32", "pointer", "i32"],
-      result: "i32",
-      nonblocking: false,
-    }
-  } as const,
-);
-let isPrtScPressed = false;
-let isBusy = false;
-const keyboardHook = new Deno.UnsafeCallback(
-  { parameters: ["i32", "usize", "usize"], result: "usize" } as const,
-  (
-    nCode: number,
-    wParam: number | bigint,
-    lParam: number | bigint,
-  ): number | bigint => {
-    const keyCode = (new Deno.UnsafePointerView(lParam as bigint)).getUint32();
-    const flags = (new Deno.UnsafePointerView(lParam as bigint)).getUint32(8);
-  
-    if (nCode === 0 && (flags & 0x10) === 0){
-      if (wParam === 257) {
-        if (keyCode === 0x2C) {
-          // NOTE: lParam 포인터의 데이터를 조작하여 alt키를 삽입할 수도 있을지는 모르겠으나
-          //     아직 deno에서 포인터를 통한 데이터 쓰기를 지원하지 않아 sendInput으로 대체
-          const input = new DataView(new Uint8Array(160).buffer);
-
-          input.setUint32(0, 1, true);
-          input.setUint16(8, 0x12, true);
-
-          input.setUint32(40 + 0, 1, true);
-          input.setUint16(40 + 8, 0x2C, true);
-
-          input.setUint32(80 + 0, 1, true);
-          input.setUint16(80 + 8, 0x2C, true);
-          input.setUint32(80 + 12, 2, true);
-
-          input.setUint32(120 + 0, 1, true);
-          input.setUint16(120 + 8, 0x12, true);
-          input.setUint32(120 + 12, 2, true);
-          user32.symbols.SendInput(4, new Uint8Array(input.buffer), 40);
-
-          isPrtScPressed = true;
-
-          return 1;
-        }
-      } else {
-        if (keyCode === 0x2C) {
-          return 1;
-        }
-      }
-    }
-
-    return user32.symbols.CallNextHookEx(0, nCode, wParam, lParam);
-  },
-);
 
 async function translate(text: string) {
   const uuid = crypto.randomUUID();
@@ -180,116 +104,70 @@ async function pollTgMessage() {
   let offset = 0;
 
   for await (const _ of infinity()) {
-    const resp = await fetch(
-      `https://api.telegram.org/bot${Deno.env.get(
+    try {
+      const resp = await fetch(
+        `https://api.telegram.org/bot${Deno.env.get(
+          "BOT_TOKEN",
+        )!}/getUpdates?offset=${offset}`,
+        {
+          method: "get",
+        },
+      );
+
+      console.log(`https://api.telegram.org/bot${Deno.env.get(
         "BOT_TOKEN",
-      )!}/getUpdates?offset=${offset}`,
-      {
-        method: "get",
-      },
-    );
+      )!}/getUpdates?offset=${offset}`, resp.status);
 
-    console.log(`https://api.telegram.org/bot${Deno.env.get(
-      "BOT_TOKEN",
-    )!}/getUpdates?offset=${offset}`, resp.status);
+      const update = await resp.json();
 
-    const update = await resp.json();
+      for (const result of update.result) {
+        offset = result.update_id + 1;
 
-    for (const result of update.result) {
-      if (Deno.env.get("CHAT_ID")!) {
-        const message = await makeMessage([result.message.text]);
-        const resp = await fetch(
-          `https://api.telegram.org/bot${Deno.env.get(
-            "BOT_TOKEN",
-          )!}/sendMessage`,
-          {
-            method: "post",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              chat_id: Deno.env.get("CHAT_ID")!,
-              text: message,
-            }),
-          },
-        );
-  
-        console.log(`https://api.telegram.org/bot${Deno.env.get(
-          "BOT_TOKEN",
-        )!}/sendMessage`, resp.status, await resp.json());
-      } else {
-        const resp = await fetch(
-          `https://api.telegram.org/bot${Deno.env.get(
-            "BOT_TOKEN",
-          )!}/sendMessage`,
-          {
-            method: "post",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              chat_id: result.message.chat.id,
-              text: result.message.chat.id,
-            }),
-          },
-        );
-  
-        console.log(`https://api.telegram.org/bot${Deno.env.get(
-          "BOT_TOKEN",
-        )!}/sendMessage`, resp.status, await resp.json());
-      }
-      
-      offset = result.update_id + 1;
-    }
+        if (Deno.env.get("CHAT_ID")!) {
+          if ("photo" in result.message) {
+            const photo = result.message.photo.reverse()[0];
 
-    await new Promise((ok) => {
-      setTimeout(ok, 300);
-    });
-  }
-}
-
-function setKeyboardHook() {
-  user32.symbols.SetWindowsHookExA(13, keyboardHook.pointer, 0, 0);
-}
-
-async function pumpWsMessage() {
-  const msg = new Uint8Array(48);
-
-  for await (const _ of infinity()) {
-    user32.symbols.PeekMessageA(msg, 0, 0, 0, 1);
-
-    await (async () => {
-      if (isPrtScPressed) {
-        isPrtScPressed = false;
-
-        if (!isBusy) {
-          isBusy = true;
-
-          try {
-            await new Promise((ok) => setTimeout(ok, 300));
-
-            const img = await read();
-
-            await copy(
-              img,
-              await Deno.open("img.bmp", { create: true, write: true }),
+            let resp = await fetch(
+              `https://api.telegram.org/bot${Deno.env.get(
+                "BOT_TOKEN",
+              )!}/getFile`,
+              {
+                method: "post",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  file_id: photo.file_id,
+                }),
+              },
             );
-            await Deno.run({ cmd: ["vips", "copy", "img.bmp", "img.png"] })
-              .status();
-            await Deno.run({ cmd: ["vipsthumbnail", "-s", "1920x1080>", "-f", "output.png", "img.png"] })
-              .status();
+  
+            console.log(`https://api.telegram.org/bot${Deno.env.get("BOT_TOKEN")!}/getFile`, resp.status);
 
-            let fd = new FormData();
+            const file = (await resp.json())["result"];
+
+            resp = await fetch(
+              `https://api.telegram.org/file/bot${Deno.env.get(
+                "BOT_TOKEN",
+              )!}/${file.file_path}`,
+              {
+                method: "get",
+              },
+            );
+
+            const fd = new FormData();
 
             fd.set(
               "file",
-              new File([await Deno.readFile("output.png")], "output.png"),
+              new File([await resp.bytes()], "output.jpg"),
             );
 
-            let resp = await fetch(
+            resp = await fetch(
               `${Deno.env.get("INFER_API_URL")!}/infer/${Deno.env.get("SOURCE")!}`,
               {
                 method: "post",
                 body: fd,
               },
             );
-            
+
             console.log(`${Deno.env.get("INFER_API_URL")!}/infer/${Deno.env.get("SOURCE")!}`, resp.status);
 
             const detectionMap = new Map();
@@ -305,17 +183,17 @@ async function pumpWsMessage() {
                 for (const [candidateDetection] of detectionMap) {
                   const [x1, y1] = candidateDetection;
                   const [x2, y2] = leftUpper;
-  
+
                   if ((x2 - x1) ** 2 <= parseInt(Deno.env.get("X_DELTA")!) && (y2 - y1) ** 2 <= parseInt(Deno.env.get("Y_DELTA")!)) {
                     near = candidateDetection;
-  
+
                     break;
                   }
                 }
-  
+
                 if (near) {
                   const oldTxt = detectionMap.get(near);
-  
+
                   detectionMap.set(leftBottom, oldTxt + txt.trim());
                   detectionMap.delete(near);
                 } else {
@@ -336,25 +214,6 @@ async function pumpWsMessage() {
               message = await makeMessage(txts);
             }
 
-            fd = new FormData();
-  
-            fd.set("chat_id", Deno.env.get("CHAT_ID")!);
-            fd.set(
-              "photo",
-              new File([await Deno.readFile("output.png")], "output.png"),
-            );
-
-            resp = await fetch(
-              `https://api.telegram.org/bot${Deno.env.get(
-                "BOT_TOKEN",
-              )!}/sendPhoto`,
-              { method: "post", body: fd },
-            );
-
-            console.log(`https://api.telegram.org/bot${Deno.env.get(
-              "BOT_TOKEN",
-            )!}/sendPhoto`, resp.status, await resp.json());
-
             resp = await fetch(
               `https://api.telegram.org/bot${Deno.env.get(
                 "BOT_TOKEN",
@@ -372,17 +231,37 @@ async function pumpWsMessage() {
             console.log(`https://api.telegram.org/bot${Deno.env.get(
               "BOT_TOKEN",
             )!}/sendMessage`, resp.status, await resp.json());
-          } finally {
-            isBusy = false;
           }
+        } else {
+          const resp = await fetch(
+            `https://api.telegram.org/bot${Deno.env.get(
+              "BOT_TOKEN",
+            )!}/sendMessage`,
+            {
+              method: "post",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                chat_id: result.message.chat.id,
+                text: result.message.chat.id,
+              }),
+            },
+          );
+
+          console.log(`https://api.telegram.org/bot${Deno.env.get(
+            "BOT_TOKEN",
+          )!}/sendMessage`, resp.status, await resp.json());
         }
       }
-    })();
+
+      await new Promise((ok) => {
+        setTimeout(ok, 300);
+      });
+    } catch (e) {
+      console.error(e);
+    }
   }
 }
 
 (function main() {
   pollTgMessage();
-  setKeyboardHook();
-  pumpWsMessage();
 })();

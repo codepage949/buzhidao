@@ -1,0 +1,9 @@
+services:
+  infer:
+    build:
+      dockerfile: Dockerfile.infer
+  bot:
+    build:
+      dockerfile: Dockerfile.bot
+    env_file:
+      - .env
