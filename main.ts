@@ -43,47 +43,30 @@ async function translate(text: string) {
 }
 
 async function makeMessage(txts: string[]) {
-  const joinedTxt = txts.join("\n\n");
-  let pnins: string[];
-
-  if (Deno.env.get("SOURCE")! === "ch") {
-    pnins = pinyin(joinedTxt).flat().join(" ").split("\n\n");
-  }
-  
-  const translateResult = await translate(joinedTxt);
-
-  console.log("translateResult", translateResult);
-
-  const translatedTxts = translateResult.translatedText.split("\n\n");
-  let dict = "";
-
-  for (const item of (translateResult.dict?.items) ?? []) {
-    dict += `## ${item.entry.replace(/<.*?>/g, "")} ${(Deno.env.get("SOURCE")! === "ch") ? pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ") : ""}\n`;
-
-    for (const pos of item.pos) {
-        for (const meaning of pos.meanings) {
-            dict += `1. ${meaning.meaning.replace(/<.*?>/g, "")}\n`
-        }
-    }
-
-    dict += "\n";
-  }
-
   const output = [];
 
-  for (let i = 0; i < txts.length; i++) {
-    if (Deno.env.get("SOURCE")! === "ch") {
-      output.push(
-        [txts[i], pnins![i].trim(), translatedTxts[i]].join("\n"),
-      );
-    } else {
-      output.push(
-        [txts[i], translatedTxts[i]].join("\n"),
-      );
+  for (const txt of txts) {
+    const pnins = pinyin(txt).flat().join(" ");
+    const translateResult = await translate(txt);
+    let dict = "";
+
+    for (const item of (translateResult.dict?.items) ?? []) {
+      dict += `## ${item.entry.replace(/<.*?>/g, "")} ${(Deno.env.get("SOURCE")! === "ch") ? pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ") : ""}\n`;
+
+      for (const pos of item.pos) {
+        for (const meaning of pos.meanings) {
+          dict += `1. ${meaning.meaning.replace(/<.*?>/g, "")}\n`
+        }
+      }
+
+      dict += "\n";
     }
+
+    output.push([txt, pnins, translateResult.translatedText].join("\n") + "\n\n" + dict);
   }
 
-  return output.join("\n\n") + "\n\n" + dict;
+
+  return output;
 }
 
 async function* infinity() {
@@ -173,7 +156,7 @@ async function pollTgMessage() {
             const detectionMap = new Map();
             const detections = await resp.json();
 
-            for (const detection of detections) {
+            for (const detection of detections[0]) {
               const [leftUpper, , , leftBottom] = detection[0];
               const [txt] = detection[1];
 
@@ -202,7 +185,7 @@ async function pollTgMessage() {
               }
             }
 
-            let message = "no detections.";
+            let messages = ["no detections."];
 
             if (detectionMap.size > 0) {
               const txts = [];
@@ -211,26 +194,28 @@ async function pollTgMessage() {
                 txts.push(txt);
               }
 
-              message = await makeMessage(txts);
+              messages = await makeMessage(txts);
             }
 
-            resp = await fetch(
-              `https://api.telegram.org/bot${Deno.env.get(
-                "BOT_TOKEN",
-              )!}/sendMessage`,
-              {
-                method: "post",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  chat_id: Deno.env.get("CHAT_ID")!,
-                  text: message,
-                }),
-              },
-            );
+            for (const message of messages) {
+              resp = await fetch(
+                `https://api.telegram.org/bot${Deno.env.get(
+                  "BOT_TOKEN",
+                )!}/sendMessage`,
+                {
+                  method: "post",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    chat_id: Deno.env.get("CHAT_ID")!,
+                    text: message,
+                  }),
+                },
+              );
 
-            console.log(`https://api.telegram.org/bot${Deno.env.get(
-              "BOT_TOKEN",
-            )!}/sendMessage`, resp.status, await resp.json());
+              console.log(`https://api.telegram.org/bot${Deno.env.get(
+                "BOT_TOKEN",
+              )!}/sendMessage`, resp.status, await resp.json());
+            }
           }
         } else {
           const resp = await fetch(
