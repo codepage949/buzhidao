@@ -4,11 +4,34 @@ import pinyin from "pinyin";
 
 config({ export: true });
 
+async function renewPapagoVersion() {
+  const mainJsName = await (async function getMainJsName() {
+    const resp = await fetch("https://papago.naver.com");
+    const source = await resp.text();
+    const start = source.indexOf('src="/main') + 5;
+    const end = source.indexOf('"', start);
+
+    return source.substring(start, end);
+  })();
+
+  const papagoVersion = await (async function getPapagoVersion(mainJsName) {
+    const resp = await fetch(`https://papago.naver.com${mainJsName}`);
+    const source = await resp.text();
+    const start = source.indexOf("HmacMD5");
+    const end = source.indexOf('").toS', start);
+
+    return source.substring(start, end).split(',"')[1];
+  })(mainJsName);
+
+  return papagoVersion;
+}
+
+let papagoVersion = await renewPapagoVersion();
+
 async function translate(text: string) {
   const uuid = crypto.randomUUID();
   const path = Deno.env.get("PAPAGO_API_URL");
   const timestamp = new Date().valueOf().toString();
-  const papagoVersion = Deno.env.get("PAPAGO_VERSION")!;
   const auth = cryptoJs.enc.Base64.stringify(
     cryptoJs.HmacMD5(
       `${uuid}\n${path}\n${timestamp}`,
@@ -216,6 +239,29 @@ async function pollTgMessage() {
                 "BOT_TOKEN",
               )!}/sendMessage`, resp.status, await resp.json());
             }
+          } else {
+            const oldVer = papagoVersion;
+            const newVer = await renewPapagoVersion();
+
+            papagoVersion = newVer;
+
+            const resp = await fetch(
+              `https://api.telegram.org/bot${Deno.env.get(
+                "BOT_TOKEN",
+              )!}/sendMessage`,
+              {
+                method: "post",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  chat_id: result.message.chat.id,
+                  text: `이전 버전: ${oldVer}\n새로 찾은 버전: ${newVer}`,
+                }),
+              },
+            );
+
+            console.log(`https://api.telegram.org/bot${Deno.env.get(
+              "BOT_TOKEN",
+            )!}/sendMessage`, resp.status, await resp.json());
           }
         } else {
           const resp = await fetch(
