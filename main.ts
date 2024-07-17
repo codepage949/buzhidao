@@ -190,7 +190,9 @@ async function pollTgMessage() {
                   const [x1, y1] = candidateDetection;
                   const [x2, y2] = leftUpper;
 
-                  if ((x2 - x1) ** 2 <= parseInt(Deno.env.get("X_DELTA")!) && (y2 - y1) ** 2 <= parseInt(Deno.env.get("Y_DELTA")!)) {
+                  // if ((x2 - x1) ** 2 <= parseInt(Deno.env.get("X_DELTA")!) && (y2 - y1) ** 2 <= parseInt(Deno.env.get("Y_DELTA")!)) {
+                  if ((y2 - y1) ** 2 <= parseInt(Deno.env.get("Y_DELTA")!)) {
+
                     near = candidateDetection;
 
                     break;
