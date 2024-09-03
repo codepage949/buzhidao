@@ -6,7 +6,7 @@ config({ export: true });
 
 async function renewPapagoVersion() {
   const mainJsName = await (async function getMainJsName() {
-    const resp = await fetch("https://papago.naver.com");
+    const resp = await fetch("https://papago.naver.com", { signal: AbortSignal.timeout(5000) });
     const source = await resp.text();
     const start = source.indexOf('src="/main') + 5;
     const end = source.indexOf('"', start);
@@ -15,7 +15,7 @@ async function renewPapagoVersion() {
   })();
 
   const papagoVersion = await (async function getPapagoVersion(mainJsName) {
-    const resp = await fetch(`https://papago.naver.com${mainJsName}`);
+    const resp = await fetch(`https://papago.naver.com${mainJsName}`, { signal: AbortSignal.timeout(5000) });
     const source = await resp.text();
     const start = source.indexOf("HmacMD5");
     const end = source.indexOf('").toS', start);
@@ -58,6 +58,7 @@ async function translate(text: string) {
       "timestamp": timestamp,
     }),
     body: usp,
+    signal: AbortSignal.timeout(5000),
   });
 
   console.log(Deno.env.get("PAPAGO_API_URL")!, resp.status);
@@ -117,6 +118,7 @@ async function pollTgMessage() {
         )!}/getUpdates?offset=${offset}`,
         {
           method: "get",
+          signal: AbortSignal.timeout(5000),
         },
       );
 
@@ -143,6 +145,7 @@ async function pollTgMessage() {
                 body: JSON.stringify({
                   file_id: photo.file_id,
                 }),
+                signal: AbortSignal.timeout(5000),
               },
             );
   
@@ -156,6 +159,7 @@ async function pollTgMessage() {
               )!}/${file.file_path}`,
               {
                 method: "get",
+                signal: AbortSignal.timeout(5000),
               },
             );
 
@@ -171,6 +175,7 @@ async function pollTgMessage() {
               {
                 method: "post",
                 body: fd,
+                signal: AbortSignal.timeout(10_000),
               },
             );
 
@@ -234,6 +239,7 @@ async function pollTgMessage() {
                     chat_id: Deno.env.get("CHAT_ID")!,
                     text: message,
                   }),
+                  signal: AbortSignal.timeout(5000),
                 },
               );
 
@@ -258,6 +264,7 @@ async function pollTgMessage() {
                   chat_id: result.message.chat.id,
                   text: `이전 버전: ${oldVer}\n새로 찾은 버전: ${newVer}`,
                 }),
+                signal: AbortSignal.timeout(5000),
               },
             );
 
@@ -277,6 +284,7 @@ async function pollTgMessage() {
                 chat_id: result.message.chat.id,
                 text: result.message.chat.id,
               }),
+              signal: AbortSignal.timeout(5000),
             },
           );
 
