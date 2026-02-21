@@ -1,0 +1,16 @@
+services:
+  ocr:
+    build: .
+    ports:
+      - "${HTTP_PORT}:${HTTP_PORT}"
+    environment:
+      - HTTP_HOST=${HTTP_HOST}
+      - HTTP_PORT=${HTTP_PORT}
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=${PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK}
+      - SCORE_THRESH=${SCORE_THRESH}
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            capabilities: [gpu]
