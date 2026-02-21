@@ -1,31 +1,47 @@
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, UploadFile
 import uvicorn
 from paddleocr import PaddleOCR
 import os
 
-load_dotenv()
-
 ocrs = {
-    "en": PaddleOCR(use_angle_cls=True, lang="en"),
-    "ch": PaddleOCR(use_angle_cls=True, lang="ch"),
+    "en": PaddleOCR(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=True,
+        device="gpu:0",
+        lang="en",
+    ),
+    "ch": PaddleOCR(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=True,
+        device="gpu",
+        lang="ch",
+    ),
 }
 
 # NOTE: 언어별 OCR 모델을 미리 로드
-ocrs["en"].ocr("test.png", cls=True)
-ocrs["ch"].ocr("test.png", cls=True)
+ocrs["en"].predict("test.png")
+ocrs["ch"].predict("test.png")
 
 app = FastAPI()
+
 
 @app.post("/infer/{src}")
 def infer(file: UploadFile, src: str):
     with open("output.png", "wb") as f:
         f.write(file.file.read())
-    
-    img_path = "./output.png"
-    ocr = PaddleOCR(use_angle_cls=True, lang=src)
-    result = ocr.ocr(img_path, cls=True)
 
-    return result
+    img_path = "./output.png"
+    result = ocrs[src].predict(img_path, text_rec_score_thresh=0.9)
+
+    return list(
+        zip([x.tolist() for x in result[0]["rec_polys"]], result[0]["rec_texts"])
+    )
+
 
 uvicorn.run(app, host=os.environ["HTTP_HOST"], port=int(os.environ["HTTP_PORT"]))
