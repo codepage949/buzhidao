@@ -2,10 +2,11 @@ import * as io from "io";
 import * as clipboard from "clipboard-image";
 import * as dotenv from "dotenv";
 import cryptoJs from "crypto-js";
-import pinyin from "pinyin";
-import * as imgScr from "imgScript";
+import { pinyin } from "pinyin";
+import imgScr from "imgScript";
 
-dotenv.config({ export: true });
+
+dotenv.loadSync({ export: true })
 
 const user32 = Deno.dlopen(
   "user32.dll",
@@ -38,14 +39,14 @@ const keyboardHook = new Deno.UnsafeCallback(
   { parameters: ["i32", "usize", "usize"], result: "usize" } as const,
   (
     nCode: number,
-    wParam: number | bigint,
-    lParam: number | bigint,
-  ): number | bigint => {
+    wParam: bigint,
+    lParam: bigint,
+  ): bigint => {
     const keyCode = (new Deno.UnsafePointerView(Deno.UnsafePointer.create(lParam)!)).getUint32();
     const flags = (new Deno.UnsafePointerView(Deno.UnsafePointer.create(lParam)!)).getUint32(8);
 
     if (nCode === 0 && (flags & 0x10) === 0) {
-      if (wParam === 257) {
+      if (wParam === 257n) {
         if (keyCode === 0x2C) {
           // NOTE: lParam 포인터의 데이터를 조작하여 alt키를 삽입할 수도 있을지는 모르겠으나
           //     아직 deno에서 포인터를 통한 데이터 쓰기를 지원하지 않아 sendInput으로 대체
@@ -68,16 +69,16 @@ const keyboardHook = new Deno.UnsafeCallback(
 
           isPrtScPressed = true;
 
-          return 1;
+          return 1n;
         }
       } else {
         if (keyCode === 0x2C) {
-          return 1;
+          return 1n;
         }
       }
     }
 
-    return user32.symbols.CallNextHookEx(0, nCode, wParam, lParam);
+    return user32.symbols.CallNextHookEx(0n, nCode, wParam, lParam) as unknown as bigint;
   },
 );
 
@@ -238,14 +239,14 @@ async function pollTgMessage() {
 }
 
 function setKeyboardHook() {
-  user32.symbols.SetWindowsHookExA(13, keyboardHook.pointer, 0, 0);
+  user32.symbols.SetWindowsHookExA(13, keyboardHook.pointer, 0n, 0);
 }
 
 async function pumpWsMessage() {
   const msg = new Uint8Array(48);
 
   for await (const _ of infinity()) {
-    user32.symbols.PeekMessageA(msg, 0, 0, 0, 1);
+    user32.symbols.PeekMessageA(msg, 0n, 0, 0, 1);
 
     if (isPrtScPressed) {
       isPrtScPressed = false;
@@ -289,9 +290,9 @@ async function pumpWsMessage() {
           const detectionMap = new Map();
           const detections = await resp.json();
 
-          for (const detection of detections[0]) {
+          for (const detection of detections) {
             const [leftUpper, , , leftBottom] = detection[0];
-            const [txt] = detection[1];
+            const txt = detection[1];
 
             if (isSourceLanguage(txt)) {
               let near = null;
