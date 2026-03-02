@@ -6,8 +6,7 @@
     "clipboard-image": "https://deno.land/x/clipboard_image@v0.0.1/mod.ts",
     "io": "jsr:@std/io@0.220",
     "dotenv": "jsr:@std/dotenv@0.208",
-    "crypto-js": "npm:crypto-js@4.1.1",
-    "pinyin": "npm:pinyin@4.0.0",
+    "openai": "npm:openai@6.25.0",
     "imgScript": "npm:imagescript@1.2.17"
   }
 }

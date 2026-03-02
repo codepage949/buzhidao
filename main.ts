@@ -1,12 +1,11 @@
+import { loadSync } from "dotenv";
+
+loadSync({ export: true, allowEmptyValues: true });
+
 import * as io from "io";
 import * as clipboard from "clipboard-image";
-import * as dotenv from "dotenv";
-import cryptoJs from "crypto-js";
-import { pinyin } from "pinyin";
 import imgScr from "imgScript";
-
-
-dotenv.loadSync({ export: true })
+import OpenAI from "openai";
 
 const user32 = Deno.dlopen(
   "user32.dll",
@@ -82,86 +81,28 @@ const keyboardHook = new Deno.UnsafeCallback(
   },
 );
 
-async function translate(text: string) {
-  const uuid = crypto.randomUUID();
-  const path = Deno.env.get("PAPAGO_API_URL");
-  const timestamp = new Date().valueOf().toString();
-  const papagoVersion = Deno.env.get("PAPAGO_VERSION")!;
-  const auth = cryptoJs.enc.Base64.stringify(
-    cryptoJs.HmacMD5(
-      `${uuid}\n${path}\n${timestamp}`,
-      papagoVersion,
-    ),
-  );
-  const usp = new URLSearchParams();
-
-  usp.set("deviceId", uuid);
-  usp.set("locale", "en");
-  usp.set("dict", "true");
-  usp.set("dictDisplay", "30");
-  usp.set("honorific", "false");
-  usp.set("instant", "false");
-  usp.set("paging", "false");
-  usp.set("source", (Deno.env.get("SOURCE") === "en") ? "en" : "zh-CN");
-  usp.set("target", "ko");
-  usp.set("text", text);
-
-  const resp = await fetch(Deno.env.get("PAPAGO_API_URL")!, {
-    method: "post",
-    headers: new Headers({
-      "authorization": `PPG ${uuid}:${auth}`,
-      "timestamp": timestamp,
-    }),
-    body: usp,
-  });
-
-  console.log(Deno.env.get("PAPAGO_API_URL")!, resp.status);
-
-  return await resp.json();
-}
+const client = new OpenAI({
+  apiKey: Deno.env.get("AI_GATEWAY_API_KEY")!,
+  baseURL: "https://ai-gateway.vercel.sh/v1",
+});
 
 async function makeMessage(txts: string[]) {
-  const joinedTxt = txts.join("\n\n");
-  let pnins: string[];
+  const joinedTxt = txts.join("\n");
+  const response = await client.chat.completions.create({
+    model: "alibaba/qwen-3-32b",
+    messages: [
+      {
+        role: "system",
+        content: Deno.env.get("SYSTEM_PROMPT")!,
+      },
+      {
+        role: "user",
+        content: joinedTxt,
+      },
+    ],
+  });
 
-  if (Deno.env.get("SOURCE")! === "ch") {
-    pnins = pinyin(joinedTxt).flat().join(" ").split("\n\n");
-  }
-
-  const translateResult = await translate(joinedTxt);
-
-  console.log("translateResult", translateResult);
-
-  const translatedTxts = translateResult.translatedText.split("\n\n");
-  let dict = "";
-
-  for (const item of (translateResult.dict?.items) ?? []) {
-    dict += `## ${item.entry.replace(/<.*?>/g, "")} ${(Deno.env.get("SOURCE")! === "ch") ? pinyin(item.entry.replace(/<.*?>/g, "")).flat().join(" ") : ""}\n`;
-
-    for (const pos of item.pos) {
-      for (const meaning of pos.meanings) {
-        dict += `1. ${meaning.meaning.replace(/<.*?>/g, "")}\n`
-      }
-    }
-
-    dict += "\n";
-  }
-
-  const output = [];
-
-  for (let i = 0; i < txts.length; i++) {
-    if (Deno.env.get("SOURCE")! === "ch") {
-      output.push(
-        [txts[i], pnins![i].trim(), translatedTxts[i]].join("\n"),
-      );
-    } else {
-      output.push(
-        [txts[i], translatedTxts[i]].join("\n"),
-      );
-    }
-  }
-
-  return output.join("\n\n") + "\n\n" + dict;
+  return response.choices[0].message.content ?? "";
 }
 
 async function* infinity() {
@@ -270,7 +211,7 @@ async function pumpWsMessage() {
 
           await (await Deno.open("output.png", { create: true, write: true, truncate: true })).write(pngImg);
 
-          let fd = new FormData();
+          const fd = new FormData();
 
           fd.set(
             "file",
@@ -327,26 +268,9 @@ async function pumpWsMessage() {
             for (const [, txt] of detectionMap) {
               txts.push(txt);
             }
-
-            message = await makeMessage(txts);
+              
+            message = `${await makeMessage(txts)}`;
           }
-
-          fd = new FormData();
-
-          fd.set("chat_id", Deno.env.get("CHAT_ID")!);
-          fd.set(
-            "photo",
-            new File([await Deno.readFile("output.png")], "output.png"),
-          );
-
-          resp = await fetch(
-            `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-              "BOT_TOKEN",
-            )!}/sendPhoto`,
-            { method: "post", body: fd },
-          );
-
-          console.log(`${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot.../sendPhoto`, resp.status, await resp.json());
 
           resp = await fetch(
             `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
@@ -358,6 +282,7 @@ async function pumpWsMessage() {
               body: JSON.stringify({
                 chat_id: Deno.env.get("CHAT_ID")!,
                 text: message,
+                parse_mode: "Markdown",
               }),
             },
           );
