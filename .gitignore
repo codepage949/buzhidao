@@ -4,3 +4,4 @@ __pycache__
 !.dockerignore
 !.env.example
 output.png
+*.exe
