@@ -99,7 +99,7 @@ const client = new OpenAI({
 async function makeMessage(txts: string[]) {
   const joinedTxt = txts.join("\n");
   const response = await client.chat.completions.create({
-    model: "alibaba/qwen-3-32b",
+    model: Deno.env.get("AI_GATEWAY_MODEL")!,
     messages: [
       {
         role: "system",
