@@ -98,12 +98,14 @@ const client = new OpenAI({
 
 async function makeMessage(txts: string[]) {
   const joinedTxt = txts.join("\n");
+  const systemPromptPath = Deno.env.get("SYSTEM_PROMPT_PATH")!;
+  const systemPrompt = await Deno.readTextFile(systemPromptPath);
   const response = await client.chat.completions.create({
     model: Deno.env.get("AI_GATEWAY_MODEL")!,
     messages: [
       {
         role: "system",
-        content: Deno.env.get("SYSTEM_PROMPT")!,
+        content: systemPrompt,
       },
       {
         role: "user",
