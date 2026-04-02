@@ -1,122 +1,111 @@
-# buzhidao
+# Buzhidao (不知道)
 
-윈도우에서 `PrtSc` 키를 눌러 현재 창을 캡처하면, OCR로 텍스트를 추출한 뒤 LLM으로 번역해서 텔레그램 봇으로 보내주는 도구입니다.
+Buzhidao는 화면의 텍스트를 OCR로 인식하고 AI를 통해 번역하여 텔레그램으로 전송해주는 도구입니다. Windows의 PrintScreen 키를 후킹하여 클립보드에 복사된 이미지를 자동으로 처리합니다.
 
-## 구성
+## 기술 스택
 
-- 클라이언트: Deno 기반 윈도우 앱
-- 서버: FastAPI + PaddleOCR
-- 전달 채널: Telegram Bot API
-- 번역: OpenAI 호환 API (`ai-gateway.vercel.sh`)
+### Client (Orchestrator)
+- **Runtime**: [Deno](https://deno.com/)
+- **Language**: TypeScript
+- **Main Libraries**:
+    - `clipboard-image`: 클립보드 이미지 읽기
+    - `imagescript`: 이미지 전처리 및 인코딩
+    - `openai`: AI 모델을 통한 번역 및 처리
+    - `Deno FFI (user32.dll)`: Windows 키보드 이벤트 후킹 (PrintScreen)
 
-## 동작 방식
+### OCR Server
+- **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
+- **Language**: Python
+- **OCR Engine**: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (GPU 가속 지원)
+- **Deployment**: Docker, Docker Compose
 
-1. 윈도우에서 현재 활성 창을 선택합니다.
-2. `PrtSc` 키를 누르면 클라이언트가 화면 이미지를 가져옵니다.
-3. 클라이언트가 OCR 서버(`/infer/{src}`)로 이미지를 전송합니다.
-4. 추출된 텍스트를 번역 프롬프트와 함께 LLM에 전달합니다.
-5. 번역 결과를 텔레그램 봇이 지정된 채팅방으로 전송합니다.
+---
 
-텍스트 조각이 많을 경우에는 바로 번역하지 않고, 텔레그램 인라인 버튼으로 번역할 문장을 선택하게 됩니다.
+## 프로젝트 구조
 
-## 요구 사항
-
-### 클라이언트
-
-- Windows
-- Deno
-
-클라이언트는 `user32.dll`과 클립보드 접근을 사용하므로 사실상 윈도우 전용입니다.
-
-### 서버
-
-- Python 3
-- PaddleOCR 실행 환경
-- GPU 지원 환경 권장
-
-현재 서버 코드는 PaddleOCR를 `device="gpu"`로 고정해서 사용하므로, GPU가 없는 환경에서는 그대로 실행되지 않을 수 있습니다.
-
-## 환경변수 설정
-
-### 클라이언트
-
-루트 디렉터리에서 `.env.example`을 복사해 `.env`를 만든 뒤 값을 채웁니다.
-
-```bash
-cp .env.example .env
+```text
+/
+├── main.ts             # Deno 클라이언트 메인 로직 (키 후킹, 이미지 처리, 통신)
+├── deno.json           # Deno 설정 및 작업 정의
+├── server/             # OCR 서버 디렉토리
+│   ├── main.py         # FastAPI 서버 메인 로직
+│   ├── Dockerfile      # OCR 서버 빌드 설정
+│   └── requirements.txt # Python 의존성
+└── .env.example        # 환경 변수 예시
 ```
 
-주요 항목:
+---
 
-- `SOURCE`: OCR 대상 언어. `en` 또는 `ch`
-- `API_BASE_URL`: OCR 서버 주소. 예: `http://127.0.0.1:8000`
-- `AI_GATEWAY_API_KEY`: 번역에 사용할 API 키
-- `AI_GATEWAY_MODEL`: 사용할 모델 이름
-- `SYSTEM_PROMPT_PATH`: 시스템 프롬프트 파일 경로
-- `TELEGRAM_API_BASE_URL`: 기본값 `https://api.telegram.org`
-- `BOT_TOKEN`: BotFather로 발급받은 텔레그램 봇 토큰
-- `CHAT_ID`: 번역 결과를 받을 채팅 ID
-- `X_DELTA`, `Y_DELTA`: OCR로 분리된 텍스트를 한 문장으로 묶는 기준
+## 개발 및 테스트 방법
 
-`CHAT_ID`를 모르면 비워 둔 상태로 먼저 실행한 뒤, 봇에 아무 메시지나 보내면 해당 ID를 다시 봇이 알려줍니다. 이후 `.env`에 반영하고 재실행하면 됩니다.
+### 1. 환경 변수 설정
+루트 디렉토리와 `server/` 디렉토리에 각각 `.env` 파일을 생성하고 아래의 모든 환경 변수를 설정합니다.
 
-`SYSTEM_PROMPT_PATH`에 지정한 파일은 별도로 직접 만들어야 합니다.
+#### Root `.env` (Client 설정)
+| 환경 변수 | 설명 | 예시 |
+| :--- | :--- | :--- |
+| `AI_GATEWAY_API_KEY` | AI 게이트웨이 인증 키 | `sk-...` |
+| `AI_GATEWAY_MODEL` | 사용할 AI 모델명 | `gpt-4o` |
+| `SYSTEM_PROMPT_PATH` | 번역 및 처리에 사용할 시스템 프롬프트 파일 경로 | `./prompt.txt` |
+| `SOURCE` | 분석할 소스 언어 (`en`: 영어, `ch`: 중국어) | `en` |
+| `TELEGRAM_API_BASE_URL` | 텔레그램 API 베이스 URL (프록시 사용 시 변경 가능) | `https://api.telegram.org` |
+| `BOT_TOKEN` | 텔레그램 봇 API 토큰 | `123456:ABC...` |
+| `CHAT_ID` | 결과 메시지를 전송받을 텔레그램 채팅 ID | `12345678` |
+| `API_BASE_URL` | OCR 서버(FastAPI)의 베이스 URL | `http://localhost:8000` |
+| `X_DELTA` | OCR 텍스트 병합을 위한 가로(X) 허용 오차 (제곱값) | `2500` |
+| `Y_DELTA` | OCR 텍스트 병합을 위한 세로(Y) 허용 오차 (제곱값) | `100` |
 
-### 서버
+#### Server `.env` (OCR Server 설정)
+| 환경 변수 | 설명 | 예시 |
+| :--- | :--- | :--- |
+| `SCORE_THRESH` | OCR 인식 신뢰도 임계값 (0.0 ~ 1.0) | `0.6` |
+| `HTTP_HOST` | FastAPI 서버 호스트 주소 | `0.0.0.0` |
+| `HTTP_PORT` | FastAPI 서버 포트 번호 | `8000` |
 
-`server/.env.example`을 복사해 `server/.env`를 만듭니다.
 
+### 2. OCR 서버 실행
+**Docker 사용 시:**
 ```bash
-cp server/.env.example server/.env
+cd server
+docker-compose up --build
 ```
 
-주요 항목:
-
-- `HTTP_HOST`: 서버 바인드 주소
-- `HTTP_PORT`: 서버 포트
-- `SCORE_THRESH`: OCR 인식 점수 임계값
-
-## 실행 방법
-
-### 1. OCR 서버 실행
-
-#### 로컬 Python 실행
-
+**Python 직접 실행 시:**
 ```bash
 cd server
 pip install -r requirements.txt
 python main.py
 ```
 
-기본 포트는 `8000`입니다.
-
-#### Docker Compose 실행
-
-```bash
-cd server
-docker compose up --build
-```
-
-`docker-compose.yaml`에는 NVIDIA GPU 예약 설정이 포함되어 있습니다.
-
-### 2. 클라이언트 실행
-
-루트 디렉터리에서 실행합니다.
-
+### 3. 클라이언트 실행 (Windows 전용)
+Deno가 설치되어 있어야 하며, 관리자 권한이 필요할 수 있습니다.
 ```bash
 deno task dev
 ```
 
-## 사용법
+---
 
-1. 번역하고 싶은 창을 활성화합니다.
-2. `PrtSc` 키를 누릅니다.
-3. OCR 결과가 적으면 바로 번역 결과가 텔레그램으로 전송됩니다.
-4. OCR 결과가 많으면 텔레그램에서 원하는 문장을 선택해 개별 번역할 수 있습니다.
+## 릴리즈 배포 방법
 
-## 주의 사항
+1. **서버 배포**: `server/docker-compose.yaml`을 사용하여 GPU 지원 환경에서 OCR 서버를 배포합니다.
+2. **클라이언트 배포**: Deno가 설치된 Windows 환경에서 `main.ts`를 실행하거나 `deno compile`을 통해 실행 파일로 빌드하여 배포할 수 있습니다. (FFI 사용으로 인해 대상 환경에 `user32.dll`이 필요합니다.)
 
-- 클라이언트는 윈도우 전용입니다.
-- 서버는 현재 GPU 사용을 전제로 작성되어 있습니다.
-- `API_BASE_URL`에는 포트까지 포함해야 합니다. 예: `http://127.0.0.1:8000`
-- 시스템 프롬프트 파일이 없으면 번역 요청 단계에서 실패합니다.
+---
+
+## 각 기능 설명
+
+### 1. PrintScreen 자동 번역
+- **실행 경로**: `PrintScreen` 키 입력 -> 클립보드 캡처 -> 이미지 리사이징 -> OCR 서버 전송 -> 텍스트 추출 -> AI 번역 -> 텔레그램 메시지 전송.
+- **설명**: 사용자가 화면을 캡처하면 즉시 해당 화면 내의 텍스트를 인식하여 번역된 결과를 텔레그램으로 보내줍니다. 인식된 텍스트가 많을 경우 선택할 수 있는 인라인 버튼을 제공합니다.
+
+### 2. 텔레그램 봇 상호작용
+- **실행 경로**: 텔레그램 메시지 입력 -> AI 번역 -> 응답 전송.
+- **설명**: 봇에게 직접 텍스트를 보내면 설정된 시스템 프롬프트에 따라 내용을 처리하여 답변합니다.
+
+---
+
+## 특이 사항
+
+- **Windows 전용**: 클라이언트의 키보드 후킹 기능은 Windows의 `user32.dll`을 사용하므로 Windows 환경에서만 작동합니다.
+- **GPU 가속**: OCR 서버는 성능을 위해 NVIDIA GPU와 CUDA 환경을 권장합니다. (CPU로도 구동 가능하나 속도가 느릴 수 있습니다.)
+- **FFI 설정**: Deno 실행 시 `--allow-ffi`와 `--unstable-ffi` 플래그가 필요합니다.
