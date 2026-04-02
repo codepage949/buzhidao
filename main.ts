@@ -6,6 +6,8 @@ import * as io from "io";
 import * as clipboard from "clipboard-image";
 import imgScr from "imgScript";
 import OpenAI from "openai";
+import { groupDetections } from "./src/detection.ts";
+import { TelegramClient, type TelegramUpdate } from "./src/telegram.ts";
 
 const user32 = Deno.dlopen(
   "user32.dll",
@@ -35,6 +37,15 @@ const user32 = Deno.dlopen(
 let isPrtScPressed = false;
 let isBusy = false;
 const callbackDataMap = new Map<string, string>();
+const sourceLanguage = requireEnv("SOURCE");
+const apiBaseUrl = requireEnv("API_BASE_URL");
+const chatId = Deno.env.get("CHAT_ID");
+const xDelta = parseInt(requireEnv("X_DELTA"));
+const yDelta = parseInt(requireEnv("Y_DELTA"));
+const telegram = new TelegramClient({
+  apiBaseUrl: requireEnv("TELEGRAM_API_BASE_URL"),
+  botToken: requireEnv("BOT_TOKEN"),
+});
 const keyboardHook = new Deno.UnsafeCallback(
   { parameters: ["i32", "usize", "usize"], result: "usize" } as const,
   (
@@ -92,16 +103,26 @@ const keyboardHook = new Deno.UnsafeCallback(
 );
 
 const client = new OpenAI({
-  apiKey: Deno.env.get("AI_GATEWAY_API_KEY")!,
+  apiKey: requireEnv("AI_GATEWAY_API_KEY"),
   baseURL: "https://ai-gateway.vercel.sh/v1",
 });
 
+function requireEnv(name: string): string {
+  const value = Deno.env.get(name);
+
+  if (!value) {
+    throw new Error(`Missing environment variable: ${name}`);
+  }
+
+  return value;
+}
+
 async function makeMessage(txts: string[]) {
   const joinedTxt = txts.join("\n");
-  const systemPromptPath = Deno.env.get("SYSTEM_PROMPT_PATH")!;
+  const systemPromptPath = requireEnv("SYSTEM_PROMPT_PATH");
   const systemPrompt = await Deno.readTextFile(systemPromptPath);
   const response = await client.chat.completions.create({
-    model: Deno.env.get("AI_GATEWAY_MODEL")!,
+    model: requireEnv("AI_GATEWAY_MODEL"),
     messages: [
       {
         role: "system",
@@ -126,110 +147,14 @@ async function* infinity() {
   }
 }
 
-function isSourceLanguage(text: string) {
-  return (Deno.env.get("SOURCE")! === "en")
-    ? (/[a-zA-Z]/g).test(text)
-    : (/[\u4e00-\u9fa5]/g).test(text);
-}
-
 async function pollTgMessage() {
   let offset = 0;
 
   for await (const _ of infinity()) {
-    const resp = await fetch(
-      `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-        "BOT_TOKEN",
-      )!}/getUpdates?offset=${offset}`,
-      {
-        method: "get",
-      },
-    );
+    const updates = await telegram.getUpdates(offset);
 
-    console.log(
-      `${
-        Deno.env.get("TELEGRAM_API_BASE_URL")
-      }/bot.../getUpdates?offset=${offset}`,
-      resp.status,
-    );
-
-    const update = await resp.json();
-
-    for (const result of update.result) {
-      if (result.callback_query) {
-        const txt = callbackDataMap.get(result.callback_query.data);
-
-        if (txt) {
-          const message = await makeMessage([txt]);
-
-          await fetch(
-            `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-              "BOT_TOKEN",
-            )!}/sendMessage`,
-            {
-              method: "post",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                chat_id: Deno.env.get("CHAT_ID")!,
-                text: message,
-              }),
-            },
-          );
-        }
-
-        await fetch(
-          `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-            "BOT_TOKEN",
-          )!}/answerCallbackQuery`,
-          {
-            method: "post",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              callback_query_id: result.callback_query.id,
-            }),
-          },
-        );
-      } else if (Deno.env.get("CHAT_ID")!) {
-        const message = await makeMessage([result.message.text]);
-        const resp = await fetch(
-          `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-            "BOT_TOKEN",
-          )!}/sendMessage`,
-          {
-            method: "post",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              chat_id: Deno.env.get("CHAT_ID")!,
-              text: message,
-            }),
-          },
-        );
-
-        console.log(
-          `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot.../sendMessage`,
-          resp.status,
-          await resp.json(),
-        );
-      } else {
-        const resp = await fetch(
-          `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-            "BOT_TOKEN",
-          )!}/sendMessage`,
-          {
-            method: "post",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              chat_id: result.message.chat.id,
-              text: result.message.chat.id,
-            }),
-          },
-        );
-
-        console.log(
-          `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot.../sendMessage`,
-          resp.status,
-          await resp.json(),
-        );
-      }
+    for (const result of updates) {
+      await handleTelegramUpdate(result);
 
       offset = result.update_id + 1;
     }
@@ -242,6 +167,103 @@ async function pollTgMessage() {
 
 function setKeyboardHook() {
   user32.symbols.SetWindowsHookExA(13, keyboardHook.pointer, 0n, 0);
+}
+
+async function handleTelegramUpdate(result: TelegramUpdate) {
+  if (result.callback_query) {
+    const txt = callbackDataMap.get(result.callback_query.data);
+
+    if (txt && chatId) {
+      const message = await makeMessage([txt]);
+      await telegram.sendMessage({
+        chat_id: chatId,
+        text: message,
+      });
+    }
+
+    await telegram.answerCallbackQuery(result.callback_query.id);
+    return;
+  }
+
+  if (!result.message?.text) {
+    return;
+  }
+
+  const targetChatId = chatId ?? `${result.message.chat.id}`;
+  const message = chatId
+    ? await makeMessage([result.message.text])
+    : `${result.message.chat.id}`;
+
+  await telegram.sendMessage({
+    chat_id: targetChatId,
+    text: message,
+  });
+}
+
+async function detectTextsFromClipboard(): Promise<string[]> {
+  const bmpImg = await io.readAll(await clipboard.read());
+  const img = await imgScr.decode(bmpImg);
+
+  if (img.width > 1024) {
+    const ratio = 1024 / img.width;
+    img.resize(1024, Math.round(img.height * ratio));
+  }
+
+  const pngImg = await img.encode(1);
+
+  await (await Deno.open("output.png", {
+    create: true,
+    write: true,
+    truncate: true,
+  })).write(pngImg);
+
+  const fd = new FormData();
+  fd.set(
+    "file",
+    new File([await Deno.readFile("output.png")], "output.png"),
+  );
+
+  const response = await fetch(`${apiBaseUrl}/infer/${sourceLanguage}`, {
+    method: "post",
+    body: fd,
+  });
+
+  console.log(`${apiBaseUrl}/infer/${sourceLanguage}`, response.status);
+
+  const detections = await response.json();
+  return groupDetections(detections, sourceLanguage, xDelta, yDelta);
+}
+
+async function sendDetectionResult(txts: string[]) {
+  if (!chatId) {
+    return;
+  }
+
+  if (txts.length < 4) {
+    const message = txts.length > 0
+      ? await makeMessage(txts)
+      : "no detections.";
+    await telegram.sendMessage({
+      chat_id: chatId,
+      text: message,
+      parse_mode: "Markdown",
+    });
+    return;
+  }
+
+  const inline_keyboard = [];
+
+  for (const txt of txts) {
+    const id = crypto.randomUUID();
+    callbackDataMap.set(id, txt);
+    inline_keyboard.push([{ text: txt, callback_data: id }]);
+  }
+
+  await telegram.sendMessage({
+    chat_id: chatId,
+    text: "번역할 텍스트를 선택해주세요.",
+    reply_markup: { inline_keyboard },
+  });
 }
 
 async function pumpWsMessage() {
@@ -258,135 +280,8 @@ async function pumpWsMessage() {
 
         try {
           await new Promise((ok) => setTimeout(ok, 500));
-
-          const bmpImg = await io.readAll(await clipboard.read());
-          const img = await imgScr.decode(bmpImg);
-
-          if (img.width > 1024) {
-            const ratio = 1024 / img.width;
-
-            img.resize(1024, Math.round(img.height * ratio));
-          }
-
-          const pngImg = await img.encode(1);
-
-          await (await Deno.open("output.png", {
-            create: true,
-            write: true,
-            truncate: true,
-          })).write(pngImg);
-
-          const fd = new FormData();
-
-          fd.set(
-            "file",
-            new File([await Deno.readFile("output.png")], "output.png"),
-          );
-
-          let resp = await fetch(
-            `${Deno.env.get("API_BASE_URL")!}/infer/${Deno.env.get("SOURCE")!}`,
-            {
-              method: "post",
-              body: fd,
-            },
-          );
-
-          console.log(
-            `${Deno.env.get("API_BASE_URL")!}/infer/${Deno.env.get("SOURCE")!}`,
-            resp.status,
-          );
-
-          const detectionMap = new Map();
-          const detections = await resp.json();
-
-          for (const detection of detections) {
-            const [leftUpper, , , leftBottom] = detection[0];
-            const txt = detection[1];
-
-            if (isSourceLanguage(txt)) {
-              let near = null;
-
-              for (const [candidateDetection] of detectionMap) {
-                const [x1, y1] = candidateDetection;
-                const [x2, y2] = leftUpper;
-
-                if (
-                  (x2 - x1) ** 2 <= parseInt(Deno.env.get("X_DELTA")!) &&
-                  (y2 - y1) ** 2 <= parseInt(Deno.env.get("Y_DELTA")!)
-                ) {
-                  near = candidateDetection;
-
-                  break;
-                }
-              }
-
-              if (near) {
-                const oldTxt = detectionMap.get(near);
-
-                detectionMap.set(leftBottom, oldTxt + txt.trim());
-                detectionMap.delete(near);
-              } else {
-                detectionMap.set(leftBottom, txt.trim());
-              }
-            }
-          }
-
-          let message = "no detections.";
-          const txts: string[] = [];
-
-          if (detectionMap.size > 0) {
-            for (const [, txt] of detectionMap) {
-              txts.push(txt);
-            }
-          }
-
-          if (txts.length < 4) {
-            message = `${await makeMessage(txts)}`;
-            resp = await fetch(
-              `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-                "BOT_TOKEN",
-              )!}/sendMessage`,
-              {
-                method: "post",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  chat_id: Deno.env.get("CHAT_ID")!,
-                  text: message,
-                  parse_mode: "Markdown",
-                }),
-              },
-            );
-          } else {
-            const inline_keyboard = [];
-
-            for (const txt of txts) {
-              const id = crypto.randomUUID();
-
-              callbackDataMap.set(id, txt);
-              inline_keyboard.push([{ text: txt, callback_data: id }]);
-            }
-
-            resp = await fetch(
-              `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot${Deno.env.get(
-                "BOT_TOKEN",
-              )!}/sendMessage`,
-              {
-                method: "post",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  chat_id: Deno.env.get("CHAT_ID")!,
-                  text: "번역할 텍스트를 선택해주세요.",
-                  reply_markup: { inline_keyboard },
-                }),
-              },
-            );
-          }
-
-          console.log(
-            `${Deno.env.get("TELEGRAM_API_BASE_URL")}/bot.../sendMessage`,
-            resp.status,
-            await resp.json(),
-          );
+          const txts = await detectTextsFromClipboard();
+          await sendDetectionResult(txts);
         } catch (e) {
           console.log(e);
         } finally {
