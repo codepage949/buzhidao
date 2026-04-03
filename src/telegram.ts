@@ -57,11 +57,7 @@ export class TelegramClient {
       body: JSON.stringify(body),
     });
 
-    console.log(
-      `${this.config.apiBaseUrl}/bot.../${path}`,
-      response.status,
-      await response.clone().json(),
-    );
+    console.log(`${this.config.apiBaseUrl}/bot.../${path}`, response.status);
 
     return response;
   }

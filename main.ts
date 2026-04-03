@@ -106,6 +106,7 @@ const client = new OpenAI({
   apiKey: requireEnv("AI_GATEWAY_API_KEY"),
   baseURL: "https://ai-gateway.vercel.sh/v1",
 });
+const systemPrompt = await Deno.readTextFile(requireEnv("SYSTEM_PROMPT_PATH"));
 
 function requireEnv(name: string): string {
   const value = Deno.env.get(name);
@@ -119,8 +120,6 @@ function requireEnv(name: string): string {
 
 async function makeMessage(txts: string[]) {
   const joinedTxt = txts.join("\n");
-  const systemPromptPath = requireEnv("SYSTEM_PROMPT_PATH");
-  const systemPrompt = await Deno.readTextFile(systemPromptPath);
   const response = await client.chat.completions.create({
     model: requireEnv("AI_GATEWAY_MODEL"),
     messages: [
@@ -174,6 +173,7 @@ async function handleTelegramUpdate(result: TelegramUpdate) {
     const txt = callbackDataMap.get(result.callback_query.data);
 
     if (txt && chatId) {
+      callbackDataMap.delete(result.callback_query.data);
       const message = await makeMessage([txt]);
       await telegram.sendMessage({
         chat_id: chatId,
@@ -211,17 +211,8 @@ async function detectTextsFromClipboard(): Promise<string[]> {
 
   const pngImg = await img.encode(1);
 
-  await (await Deno.open("output.png", {
-    create: true,
-    write: true,
-    truncate: true,
-  })).write(pngImg);
-
   const fd = new FormData();
-  fd.set(
-    "file",
-    new File([await Deno.readFile("output.png")], "output.png"),
-  );
+  fd.set("file", new File([pngImg.buffer as ArrayBuffer], "output.png"));
 
   const response = await fetch(`${apiBaseUrl}/infer/${sourceLanguage}`, {
     method: "post",
