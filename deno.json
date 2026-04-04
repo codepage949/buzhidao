@@ -1,6 +1,7 @@
 {
   "tasks": {
-    "dev": "deno run --allow-env --allow-net --allow-run --allow-read --allow-write --allow-ffi --unstable-ffi --watch main.ts"
+    "dev": "deno run --allow-env --allow-net --allow-run --allow-read --allow-write --allow-ffi --unstable-ffi --watch main.ts",
+    "test": "deno test src/"
   },
   "imports": {
     "clipboard-image": "https://deno.land/x/clipboard_image@v0.0.1/mod.ts",

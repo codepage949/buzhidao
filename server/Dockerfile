@@ -2,13 +2,15 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-RUN apt update
-RUN apt install -y libgl1 libgeos-dev libgomp1 libglib2.0-0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libgeos-dev libgomp1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements.txt
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-RUN pip install -r requirements.txt
+COPY pyproject.toml ./
+RUN uv sync --no-dev
 
 COPY ./ ./
 
-CMD ["python", "main.py"]
+CMD ["uv", "run", "python", "main.py"]
