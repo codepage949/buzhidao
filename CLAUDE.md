@@ -1,33 +1,3 @@
-## 런타임 및 패키지 관리
-
-이 프로젝트는 **Deno** 를 런타임으로, **Vite** 를 프론트엔드 번들러로 사용합니다.
-
-- 패키지 선언: `deno.json`의 `imports`에 `npm:` 또는 `jsr:` 스펙으로 추가
-- 의존성 설치: `deno install`
-- 스크립트 실행: `deno task <script>` (예: `deno task dev`, `deno task build`)
-- 외부 패키지 실행: `deno run -A npm:<package>`
-
-## 테스트
-
-```ts#detection_test.ts
-import { assertEquals } from "@std/assert";
-
-Deno.test("hello", () => {
-  assertEquals(1, 1);
-});
-```
-
-실행: `deno task test` 또는 `deno test <file>`
-
-## 프론트엔드
-
-Vite (`vite.config.ts`) 가 프론트엔드를 빌드합니다.
-
-- 개발 서버: `deno task dev` → `http://localhost:1420`
-- 프로덕션 빌드: `deno task build` → `dist/`
-- HTML 파일은 `src/` 에 위치, 각 파일이 Vite 엔트리포인트
-- Tauri 창별 HTML: `src/index.html` (메인), `src/overlay.html` (오버레이)
-
 ## 회고
 
 ### Tauri 투명 오버레이 창 (Windows)
