@@ -1,0 +1,48 @@
+{
+  "productName": "buzhidao",
+  "version": "0.1.0",
+  "identifier": "com.buzhidao.app",
+  "build": {
+    "beforeDevCommand": "deno task dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "deno task build",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "不知道",
+        "url": "/",
+        "width": 420,
+        "height": 220,
+        "resizable": true,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": false
+      },
+      {
+        "label": "overlay",
+        "title": "overlay",
+        "url": "overlay.html",
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "width": 1920,
+        "height": 1080,
+        "x": 0,
+        "y": 0
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
