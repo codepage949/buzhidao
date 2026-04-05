@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capability for all windows","local":true,"windows":["overlay","popup"],"permissions":["core:default"]}}

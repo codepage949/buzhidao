@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "identifier": "com.buzhidao.app",
   "build": {
-    "beforeDevCommand": "deno task dev",
+    "beforeDevCommand": "cd ui && deno task dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "deno task build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "cd ui && deno task build",
+    "frontendDist": "ui/dist"
   },
   "bundle": {
     "active": true,
