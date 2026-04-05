@@ -401,12 +401,20 @@ pub fn run() {
             std::thread::spawn(move || {
                 let _ = grab(move |event: Event| {
                     if let EventType::KeyPress(Key::PrintScreen) = event.event_type {
-                        let h = handle.clone();
-                        let b = busy_clone.clone();
-                        tauri::async_runtime::spawn(async move {
-                            handle_prtsc(h, b).await;
-                        });
-                        return None; // OS 기본 동작(캡처 저장 등) 차단
+                        // 오버레이 표시 중이거나 처리 중이면 키만 억제하고 무시
+                        let overlay_visible = handle
+                            .get_webview_window("overlay")
+                            .and_then(|w| w.is_visible().ok())
+                            .unwrap_or(false);
+
+                        if !overlay_visible && !busy_clone.load(Ordering::SeqCst) {
+                            let h = handle.clone();
+                            let b = busy_clone.clone();
+                            tauri::async_runtime::spawn(async move {
+                                handle_prtsc(h, b).await;
+                            });
+                        }
+                        return None; // OS 기본 동작(캡처 저장 등) 항상 차단
                     }
                     Some(event)
                 });
