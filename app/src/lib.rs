@@ -4,18 +4,18 @@ mod services;
 mod window;
 
 use rdev::{grab, Event, EventType, Key};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::TrayIconBuilder;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
 use crate::popup::calc_popup_pos;
 use crate::services::{call_ai, capture_screen, run_ocr};
-use crate::window::{focus_window, hide_window};
+use crate::window::{focus_active_window, focus_window, hide_window};
 
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
@@ -35,7 +35,9 @@ async fn select_text(
         .ok_or("팝업 창을 찾을 수 없음")?;
 
     let (px, py) = calc_popup_pos(&app, box_x, box_y, box_w, box_h);
-    let _ = popup.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(px, py)));
+    let _ = popup.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+        px, py,
+    )));
     popup.emit("translating", ()).map_err(|e| e.to_string())?;
     let _ = popup.show();
     let _ = popup.set_focus();
@@ -137,15 +139,14 @@ pub fn run() {
     let busy = Arc::new(AtomicBool::new(false));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_active_window(app);
+        }))
         .manage(config)
         .setup(move |app| {
             // 시스템 트레이: 종료 메뉴
-            let quit_item = MenuItemBuilder::new("종료")
-                .id("quit")
-                .build(app)?;
-            let menu = MenuBuilder::new(app)
-                .items(&[&quit_item])
-                .build()?;
+            let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&quit_item]).build()?;
             let tray_rgba = image::load_from_memory(include_bytes!("../icons/tray-icon.png"))
                 .expect("트레이 아이콘 로드 실패")
                 .into_rgba8();
