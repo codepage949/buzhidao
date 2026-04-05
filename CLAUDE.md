@@ -22,3 +22,12 @@ WebView2가 서스펜드되어 IPC가 전달되지 않는다.
 
 `on_shortcut` 콜백은 Tokio 런타임 밖에서 실행된다.
 `tokio::spawn` 대신 `tauri::async_runtime::spawn` 사용.
+
+### rdev::grab + Tauri 전역 단축키 충돌 (Windows)
+
+`tauri-plugin-global-shortcut`(RegisterHotKey)은 수식키 없는 PrintScreen을 전역 등록할 수 없다.
+`rdev::grab`(WH_KEYBOARD_LL)으로 교체했으나, Tauri 기본 설정에서 창이 포커스될 때
+창 메시지 큐가 raw 키 이벤트를 이중 처리해 훅과 충돌한다.
+
+→ `.device_event_filter(tauri::DeviceEventFilter::Always)` 추가로 해결.
+Tauri가 장치 이벤트를 자체 이벤트 루프에서 처리하게 해 창 메시지 큐와의 이중 처리를 막는다.

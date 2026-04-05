@@ -9,8 +9,8 @@ use std::{
         Arc,
     },
 };
+use rdev::{grab, Event, EventType, Key};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
 
 // ── 설정 ──────────────────────────────────────────────────────────────────────
 
@@ -307,27 +307,29 @@ pub fn run() {
     let busy = Arc::new(AtomicBool::new(false));
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(config)
         .setup(move |app| {
             let handle = app.handle().clone();
             let busy_clone = busy.clone();
 
-            let shortcut = Shortcut::new(None, Code::PrintScreen);
-            app.handle()
-                .global_shortcut()
-                .on_shortcut(shortcut, move |_app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
+            // WH_KEYBOARD_LL 기반 전역 키보드 훅 (RegisterHotKey는 수식키 없는 PrintScreen 등록 불가)
+            std::thread::spawn(move || {
+                let _ = grab(move |event: Event| {
+                    if let EventType::KeyPress(Key::PrintScreen) = event.event_type {
                         let h = handle.clone();
                         let b = busy_clone.clone();
                         tauri::async_runtime::spawn(async move {
                             handle_prtsc(h, b).await;
                         });
+                        return None; // OS 기본 동작(캡처 저장 등) 차단
                     }
-                })?;
+                    Some(event)
+                });
+            });
 
             Ok(())
         })
+        .device_event_filter(tauri::DeviceEventFilter::Always)
         .invoke_handler(tauri::generate_handler![select_text])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");
