@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use image::ImageFormat;
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
@@ -11,6 +10,8 @@ use std::{
 };
 use rdev::{grab, Event, EventType, Key};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
 
 // ── 설정 ──────────────────────────────────────────────────────────────────────
 
@@ -212,31 +213,82 @@ async fn call_ai(cfg: &Config, text: &str) -> Result<String, String> {
         .ok_or_else(|| "AI 응답이 비어 있음".to_string())
 }
 
+// ── 팝업 위치 계산 ────────────────────────────────────────────────────────────
+
+/// OCR 박스 논리 좌표 기반으로 팝업 창 위치를 계산한다.
+/// 기본: 박스 우측 배치, 화면 벗어나면 좌측으로 전환.
+fn calc_popup_pos(
+    app: &AppHandle,
+    box_x: f64,
+    box_y: f64,
+    box_w: f64,
+    box_h: f64,
+) -> (f64, f64) {
+    const POPUP_W: f64 = 420.0;
+    const POPUP_H: f64 = 500.0;
+    const GAP: f64 = 12.0;
+
+    let (screen_w, screen_h) = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let sf = m.scale_factor();
+            let sz = m.size();
+            (sz.width as f64 / sf, sz.height as f64 / sf)
+        })
+        .unwrap_or((1920.0, 1080.0));
+
+    // X: 박스 우측 우선, 공간 부족 시 좌측
+    let x = if box_x + box_w + GAP + POPUP_W <= screen_w {
+        box_x + box_w + GAP
+    } else {
+        (box_x - POPUP_W - GAP).max(0.0)
+    };
+
+    // Y: 박스 상단 정렬, 화면 아래 벗어나면 위로 올림
+    let y = if box_y + POPUP_H <= screen_h {
+        box_y
+    } else {
+        (screen_h - POPUP_H).max(0.0)
+    };
+
+    let _ = box_h; // 미사용 경고 방지
+    (x, y)
+}
+
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
-/// 오버레이에서 텍스트 영역 선택 시 호출:
-/// Rust 측에서 오버레이를 먼저 숨기고 번역을 실행한다.
-/// JS에서 hide() 후 invoke()를 하면 WebView2가 서스펜드되어 invoke가 실행되지 않음.
+/// OCR 영역 클릭 시 호출. 오버레이는 유지하고 팝업에 번역 결과를 표시한다.
+/// box_x/y/w/h: 오버레이 논리 픽셀 좌표 (CSS pixels)
 #[tauri::command]
-async fn select_text(app: AppHandle, text: String) -> Result<(), String> {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.hide();
-    }
+async fn select_text(
+    app: AppHandle,
+    text: String,
+    box_x: f64,
+    box_y: f64,
+    box_w: f64,
+    box_h: f64,
+) -> Result<(), String> {
+    let popup = app
+        .get_webview_window("popup")
+        .ok_or("팝업 창을 찾을 수 없음")?;
+
+    let (px, py) = calc_popup_pos(&app, box_x, box_y, box_w, box_h);
+    let _ = popup.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(px, py)));
+    popup.emit("translating", ()).map_err(|e| e.to_string())?;
+    let _ = popup.show();
+    let _ = popup.set_focus();
 
     let cfg = app.state::<Config>().inner().clone();
-    let main_win = app
-        .get_webview_window("main")
-        .ok_or("메인 창을 찾을 수 없음")?;
-    main_win.emit("translating", ()).map_err(|e| e.to_string())?;
-
     match call_ai(&cfg, &text).await {
         Ok(result) => {
-            main_win
+            popup
                 .emit("translation_result", &result)
                 .map_err(|e| e.to_string())?;
         }
         Err(e) => {
-            main_win
+            popup
                 .emit("translation_error", &e)
                 .map_err(|e2| e2.to_string())?;
         }
@@ -245,8 +297,19 @@ async fn select_text(app: AppHandle, text: String) -> Result<(), String> {
     Ok(())
 }
 
-// ── PrtSc 처리 ────────────────────────────────────────────────────────────────
+/// 오버레이 닫기: 오버레이와 팝업을 함께 숨긴다.
+#[tauri::command]
+async fn close_overlay(app: AppHandle) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.hide();
+    }
+    if let Some(popup) = app.get_webview_window("popup") {
+        let _ = popup.hide();
+    }
+    Ok(())
+}
 
+// ── PrtSc 처리 ────────────────────────────────────────────────────────────────
 
 async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     if busy.swap(true, Ordering::SeqCst) {
@@ -273,7 +336,12 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
 
     let (orig_width, orig_height) = (info.orig_width, info.orig_height);
 
-    // 2. 오버레이 즉시 표시 (로딩 상태)
+    // 2. 팝업 숨김 (이전 번역 결과 초기화)
+    if let Some(popup) = app.get_webview_window("popup") {
+        let _ = popup.hide();
+    }
+
+    // 3. 오버레이 즉시 표시 (로딩 상태)
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.emit("overlay_show", ());
         let _ = overlay.set_ignore_cursor_events(false);
@@ -282,7 +350,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         let _ = overlay.set_focus();
     }
 
-    // 3. OCR 실행
+    // 4. OCR 실행
     match run_ocr(&cfg, info.image, orig_width, orig_height).await {
         Ok(ocr) => {
             if let Some(overlay) = app.get_webview_window("overlay") {
@@ -309,6 +377,23 @@ pub fn run() {
     tauri::Builder::default()
         .manage(config)
         .setup(move |app| {
+            // 시스템 트레이: 종료 메뉴
+            let quit_item = MenuItemBuilder::new("종료")
+                .id("quit")
+                .build(app)?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&quit_item])
+                .build()?;
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id() == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .build(app)?;
+
             let handle = app.handle().clone();
             let busy_clone = busy.clone();
 
@@ -330,7 +415,7 @@ pub fn run() {
             Ok(())
         })
         .device_event_filter(tauri::DeviceEventFilter::Always)
-        .invoke_handler(tauri::generate_handler![select_text])
+        .invoke_handler(tauri::generate_handler![select_text, close_overlay])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");
 }

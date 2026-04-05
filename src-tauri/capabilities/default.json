@@ -1,7 +1,7 @@
 {
 "identifier": "default",
   "description": "Default capability for all windows",
-  "windows": ["main", "overlay"],
+  "windows": ["overlay", "popup"],
   "permissions": [
     "core:default"
   ]

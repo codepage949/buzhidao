@@ -13,7 +13,7 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "src/index.html"),
+        popup: resolve(__dirname, "src/popup.html"),
         overlay: resolve(__dirname, "src/overlay.html"),
       },
     },

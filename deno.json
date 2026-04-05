@@ -17,6 +17,7 @@
     "react-dom/client": "npm:react-dom@^19/client",
     "@tauri-apps/api/core": "npm:@tauri-apps/api@^2/core",
     "@tauri-apps/api/event": "npm:@tauri-apps/api@^2/event",
-    "@tauri-apps/api/window": "npm:@tauri-apps/api@^2/window"
+    "@tauri-apps/api/window": "npm:@tauri-apps/api@^2/window",
+    "react-markdown": "npm:react-markdown@^9"
   }
 }

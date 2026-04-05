@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   groupDetectionsWithBounds,
   type DetectionGroup,
@@ -47,9 +46,10 @@ function OverlayApp() {
     };
   }, []);
 
+  // close_overlay: 오버레이 + 팝업 동시 숨김 (Rust에서 처리)
   const close = useCallback(async () => {
-    await getCurrentWindow().hide();
     setState({ kind: "hidden" });
+    await invoke("close_overlay");
   }, []);
 
   useEffect(() => {
@@ -59,16 +59,6 @@ function OverlayApp() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [close]);
-
-  const handleGroupClick = useCallback(
-    (group: DetectionGroup, e: React.MouseEvent) => {
-      e.stopPropagation();
-      // Rust 측에서 오버레이 숨기기 + 번역을 한 번에 처리.
-      // JS에서 hide() 후 invoke()를 하면 WebView2가 서스펜드되어 invoke가 실행 안 됨.
-      invoke("select_text", { text: group.text });
-    },
-    [],
-  );
 
   if (state.kind === "hidden") return null;
 
@@ -109,6 +99,30 @@ function OverlayApp() {
           pointerEvents: "none",
         }}
       />
+
+      {/* 닫기 버튼 */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          close();
+        }}
+        style={{
+          position: "absolute",
+          top: "16px",
+          right: "16px",
+          zIndex: 100,
+          background: "rgba(30, 30, 46, 0.85)",
+          border: "1px solid #45475a",
+          color: "#cdd6f4",
+          borderRadius: "6px",
+          padding: "4px 12px",
+          cursor: "pointer",
+          fontSize: "13px",
+          lineHeight: "1.6",
+        }}
+      >
+        닫기 (ESC)
+      </button>
 
       {/* 로딩 */}
       {state.kind === "loading" && (
@@ -163,22 +177,35 @@ function OverlayApp() {
       )}
 
       {/* OCR 감지 박스 */}
-      {groups.map((group, i) => {
-        const { x, y, width, height } = group.bounds;
+      {groups.map((group: DetectionGroup, i: number) => {
+        const cssX = group.bounds.x * scale * cssScaleX;
+        const cssY = group.bounds.y * scale * cssScaleY;
+        const cssW = group.bounds.width * scale * cssScaleX;
+        const cssH = group.bounds.height * scale * cssScaleY;
         const isHovered = hoveredIdx === i;
         return (
           <div
             key={i}
-            onClick={(e) => handleGroupClick(group, e)}
+            onClick={(e) => {
+              e.stopPropagation();
+              // 오버레이는 유지, Rust에서 팝업 위치 지정 + 번역 처리
+              invoke("select_text", {
+                text: group.text,
+                boxX: cssX,
+                boxY: cssY,
+                boxW: cssW,
+                boxH: cssH,
+              });
+            }}
             onMouseEnter={() => setHoveredIdx(i)}
             onMouseLeave={() => setHoveredIdx(null)}
             title={group.text}
             style={{
               position: "absolute",
-              left: `${x * scale * cssScaleX}px`,
-              top: `${y * scale * cssScaleY}px`,
-              width: `${width * scale * cssScaleX}px`,
-              height: `${height * scale * cssScaleY}px`,
+              left: `${cssX}px`,
+              top: `${cssY}px`,
+              width: `${cssW}px`,
+              height: `${cssH}px`,
               border: `2px solid ${isHovered ? "#ffff00" : "#00e5ff"}`,
               background: isHovered
                 ? "rgba(255, 255, 0, 0.25)"
