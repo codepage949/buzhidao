@@ -1,24 +1,15 @@
 # Buzhidao App (不知道)
 
-이 디렉토리는 Buzhidao의 Tauri 데스크톱 앱을 포함합니다. 앱은 화면의 텍스트를 OCR로 추출하고, AI로 번역한 뒤 오버레이와 팝업 UI로 보여줍니다.
+Buzhidao 데스크톱 애플리케이션은 Tauri 2.0 프레임워크를 기반으로 하며, 사용자의 화면 캡처, OCR 결과 표시(오버레이), AI 번역 결과 제공(팝업) 기능을 담당합니다.
 
 ## 기술 스택
 
-### Desktop App
-- **Runtime**: [Tauri 2.x](https://tauri.app/)
-- **Language**: Rust, TypeScript
-- **Main Libraries**:
-    - `tauri`: 데스크톱 앱 셸 및 윈도우 관리
-    - `rdev`: Windows 전역 키 후킹
-    - `reqwest`: OCR 서버 및 AI 게이트웨이 통신
-    - `screenshots`, `image`: 화면 캡처와 PNG 변환
-    - `React`, `Vite`, `Deno`: 오버레이/팝업 프런트엔드
-
-### OCR Server
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
-- **Language**: Python (uv 패키지 매니저 사용)
-- **OCR Engine**: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (GPU 가속 지원)
-- **Deployment**: Docker, Docker Compose
+- **Core**: Tauri 2.x, Rust
+- **Keyboard Hook**: `rdev` (unstable_grab 활성화)
+- **Capture**: `screenshots`, `image`
+- **Network**: `reqwest`
+- **Configuration**: `dotenvy`
+- **UI Framework**: React 19, Vite 6, Deno (Task runner)
 
 ---
 
@@ -26,17 +17,14 @@
 
 ```text
 app/
-├── Cargo.toml
-├── Cargo.lock
-├── build.rs
-├── tauri.conf.json
-├── .env.example
-├── icons/
-├── capabilities/
-├── src/
-├── ui/
-│   └── src/
-└── ../ocr/             # OCR 서버 (루트 기준 형제 디렉토리)
+├── src/                # Rust 백엔드 소스 코드
+│   ├── main.rs         # 엔트리포인트 및 윈도우 관리
+│   ├── lib.rs          # Tauri 핸들러 및 핵심 로직
+│   ├── window.rs       # 윈도우 생성 및 제어 (오버레이/팝업)
+│   └── services.rs     # OCR 서버 및 AI 게이트웨이 통신
+├── ui/                 # 프런트엔드 (React/Vite)
+├── icons/              # 앱 및 트레이 아이콘
+└── capabilities/       # Tauri 2.x 보안 및 권한 설정
 ```
 
 ---
@@ -44,56 +32,46 @@ app/
 ## 개발 및 테스트 방법
 
 ### 1. 환경 변수 설정
-`app/` 디렉토리에 `.env` 파일을 생성하고 필요한 값을 설정합니다. (상세 항목은 `.env.example` 참조)
+`app/.env` 파일을 생성하고 다음 필수 항목을 설정합니다:
+- `OCR_URL`: OCR 서버 엔드포인트
+- `AI_GATEWAY_URL`: AI 번역 게이트웨이 엔드포인트
 
-### 2. OCR 서버 실행
-OCR 서버는 대용량 모델을 사용하므로 Docker 환경에서의 실행을 권장합니다.
-
+### 2. 개발 실행
 ```bash
-cd server
-# Docker Compose 사용 시 (추천)
-docker-compose up --build
-
-# 직접 실행 시 (uv 설치 필요)
-uv run main.py
-```
-
-### 3. 클라이언트 실행 (Windows)
-Tauri 앱과 프런트엔드는 모두 `app/` 아래에 있습니다.
-
-```bash
-# 개발 모드 실행
+# Tauri 개발 서버 실행
 cargo tauri dev
-
-# Rust 테스트 실행
-cargo test
-
-# 프런트엔드 테스트 실행
-deno task --config ui/deno.json test
 ```
+
+### 3. 테스트 실행
+- **Rust 테스트**: `cargo test`
+- **프런트엔드 테스트**: `cd ui && deno task test`
 
 ---
 
 ## 릴리즈 배포 방법
 
-1. **서버 배포**: NVIDIA Docker Runtime이 설치된 서버에서 `docker-compose`를 사용하여 배포합니다.
-2. **클라이언트 배포**: Tauri 번들을 생성합니다.
-   ```bash
-   cargo tauri build
-   ```
+1. `cargo tauri build` 명령을 실행하여 설치 프로그램을 생성합니다.
+2. 윈도우용 번들 결과물은 `app/target/release/bundle/msi` 경로에 생성됩니다.
 
 ---
 
 ## 각 기능 설명
 
-### 1. 화면 OCR 오버레이 실행
-- **실행 경로**: `PrintScreen` 키 입력 감지 -> 전체 화면 캡처 -> OCR 서버 전송 -> 오버레이 표시 -> 텍스트 선택 -> AI 번역 -> 팝업 표시.
-- **상세**: 사용자가 `PrtSc`를 누르면 앱이 키를 가로채 화면을 캡처하고 OCR 결과를 오버레이로 띄웁니다. 사용자가 영역을 클릭하면 번역 팝업이 표시됩니다.
+### 1. 전역 캡처 모드 진입
+- **실행 경로**: `PrintScreen` 입력 -> 전용 Rust 훅(`rdev`) 감지 -> 전체 화면 캡처 -> OCR 서버 API 요청.
+- **상세**: 앱이 실행 중이면 어떤 환경에서도 `PrtSc` 키로 OCR 분석을 시작할 수 있습니다. 캡처된 이미지는 최적화되어 서버로 전송됩니다.
+
+### 2. OCR 오버레이 및 상호작용
+- **실행 경로**: 서버 결과 수신 -> 투명 오버레이 윈도우 생성/표시 -> 텍스트 블록 렌더링 -> 클릭 시 번역 요청.
+- **상세**: 화면 위로 투명한 오버레이 창이 나타나 식별된 텍스트 영역을 시각화합니다. 사용자가 마우스로 클릭한 영역의 텍스트가 번역 대상이 됩니다.
+
+### 3. 번역 결과 팝업 표시
+- **실행 경로**: 번역 API 완료 -> 팝업 윈도우 포커스 -> 결과 표시.
+- **상세**: 번역된 내용은 별도의 팝업 창에 표시되며, 사용자는 이를 확인하고 `ESC` 또는 닫기 버튼으로 닫을 수 있습니다.
 
 ---
 
 ## 특이 사항
 
-- **Windows 의존성**: `rdev` 기반 전역 키보드 훅과 Tauri 오버레이 창 동작은 Windows 사용 환경을 전제로 합니다.
-- **UI 빌드 경로**: Tauri 앱은 `app/`에서 실행되며 프런트엔드 정적 파일은 `ui/dist`를 참조합니다.
-- **이미지 최적화**: OCR 서버 부하를 줄이기 위해 가로 폭이 1024px를 넘는 캡처 이미지는 축소 후 전송합니다.
+- **Tauri 오버레이 마우스 이벤트**: 투명 WebView2 창에서 마우스 이벤트가 무시되지 않도록 `set_ignore_cursor_events(false)`와 미세한 배경색(`rgba(0,0,0,0.002)`) 처리가 적용되어 있습니다.
+- **포커스 관리**: 오버레이와 팝업 사이의 원활한 `ESC` 키 처리를 위해 포커스가 전환될 때마다 이벤트 리스너가 동기화됩니다.
