@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 
@@ -31,11 +30,11 @@ function PopupApp() {
     };
   }, []);
 
-  const close = () => getCurrentWindow().hide();
+  const close = () => invoke("close_popup");
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") invoke("close_overlay");
+      if (e.key === "Escape") close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

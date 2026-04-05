@@ -309,6 +309,18 @@ async fn close_overlay(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 팝업만 닫기: 팝업을 숨기고 오버레이 포커스를 복구한다.
+#[tauri::command]
+async fn close_popup(app: AppHandle) -> Result<(), String> {
+    if let Some(popup) = app.get_webview_window("popup") {
+        let _ = popup.hide();
+    }
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.set_focus();
+    }
+    Ok(())
+}
+
 // ── PrtSc 처리 ────────────────────────────────────────────────────────────────
 
 async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
@@ -428,7 +440,11 @@ pub fn run() {
             Ok(())
         })
         .device_event_filter(tauri::DeviceEventFilter::Always)
-        .invoke_handler(tauri::generate_handler![select_text, close_overlay])
+        .invoke_handler(tauri::generate_handler![
+            select_text,
+            close_overlay,
+            close_popup
+        ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");
 }
