@@ -8,5 +8,6 @@ gen/
 !.gitignore
 !.dockerignore
 !.env.example
+!app/.env.example
 output.png
 *.exe

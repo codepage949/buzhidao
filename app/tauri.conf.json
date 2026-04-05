@@ -1,0 +1,56 @@
+{
+  "productName": "buzhidao",
+  "version": "0.1.0",
+  "identifier": "com.buzhidao.desktop",
+  "build": {
+    "beforeDevCommand": {
+      "script": "deno task dev",
+      "cwd": "ui"
+    },
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": {
+      "script": "deno task build",
+      "cwd": "ui"
+    },
+    "frontendDist": "ui/dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "overlay",
+        "title": "overlay",
+        "url": "overlay.html",
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "width": 1920,
+        "height": 1080,
+        "x": 0,
+        "y": 0
+      },
+      {
+        "label": "popup",
+        "title": "번역",
+        "url": "popup.html",
+        "visible": false,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "width": 420,
+        "height": 500,
+        "resizable": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
