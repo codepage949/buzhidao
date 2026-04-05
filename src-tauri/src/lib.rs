@@ -384,8 +384,13 @@ pub fn run() {
             let menu = MenuBuilder::new(app)
                 .items(&[&quit_item])
                 .build()?;
+            let tray_rgba = image::load_from_memory(include_bytes!("../icons/tray-icon.png"))
+                .expect("트레이 아이콘 로드 실패")
+                .into_rgba8();
+            let (tw, th) = tray_rgba.dimensions();
+            let tray_icon = tauri::image::Image::new_owned(tray_rgba.into_raw(), tw, th);
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     if event.id() == "quit" {
