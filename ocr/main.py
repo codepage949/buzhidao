@@ -11,6 +11,8 @@ import uvicorn
 load_dotenv()
 
 MODEL_SAMPLE_PATH = Path(__file__).with_name("test.png")
+SUPPORTED_LANGS = ("en", "ch")
+DEFAULT_UPLOAD_SUFFIX = ".png"
 
 
 def build_ocr(lang: str) -> PaddleOCR:
@@ -24,10 +26,7 @@ def build_ocr(lang: str) -> PaddleOCR:
 
 
 def load_ocrs() -> dict[str, PaddleOCR]:
-    ocrs = {
-        "en": build_ocr("en"),
-        "ch": build_ocr("ch"),
-    }
+    ocrs = {lang: build_ocr(lang) for lang in SUPPORTED_LANGS}
 
     # NOTE: 언어별 OCR 모델을 미리 로드
     sample_path = str(MODEL_SAMPLE_PATH)
@@ -38,17 +37,21 @@ def load_ocrs() -> dict[str, PaddleOCR]:
 
 
 def save_upload_to_temp(file: UploadFile) -> str:
-    suffix = Path(file.filename or "upload.png").suffix or ".png"
+    suffix = Path(file.filename or f"upload{DEFAULT_UPLOAD_SUFFIX}").suffix or DEFAULT_UPLOAD_SUFFIX
 
     with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         temp_file.write(file.file.read())
         return temp_file.name
 
 
+def score_threshold() -> float:
+    return float(os.environ["SCORE_THRESH"])
+
+
 def infer_texts(ocr: PaddleOCR, image_path: str) -> list[tuple[list, str]]:
     result = ocr.predict(
         image_path,
-        text_rec_score_thresh=float(os.environ["SCORE_THRESH"]),
+        text_rec_score_thresh=score_threshold(),
     )
 
     return list(

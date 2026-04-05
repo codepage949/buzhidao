@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,6 +7,7 @@ import {
   type DetectionGroup,
   type RawDetection,
 } from "./detection";
+import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type OcrResultPayload = {
   detections: RawDetection[];
@@ -28,8 +29,7 @@ function OverlayApp() {
   const [state, setState] = useState<State>({ kind: "hidden" });
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
-  useEffect(() => {
-    const unlistens = [
+  useListenerCleanup(() => [
       listen("overlay_show", () => {
         setState({ kind: "loading" });
         setHoveredIdx(null);
@@ -40,11 +40,7 @@ function OverlayApp() {
       listen<string>("ocr_error", (e) => {
         setState({ kind: "error", message: e.payload });
       }),
-    ];
-    return () => {
-      unlistens.forEach((p) => p.then((f) => f()));
-    };
-  }, []);
+    ], []);
 
   // close_overlay: 오버레이 + 팝업 동시 숨김 (Rust에서 처리)
   const close = useCallback(async () => {
@@ -52,12 +48,8 @@ function OverlayApp() {
     await invoke("close_overlay");
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+  useWindowKeydown((e) => {
+    if (e.key === "Escape") close();
   }, [close]);
 
   if (state.kind === "hidden") return null;

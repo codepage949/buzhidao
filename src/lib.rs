@@ -85,6 +85,18 @@ fn load_system_prompt() -> Result<String, String> {
 
 // ── 이벤트 페이로드 타입 ──────────────────────────────────────────────────────
 
+fn hide_window(app: &AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.hide();
+    }
+}
+
+fn focus_window(app: &AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.set_focus();
+    }
+}
+
 type OcrDetection = (Vec<[f64; 2]>, String);
 
 #[derive(Serialize, Clone)]
@@ -358,24 +370,16 @@ async fn select_text(
 /// 오버레이 닫기: 오버레이와 팝업을 함께 숨긴다.
 #[tauri::command]
 async fn close_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.hide();
-    }
-    if let Some(popup) = app.get_webview_window("popup") {
-        let _ = popup.hide();
-    }
+    hide_window(&app, "overlay");
+    hide_window(&app, "popup");
     Ok(())
 }
 
 /// 팝업만 닫기: 팝업을 숨기고 오버레이 포커스를 복구한다.
 #[tauri::command]
 async fn close_popup(app: AppHandle) -> Result<(), String> {
-    if let Some(popup) = app.get_webview_window("popup") {
-        let _ = popup.hide();
-    }
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.set_focus();
-    }
+    hide_window(&app, "popup");
+    focus_window(&app, "overlay");
     Ok(())
 }
 
@@ -407,9 +411,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     let (orig_width, orig_height) = (info.orig_width, info.orig_height);
 
     // 2. 팝업 숨김 (이전 번역 결과 초기화)
-    if let Some(popup) = app.get_webview_window("popup") {
-        let _ = popup.hide();
-    }
+    hide_window(&app, "popup");
 
     // 3. 오버레이 즉시 표시 (로딩 상태)
     if let Some(overlay) = app.get_webview_window("overlay") {
@@ -417,7 +419,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         let _ = overlay.set_ignore_cursor_events(false);
         let _ = overlay.set_fullscreen(true);
         let _ = overlay.show();
-        let _ = overlay.set_focus();
+        focus_window(&app, "overlay");
     }
 
     // 4. OCR 실행

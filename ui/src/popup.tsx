@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
+import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type Status = "idle" | "translating" | "done" | "error";
 
@@ -10,8 +11,7 @@ function PopupApp() {
   const [status, setStatus] = useState<Status>("idle");
   const [content, setContent] = useState<string>("");
 
-  useEffect(() => {
-    const unlistens = [
+  useListenerCleanup(() => [
       listen("translating", () => {
         setStatus("translating");
         setContent("");
@@ -24,20 +24,12 @@ function PopupApp() {
         setStatus("error");
         setContent(e.payload);
       }),
-    ];
-    return () => {
-      unlistens.forEach((p) => p.then((f) => f()));
-    };
-  }, []);
+    ], []);
 
   const close = () => invoke("close_popup");
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+  useWindowKeydown((e) => {
+    if (e.key === "Escape") close();
   }, []);
 
   return (
