@@ -43,8 +43,9 @@ API_BASE_URL=http://127.0.0.1:8000
 # AI Gateway API 키 및 모델
 AI_GATEWAY_API_KEY=your_key_here
 AI_GATEWAY_MODEL=alibaba/qwen-2.5-72b-instruct
-# 시스템 프롬프트 및 OCR 그루핑 설정
-SYSTEM_PROMPT_PATH=.system_prompt.txt
+# 선택: 시스템 프롬프트 파일 경로
+# 미설정 시 "다음을 한국어로 번역하세요." 사용
+# SYSTEM_PROMPT_PATH=prompt.txt
 X_DELTA=25
 Y_DELTA=225
 ```
