@@ -1,77 +1,87 @@
-# Buzhidao App (不知道)
+# 🦀 Buzhidao Desktop App (Tauri)
 
-Buzhidao 데스크톱 애플리케이션은 Tauri 2.0 프레임워크를 기반으로 하며, 사용자의 화면 캡처, OCR 결과 표시(오버레이), AI 번역 결과 제공(팝업) 기능을 담당합니다.
-
-## 기술 스택
-
-- **Core**: Tauri 2.x, Rust
-- **Keyboard Hook**: `rdev` (unstable_grab 활성화)
-- **Capture**: `screenshots`, `image`
-- **Network**: `reqwest`
-- **Configuration**: `dotenvy`
-- **UI Framework**: React 19, Vite 6, Deno (Task runner)
+> **Buzhidao 데스크톱 애플리케이션**은 사용자 화면을 캡처하고, OCR 결과를 시각화하며, AI 번역 결과를 제공하는 핵심 클라이언트입니다.
 
 ---
 
-## 프로젝트 구조
+## 🛠️ 기술 스택 (App Tech Stack)
+
+- 🦀 **Rust**: 시스템 레벨 제어 및 Tauri 백엔드 로직
+- ⚡ **Tauri 2.x**: 안전하고 경량화된 데스크톱 앱 프레임워크
+- ⌨️ **rdev**: `unstable_grab` 모드를 통한 전역 키보드 훅 (`PrintScreen`)
+- 📸 **screenshots & image**: 멀티 모니터 지원 화면 캡처 및 이미지 처리
+- 🌐 **reqwest**: OCR 서버 및 AI 게이트웨이와 고성능 비동기 통신
+- ⚛️ **React 19 & Vite 6**: 유연한 오버레이 및 팝업 UI 구성
+
+---
+
+## 📂 프로젝트 구조 (Structure)
 
 ```text
 app/
-├── src/                # Rust 백엔드 소스 코드
-│   ├── main.rs         # 엔트리포인트 및 윈도우 관리
-│   ├── lib.rs          # Tauri 핸들러 및 핵심 로직
-│   ├── window.rs       # 윈도우 생성 및 제어 (오버레이/팝업)
-│   └── services.rs     # OCR 서버 및 AI 게이트웨이 통신
-├── ui/                 # 프런트엔드 (React/Vite)
-├── icons/              # 앱 및 트레이 아이콘
-└── capabilities/       # Tauri 2.x 보안 및 권한 설정
+├── 🦀 src/                # Rust 백엔드 소스 코드
+│   ├── main.rs         # 앱 엔트리포인트 및 윈도우 루프 관리
+│   ├── lib.rs          # Tauri 커맨드 및 핵심 비즈니스 로직
+│   ├── window.rs       # 투명 오버레이/팝업 윈도우 생성 및 제어
+│   └── services.rs     # 외부 서버(OCR, AI) 연동 서비스
+├── 🎨 ui/                 # 프런트엔드 (React/Vite/Deno)
+├── 🖼️ icons/              # 시스템 및 트레이 아이콘
+└── 🔒 capabilities/       # Tauri 2.0 보안 권한 설정
 ```
 
 ---
 
-## 개발 및 테스트 방법
+## 🚀 개발 및 실행 가이드
 
-### 1. 환경 변수 설정
+### 1️⃣ 환경 변수 설정
 `app/.env` 파일을 생성하고 다음 필수 항목을 설정합니다:
-- `OCR_URL`: OCR 서버 엔드포인트
-- `AI_GATEWAY_URL`: AI 번역 게이트웨이 엔드포인트
+```env
+# 번역 소스 언어 설정 (en / ch)
+SOURCE=en
+# OCR 서버 URL
+API_BASE_URL=http://127.0.0.1:8000
+# AI Gateway API 키 및 모델
+AI_GATEWAY_API_KEY=your_key_here
+AI_GATEWAY_MODEL=alibaba/qwen-2.5-72b-instruct
+# 시스템 프롬프트 및 OCR 그루핑 설정
+SYSTEM_PROMPT_PATH=.system_prompt.txt
+X_DELTA=25
+Y_DELTA=225
+```
 
-### 2. 개발 실행
+### 2️⃣ 개발 모드 실행
 ```bash
-# Tauri 개발 서버 실행
+# Tauri 개발 서버 기동 (자동 리로드 지원)
 cargo tauri dev
 ```
 
-### 3. 테스트 실행
-- **Rust 테스트**: `cargo test`
-- **프런트엔드 테스트**: `cd ui && deno task test`
+### 3️⃣ 테스트 실행
+```bash
+# 백엔드(Rust) 단위 및 통합 테스트
+cargo test
+
+# 프런트엔드(UI) 테스트
+cd ui && deno task test
+```
 
 ---
 
-## 릴리즈 배포 방법
+## ✨ 핵심 기능 상세 (Deep Dive)
 
-1. `cargo tauri build` 명령을 실행하여 설치 프로그램을 생성합니다.
-2. 윈도우용 번들 결과물은 `app/target/release/bundle/msi` 경로에 생성됩니다.
+### 📸 1. 전역 캡처 흐름
+- **실행**: `PrintScreen` 입력 -> `rdev` 훅 감지 -> `screenshots` 라이브러리로 모든 모니터 캡처 -> 이미지 리사이징 후 OCR 서버 전송.
+- **특징**: 앱이 포커스되지 않은 상태에서도 키 입력을 가로채어 즉각적인 캡처를 수행합니다.
 
----
+### 🖼️ 2. 인터랙티브 오버레이
+- **실행**: OCR 서버 응답 수신 -> 투명한 전체 화면 윈도우 생성 -> React UI에 데이터 전달.
+- **특징**: `set_ignore_cursor_events(false)` 처리를 통해 투명 창임에도 마우스 클릭 이벤트를 정확하게 수집합니다.
 
-## 각 기능 설명
-
-### 1. 전역 캡처 모드 진입
-- **실행 경로**: `PrintScreen` 입력 -> 전용 Rust 훅(`rdev`) 감지 -> 전체 화면 캡처 -> OCR 서버 API 요청.
-- **상세**: 앱이 실행 중이면 어떤 환경에서도 `PrtSc` 키로 OCR 분석을 시작할 수 있습니다. 캡처된 이미지는 최적화되어 서버로 전송됩니다.
-
-### 2. OCR 오버레이 및 상호작용
-- **실행 경로**: 서버 결과 수신 -> 투명 오버레이 윈도우 생성/표시 -> 텍스트 블록 렌더링 -> 클릭 시 번역 요청.
-- **상세**: 화면 위로 투명한 오버레이 창이 나타나 식별된 텍스트 영역을 시각화합니다. 사용자가 마우스로 클릭한 영역의 텍스트가 번역 대상이 됩니다.
-
-### 3. 번역 결과 팝업 표시
-- **실행 경로**: 번역 API 완료 -> 팝업 윈도우 포커스 -> 결과 표시.
-- **상세**: 번역된 내용은 별도의 팝업 창에 표시되며, 사용자는 이를 확인하고 `ESC` 또는 닫기 버튼으로 닫을 수 있습니다.
+### 🌐 3. AI 번역 팝업
+- **실행**: 오버레이에서 텍스트 클릭 -> `invoke` 호출 -> Rust 서비스에서 AI 번역 수행 -> 결과 팝업 표시.
 
 ---
 
-## 특이 사항
+## 💡 특이 사항 (Dev Notes)
 
-- **Tauri 오버레이 마우스 이벤트**: 투명 WebView2 창에서 마우스 이벤트가 무시되지 않도록 `set_ignore_cursor_events(false)`와 미세한 배경색(`rgba(0,0,0,0.002)`) 처리가 적용되어 있습니다.
-- **포커스 관리**: 오버레이와 팝업 사이의 원활한 `ESC` 키 처리를 위해 포커스가 전환될 때마다 이벤트 리스너가 동기화됩니다.
+- 🪟 **WebView2 서스펜드 방지**: 윈도우를 숨기거나(hide) 보이기(show) 전에 Rust 커맨드 하나에서 IPC를 일괄 처리하여 WebView2가 서스펜드되지 않도록 설계되었습니다.
+- 🎨 **투명도 트릭**: Windows WebView2에서는 `set_ignore_cursor_events(false)` 호출만으로는 완전 투명(Alpha 0) 영역의 클릭 관통을 막기 어려운 경우가 있습니다. 이를 방지하기 위해 `rgba(0,0,0,0.002)` 수준의 비-제로(Non-zero) 배경색을 병행하여 마우스 이벤트를 확실히 캡처합니다.

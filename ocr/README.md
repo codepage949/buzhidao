@@ -1,77 +1,70 @@
-# Buzhidao OCR Server (Unknown)
+# 🧠 Buzhidao OCR Server (FastAPI)
 
-Buzhidao 데스크톱 앱에서 전송한 화면 캡처 이미지를 분석하여 텍스트 영역과 내용을 추출하는 FastAPI 기반 OCR 서버입니다.
-
-## 기술 스택
-
-- **Framework**: FastAPI
-- **Language**: Python 3.13
-- **OCR Engine**: PaddleOCR (GPU 가속 지원)
-- **Package Manager**: uv
-- **Deployment**: Docker, Docker Compose
+> **Buzhidao OCR 서버**는 캡처된 화면 이미지를 분석하여 텍스트의 좌표와 내용을 추출하는 핵심 엔진입니다.
 
 ---
 
-## 프로젝트 구조
+## 🛠️ 기술 스택 (OCR Tech Stack)
+
+- ⚡ **FastAPI**: 고성능 Python 웹 프레임워크 (Asynchronous)
+- 🔍 **PaddleOCR**: 강력한 딥러닝 기반 다국어 OCR 엔진
+- 🐍 **Python 3.13**: 최신 Python 런타임 환경
+- 📦 **uv**: 초고속 Python 패키지 매니저
+- 🐳 **Docker & GPU**: NVIDIA CUDA 가속 지원을 통한 고성능 추론
+
+---
+
+## 📂 프로젝트 구조 (Structure)
 
 ```text
 ocr/
-├── main.py             # FastAPI 서버 엔트리포인트 및 OCR 로직
-├── test_main.py        # API 기능 테스트 코드
-├── pyproject.toml      # uv 의존성 및 프로젝트 설정
-├── Dockerfile          # NVIDIA CUDA 기반 Docker 이미지 빌드 설정
-└── docker-compose.yaml # 서비스 실행 설정 (GPU 패스스루 포함)
+├── 🐍 main.py             # FastAPI 앱 엔트리포인트 및 추론 로직
+├── 🧪 test_main.py        # API 동작 검증 테스트 (pytest)
+├── 📦 pyproject.toml      # uv를 이용한 의존성 관리 설정
+├── 🐳 Dockerfile          # NVIDIA CUDA 기반 Docker 빌드 레시피
+└── 🚀 docker-compose.yaml # 서비스 실행 및 GPU 패스스루 설정
 ```
 
 ---
 
-## 개발 및 테스트 방법
+## 🚀 개발 및 서버 가이드
 
-### 1. 환경 변수 설정
-`ocr/.env` 파일을 생성하고 다음 필수 항목을 설정합니다:
-- `HTTP_HOST`: 서버 호스트 (기본 `0.0.0.0`)
-- `HTTP_PORT`: 서버 포트 (기본 `8000`)
-- `SCORE_THRESH`: OCR 인식 신뢰도 임계값 (예: `0.5`)
+### 1️⃣ 환경 변수 설정
+`ocr/.env` 파일을 생성하여 동작 옵션을 제어할 수 있습니다:
+```env
+HTTP_HOST=0.0.0.0
+HTTP_PORT=8000
+SCORE_THRESH=0.5
+```
 
-### 2. 로컬 개발 실행 (uv 필요)
+### 2️⃣ 로컬 서버 실행 (uv)
 ```bash
-# 의존성 설치 및 서버 실행
+# 서버 기동
 uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 3. 테스트 실행
+### 3️⃣ Docker 배포 (권장)
 ```bash
-# pytest를 이용한 API 테스트
-uv run pytest
-```
-
----
-
-## 릴리즈 배포 방법
-
-NVIDIA GPU가 있는 서버에서 Docker Compose를 사용하여 배포하는 것을 권장합니다.
-
-```bash
-# Docker 컨테이너 빌드 및 실행
+# GPU 지원 모델 빌드 및 실행
 docker-compose up --build -d
 ```
-*주의: 호스트 시스템에 NVIDIA Container Toolkit이 설치되어 있어야 GPU 가속이 동작합니다.*
+*주의: GPU 가속을 위해 호스트에 NVIDIA Container Toolkit이 필요합니다.*
 
 ---
 
-## 각 기능 설명
+## ✨ 핵심 기능 상세 (OCR Features)
 
-### 1. 이미지 텍스트 추출 (OCR)
-- **실행 경로**: `POST /infer/{src}` 호출 -> 이미지 임시 저장 -> PaddleOCR 모델 추론 -> 결과(좌표 및 텍스트) 반환.
-- **상세**: 영어(`en`) 및 중국어(`ch`) 모델을 지원하며, 캡처된 이미지 내의 모든 텍스트 블록 위치와 텍스트 내용을 JSON 형태로 반환합니다.
+### 📸 1. 이미지 텍스트 추출 (Inference)
+- **API**: `POST /infer/{src}` (src: 이미지 파일 경로 또는 바디)
+- **동작**: 업로드된 이미지를 PaddleOCR 모델에 전달하여 텍스트 위치(Polygon)와 내용, 신뢰도를 반환합니다.
 
-### 2. 모델 프리로딩 (Lifespan)
-- **실행 경로**: 서버 시작 시 -> 지원 언어별 OCR 모델 로드 -> 샘플 이미지 추론 수행.
-- **상세**: 첫 요청 시의 지연 시간을 줄이기 위해 서버 기동 단계에서 OCR 모델을 메모리에 미리 로드하고 초기화합니다.
+### 🚀 2. 모델 리소스 관리
+- **동작**: 서버 시작 시(`lifespan`) 필요한 OCR 모델을 메모리에 미리 로드하여 첫 요청의 지연 시간을 최소화합니다.
+- **언어**: 영어(`en`) 및 중국어(`ch`) 모델을 기본적으로 활용합니다.
 
 ---
 
-## 특이 사항
+## 💡 특이 사항 (OCR Dev Notes)
 
-- **GPU 가속**: 성능 향상을 위해 `paddlepaddle-gpu` 라이브러리를 사용하며, CUDA 환경에서 최적의 속도를 보장합니다.
-- **임시 파일 관리**: 업로드된 이미지는 분석 직후 서버에서 안전하게 삭제됩니다.
+- ⚡ **GPU 가속**: `paddlepaddle-gpu` 라이브러리를 통해 CUDA 환경에서 0.1초 이내의 빠른 추론 성능을 보장합니다.
+- 🧹 **보안**: 처리 완료 후 서버의 임시 이미지는 즉시 삭제하여 메모리 및 저장소 효율을 유지합니다.
