@@ -1,13 +1,8 @@
-__pycache__
 .*
-node_modules/
 target/
-dist/
 gen/
 
 !.gitignore
 !.dockerignore
 !.env.example
-!app/.env.example
-output.png
 *.exe
