@@ -19,6 +19,8 @@ pub(crate) struct OcrResultPayload {
 
 pub(crate) struct CaptureInfo {
     pub(crate) image: image::DynamicImage,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
     pub(crate) orig_width: u32,
     pub(crate) orig_height: u32,
 }
@@ -65,6 +67,8 @@ pub(crate) fn capture_screen() -> Result<CaptureInfo, String> {
 
     Ok(CaptureInfo {
         image: image::DynamicImage::ImageRgba8(rgba_image),
+        x: screen.display_info.x,
+        y: screen.display_info.y,
         orig_width,
         orig_height,
     })

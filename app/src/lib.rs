@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::config::Config;
 use crate::popup::calc_popup_pos;
 use crate::services::{call_ai, capture_screen, run_ocr};
-use crate::window::{focus_active_window, focus_window, hide_window};
+use crate::window::{focus_active_window, focus_window, hide_window, place_overlay_window};
 
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
@@ -109,6 +109,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         let _ = overlay.emit("overlay_show", ());
         let _ = overlay.set_ignore_cursor_events(false);
+        place_overlay_window(&overlay, info.x, info.y, info.orig_width, info.orig_height);
         let _ = overlay.set_fullscreen(true);
         let _ = overlay.show();
         focus_window(&app, "overlay");
