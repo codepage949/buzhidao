@@ -13,6 +13,14 @@ load_dotenv()
 MODEL_SAMPLE_PATH = Path(__file__).with_name("test.png")
 SUPPORTED_LANGS = ("en", "ch")
 DEFAULT_UPLOAD_SUFFIX = ".png"
+DEFAULT_OCR_DEVICE = "gpu"
+
+
+def ocr_device() -> str:
+    device = os.getenv("OCR_DEVICE", DEFAULT_OCR_DEVICE).strip().lower()
+    if device not in {"cpu", "gpu"}:
+        raise ValueError(f"Unsupported OCR_DEVICE: {device}")
+    return device
 
 
 def build_ocr(lang: str) -> PaddleOCR:
@@ -20,7 +28,7 @@ def build_ocr(lang: str) -> PaddleOCR:
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=True,
-        device="gpu",
+        device=ocr_device(),
         lang=lang,
     )
 

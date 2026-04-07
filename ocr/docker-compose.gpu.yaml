@@ -1,0 +1,13 @@
+services:
+  ocr:
+    build:
+      args:
+        PADDLE_RUNTIME: gpu
+    environment:
+      OCR_DEVICE: gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]

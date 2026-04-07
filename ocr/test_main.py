@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from main import app, save_upload_to_temp
+from main import app, ocr_device, save_upload_to_temp
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +54,25 @@ def test_임시_파일_저장_확장자_없으면_png_기본값():
         assert path.endswith(".png")
     finally:
         os.remove(path)
+
+
+def test_OCR_장치_설정이_없으면_gpu_기본값():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv("OCR_DEVICE", raising=False)
+        assert ocr_device() == "gpu"
+
+
+def test_OCR_장치_설정값을_소문자로_정규화():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OCR_DEVICE", " CPU ")
+        assert ocr_device() == "cpu"
+
+
+def test_OCR_장치_설정값이_지원되지_않으면_예외():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OCR_DEVICE", "metal")
+        with pytest.raises(ValueError, match="Unsupported OCR_DEVICE"):
+            ocr_device()
 
 
 # /infer/{src} 엔드포인트

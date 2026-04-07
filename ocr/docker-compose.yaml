@@ -1,16 +1,14 @@
 services:
   ocr:
-    build: .
+    build:
+      context: .
+      args:
+        PADDLE_RUNTIME: cpu
     ports:
       - "${HTTP_PORT}:${HTTP_PORT}"
     environment:
-      - HTTP_HOST=${HTTP_HOST}
-      - HTTP_PORT=${HTTP_PORT}
-      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=${PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK}
-      - SCORE_THRESH=${SCORE_THRESH}
-    deploy:
-      resources:
-        reservations:
-          devices:
-          - driver: nvidia
-            capabilities: [gpu]
+      HTTP_HOST: ${HTTP_HOST}
+      HTTP_PORT: ${HTTP_PORT}
+      PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: ${PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK}
+      OCR_DEVICE: ${OCR_DEVICE}
+      SCORE_THRESH: ${SCORE_THRESH}

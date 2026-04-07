@@ -31,7 +31,7 @@
 ### 🧠 OCR Server
 - ⚡ **FastAPI**: 고성능 Python 웹 프레임워크
 - 🔍 **PaddleOCR**: 강력한 다국어 지원 OCR 엔진
-- 🐳 **Docker & GPU**: NVIDIA CUDA 가속을 통한 실시간 처리
+- 🐳 **Docker**: CPU/GPU 실행 구성을 분리한 OCR 서버 배포
 
 ---
 
@@ -52,8 +52,19 @@
 ### 1️⃣ OCR 서버 실행
 ```bash
 cd ocr
-# Docker Compose 사용 (권장)
-docker-compose up --build -d
+# CPU 실행
+docker compose up --build -d
+
+# GPU 실행
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up --build -d
+```
+
+```bash
+# OCR CPU 엔드포인트 테스트
+uv run --directory ocr --group dev python live_endpoint_check.py --base-url http://127.0.0.1:8000 --source en --wait-seconds 240
+
+# OCR GPU 엔드포인트 테스트
+uv run --directory ocr --group dev python live_endpoint_check.py --base-url http://127.0.0.1:8000 --source en --wait-seconds 240
 ```
 
 ### 2️⃣ 데스크톱 앱 실행
@@ -75,7 +86,7 @@ cargo tauri dev
 
 ## 📦 릴리즈 배포 (Release)
 
-1. **OCR 서버**: NVIDIA Docker Runtime 환경에서 배포하여 GPU 가속을 활용합니다.
+1. **OCR 서버**: CPU/GPU별로 분리된 Paddle 런타임 프로필을 사용합니다. GPU 배포는 NVIDIA Container Toolkit과 `docker-compose.gpu.yaml`, `OCR_DEVICE=gpu`가 함께 필요합니다.
 2. **데스크톱 앱**: `cargo tauri build` 명령어로 OS별 설치 파일(MSI 등)을 생성합니다.
 
 ---
@@ -83,4 +94,4 @@ cargo tauri dev
 ## 💡 특이 사항 (Notes)
 
 - 🪟 **Windows 최적화**: 전역 키 후킹(`rdev`) 및 오버레이 투명도 처리는 Windows 환경에 최적화되어 있습니다.
-- 🚀 **성능**: 실시간 텍스트 추출을 위해 OCR 서버에 NVIDIA GPU 사용을 강력히 권장합니다.
+- 🚀 **성능**: 자동 전환은 하지 않습니다. CPU/GPU용 설치 프로필과 `OCR_DEVICE` 설정을 같은 방향으로 직접 맞춰야 합니다.
