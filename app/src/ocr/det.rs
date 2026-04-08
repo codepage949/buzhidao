@@ -53,9 +53,10 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
         for x in 0..w {
             let pixel = rgb.get_pixel(x as u32, y as u32);
             // BGR 순서 (PaddleOCR det는 BGR 입력)
-            tensor[[0, y, x]] = (pixel[2] as f32 * SCALE - MEAN[2]) / STD[2]; // B
+            // mean/std는 채널 위치 순서로 적용 (PaddleOCR이 OpenCV BGR에 그대로 적용)
+            tensor[[0, y, x]] = (pixel[2] as f32 * SCALE - MEAN[0]) / STD[0]; // B
             tensor[[1, y, x]] = (pixel[1] as f32 * SCALE - MEAN[1]) / STD[1]; // G
-            tensor[[2, y, x]] = (pixel[0] as f32 * SCALE - MEAN[0]) / STD[0]; // R
+            tensor[[2, y, x]] = (pixel[0] as f32 * SCALE - MEAN[2]) / STD[2]; // R
         }
     }
 
@@ -74,7 +75,6 @@ fn db_postprocess(pred: &[f32], pred_h: usize, pred_w: usize, src_h: u32, src_w:
     let h_scale = src_h as f64 / pred_h as f64;
 
     let mut boxes = Vec::new();
-
     for contour in contours.iter().take(MAX_CANDIDATES) {
         if contour.len() < 4 {
             continue;
@@ -82,13 +82,12 @@ fn db_postprocess(pred: &[f32], pred_h: usize, pred_w: usize, src_h: u32, src_w:
 
         // 최소 경계 사각형
         let rect = min_area_rect(contour);
-        let sside = rect.min_side;
-        if sside < MIN_SIZE {
+        if rect.min_side < MIN_SIZE {
             continue;
         }
 
-        // 박스 점수
-        let score = box_score_fast(pred, pred_h, pred_w, &rect.points);
+        // 박스 점수: min_area_rect의 4점을 polygon mask로 사용 (PaddleOCR 방식)
+        let score = box_score_poly(pred, pred_h, pred_w, &rect.points);
         if score < BOX_THRESH {
             continue;
         }
@@ -141,34 +140,127 @@ struct MinAreaRect {
 }
 
 fn min_area_rect(points: &[[f32; 2]]) -> MinAreaRect {
-    // 간소화된 회전 경계 상자: 축 정렬 바운딩 박스를 사용
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-
-    for &[x, y] in points {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
+    let hull = convex_hull(points);
+    if hull.len() < 2 {
+        return MinAreaRect {
+            points: hull.clone(),
+            min_side: 0.0,
+        };
     }
 
-    let w = max_x - min_x;
-    let h = max_y - min_y;
+    // 각 hull edge 방향으로 투영해 최소 면적 회전 사각형을 찾는다
+    let mut best_area = f32::MAX;
+    let mut best_rect = vec![[0.0f32; 2]; 4];
+    let mut best_w = 0.0f32;
+    let mut best_h = 0.0f32;
+
+    let n = hull.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let ex = hull[j][0] - hull[i][0];
+        let ey = hull[j][1] - hull[i][1];
+        let len = (ex * ex + ey * ey).sqrt();
+        if len < 1e-6 {
+            continue;
+        }
+        // edge 단위 벡터 + 수직 벡터
+        let ux = ex / len;
+        let uy = ey / len;
+        let vx = -uy;
+        let vy = ux;
+
+        // hull 점들을 (u, v) 좌표로 투영
+        let mut min_u = f32::MAX;
+        let mut max_u = f32::MIN;
+        let mut min_v = f32::MAX;
+        let mut max_v = f32::MIN;
+
+        for &[px, py] in &hull {
+            let u = px * ux + py * uy;
+            let v = px * vx + py * vy;
+            min_u = min_u.min(u);
+            max_u = max_u.max(u);
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+        }
+
+        let w = max_u - min_u;
+        let h = max_v - min_v;
+        let area = w * h;
+
+        if area < best_area {
+            best_area = area;
+            best_w = w;
+            best_h = h;
+            // 4개 꼭짓점을 원래 좌표로 역변환
+            best_rect = vec![
+                [min_u * ux + min_v * vx, min_u * uy + min_v * vy],
+                [max_u * ux + min_v * vx, max_u * uy + min_v * vy],
+                [max_u * ux + max_v * vx, max_u * uy + max_v * vy],
+                [min_u * ux + max_v * vx, min_u * uy + max_v * vy],
+            ];
+        }
+    }
 
     MinAreaRect {
-        points: vec![
-            [min_x, min_y],
-            [max_x, min_y],
-            [max_x, max_y],
-            [min_x, max_y],
-        ],
-        min_side: w.min(h),
+        points: best_rect,
+        min_side: best_w.min(best_h),
     }
 }
 
-fn box_score_fast(bitmap: &[f32], bh: usize, bw: usize, box_pts: &[[f32; 2]]) -> f32 {
+/// Andrew's monotone chain 알고리즘으로 convex hull을 구한다.
+fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut pts: Vec<[f32; 2]> = points.to_vec();
+    pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap().then(a[1].partial_cmp(&b[1]).unwrap()));
+    pts.dedup();
+
+    let n = pts.len();
+    if n <= 2 {
+        return pts;
+    }
+
+    let mut hull = Vec::with_capacity(2 * n);
+
+    // lower hull
+    for &p in &pts {
+        while hull.len() >= 2 {
+            let a = hull[hull.len() - 2];
+            let b = hull[hull.len() - 1];
+            if cross(a, b, p) <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+
+    // upper hull
+    let lower_len = hull.len() + 1;
+    for &p in pts.iter().rev() {
+        while hull.len() >= lower_len {
+            let a = hull[hull.len() - 2];
+            let b = hull[hull.len() - 1];
+            if cross(a, b, p) <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+
+    hull.pop(); // 마지막 점은 첫 점과 중복
+    hull
+}
+
+fn cross(o: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+}
+
+/// 폴리곤 마스크 기반 박스 점수 (PaddleOCR box_score_fast 방식).
+/// box_pts의 4점을 폴리곤으로 채워서 내부 픽셀만 평균한다.
+fn box_score_poly(pred: &[f32], bh: usize, bw: usize, box_pts: &[[f32; 2]]) -> f32 {
     let mut xmin = bw as f32;
     let mut xmax = 0f32;
     let mut ymin = bh as f32;
@@ -181,10 +273,10 @@ fn box_score_fast(bitmap: &[f32], bh: usize, bw: usize, box_pts: &[[f32; 2]]) ->
         ymax = ymax.max(y);
     }
 
-    let xmin = (xmin.floor() as usize).max(0).min(bw - 1);
-    let xmax = (xmax.ceil() as usize).max(0).min(bw - 1);
-    let ymin = (ymin.floor() as usize).max(0).min(bh - 1);
-    let ymax = (ymax.ceil() as usize).max(0).min(bh - 1);
+    let xmin = (xmin.floor() as usize).max(0).min(bw.saturating_sub(1));
+    let xmax = (xmax.ceil() as usize).max(0).min(bw.saturating_sub(1));
+    let ymin = (ymin.floor() as usize).max(0).min(bh.saturating_sub(1));
+    let ymax = (ymax.ceil() as usize).max(0).min(bh.saturating_sub(1));
 
     if xmax <= xmin || ymax <= ymin {
         return 0.0;
@@ -194,12 +286,30 @@ fn box_score_fast(bitmap: &[f32], bh: usize, bw: usize, box_pts: &[[f32; 2]]) ->
     let mut count = 0u32;
     for y in ymin..=ymax {
         for x in xmin..=xmax {
-            sum += bitmap[y * bw + x] as f64;
-            count += 1;
+            if point_in_polygon(x as f32, y as f32, box_pts) {
+                sum += pred[y * bw + x] as f64;
+                count += 1;
+            }
         }
     }
 
     if count == 0 { 0.0 } else { (sum / count as f64) as f32 }
+}
+
+/// 점이 폴리곤 내부에 있는지 판단 (ray casting).
+fn point_in_polygon(px: f32, py: f32, polygon: &[[f32; 2]]) -> bool {
+    let n = polygon.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (polygon[i][0], polygon[i][1]);
+        let (xj, yj) = (polygon[j][0], polygon[j][1]);
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 fn unclip(points: &[[f32; 2]], ratio: f32) -> Vec<[f32; 2]> {
@@ -265,69 +375,183 @@ fn polygon_center(pts: &[[f32; 2]]) -> (f32, f32) {
     (cx, cy)
 }
 
-/// 간단한 연결 컴포넌트 탐색 (flood fill)
+/// 외곽선 추적 (OpenCV findContours RETR_LIST 방식).
+/// Suzuki-Abe border following 알고리즘의 간소화 버전.
 fn find_contours(bitmap: &[u8], h: usize, w: usize) -> Vec<Vec<[f32; 2]>> {
-    let mut visited = vec![false; h * w];
-    let mut contours = Vec::new();
-
+    // 1px 패딩 추가 (경계 처리 단순화)
+    let ph = h + 2;
+    let pw = w + 2;
+    let mut padded = vec![0i32; ph * pw];
     for y in 0..h {
         for x in 0..w {
-            let idx = y * w + x;
-            if bitmap[idx] == 0 || visited[idx] {
-                continue;
+            if bitmap[y * w + x] != 0 {
+                padded[(y + 1) * pw + (x + 1)] = 1;
             }
+        }
+    }
 
-            // BFS로 연결 영역 찾기
-            let mut component = Vec::new();
-            let mut queue = std::collections::VecDeque::new();
-            queue.push_back((x, y));
-            visited[idx] = true;
+    let mut contours = Vec::new();
+    let mut nbd: i32 = 1; // border 번호
 
-            let mut min_x = x;
-            let mut max_x = x;
-            let mut min_y = y;
-            let mut max_y = y;
+    // 8방향 이웃 (시계 방향): E, SE, S, SW, W, NW, N, NE
+    let dir8: [(isize, isize); 8] = [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+    ];
 
-            while let Some((cx, cy)) = queue.pop_front() {
-                component.push((cx, cy));
-                min_x = min_x.min(cx);
-                max_x = max_x.max(cx);
-                min_y = min_y.min(cy);
-                max_y = max_y.max(cy);
+    for y in 1..ph - 1 {
+        for x in 1..pw - 1 {
+            let idx = y * pw + x;
 
-                for &(dx, dy) in &[(0isize, 1isize), (0, -1), (1, 0), (-1, 0)] {
-                    let nx = cx as isize + dx;
-                    let ny = cy as isize + dy;
-                    if nx >= 0 && nx < w as isize && ny >= 0 && ny < h as isize {
-                        let ni = ny as usize * w + nx as usize;
-                        if bitmap[ni] == 1 && !visited[ni] {
-                            visited[ni] = true;
-                            queue.push_back((nx as usize, ny as usize));
-                        }
-                    }
+            // 외곽선 시작점: 0→1 전이 (외부 경계)
+            if padded[idx] == 1 && padded[idx - 1] == 0 {
+                nbd += 1;
+                let contour = trace_border(&mut padded, pw, x, y, nbd, 0, &dir8);
+                if contour.len() >= 4 {
+                    // 패딩 보정: (-1, -1)
+                    let pts: Vec<[f32; 2]> = contour
+                        .iter()
+                        .map(|&(cx, cy)| [(cx as isize - 1) as f32, (cy as isize - 1) as f32])
+                        .collect();
+                    contours.push(pts);
                 }
             }
-
-            if component.len() < 4 {
-                continue;
+            // 내부 경계: 1→0 전이
+            else if padded[idx] >= 1 && padded[idx + 1] == 0 {
+                nbd += 1;
+                trace_border(&mut padded, pw, x, y, nbd, 4, &dir8);
+                // 내부 경계(홀)는 무시 (RETR_LIST에서는 반환하지만 OCR에선 불필요)
             }
 
-            // 컴포넌트의 경계 박스를 4점으로 반환
-            contours.push(vec![
-                [min_x as f32, min_y as f32],
-                [max_x as f32, min_y as f32],
-                [max_x as f32, max_y as f32],
-                [min_x as f32, max_y as f32],
-            ]);
+            // 이미 방문된 외곽선 내부 픽셀 스킵 방지
+            if padded[idx] != 0 && padded[idx] == 1 {
+                padded[idx] = -nbd;
+            }
         }
     }
 
     contours
 }
 
+/// 하나의 외곽선을 추적한다 (border following).
+fn trace_border(
+    img: &mut [i32],
+    w: usize,
+    start_x: usize,
+    start_y: usize,
+    nbd: i32,
+    start_dir: usize,
+    dir8: &[(isize, isize); 8],
+) -> Vec<(usize, usize)> {
+    let mut contour = Vec::new();
+
+    // 시작 방향에서 반시계 방향으로 첫 번째 이웃 찾기
+    let first_neighbor = find_first_nonzero_neighbor(img, w, start_x, start_y, start_dir, dir8);
+
+    let (first_x, first_y, first_dir) = match first_neighbor {
+        Some(v) => v,
+        None => {
+            // 고립 픽셀
+            img[start_y * w + start_x] = -nbd;
+            return vec![(start_x, start_y)];
+        }
+    };
+
+    contour.push((start_x, start_y));
+
+    let mut cx = first_x;
+    let mut cy = first_y;
+    let mut from_dir = (first_dir + 4) % 8; // 돌아온 방향
+
+    loop {
+        contour.push((cx, cy));
+
+        // 이 픽셀의 경계 마킹
+        let idx = cy * w + cx;
+        if img[idx] == 1 {
+            img[idx] = nbd;
+        } else if img[idx] > 1 {
+            // 이미 다른 경계에 속함 — 그대로 유지
+        }
+
+        // 다음 이웃 찾기 (from_dir에서 시계 방향으로)
+        let search_start = (from_dir + 2) % 8; // from_dir의 다음 시계 방향
+        let next = find_first_nonzero_neighbor(img, w, cx, cy, search_start, dir8);
+
+        match next {
+            Some((nx, ny, nd)) => {
+                from_dir = (nd + 4) % 8;
+                cx = nx;
+                cy = ny;
+            }
+            None => break,
+        }
+
+        if cx == first_x && cy == first_y && contour.len() > 1 {
+            // 시작점으로 돌아옴 — 중복 제거
+            break;
+        }
+
+        if contour.len() > 100_000 {
+            break; // 안전 장치
+        }
+    }
+
+    contour
+}
+
+/// 주어진 방향부터 시계 방향으로 순회하며 첫 번째 비-제로 이웃을 찾는다.
+fn find_first_nonzero_neighbor(
+    img: &[i32],
+    w: usize,
+    x: usize,
+    y: usize,
+    start_dir: usize,
+    dir8: &[(isize, isize); 8],
+) -> Option<(usize, usize, usize)> {
+    for i in 0..8 {
+        let d = (start_dir + i) % 8;
+        let (dx, dy) = dir8[d];
+        let nx = x as isize + dx;
+        let ny = y as isize + dy;
+        if nx >= 0 && ny >= 0 {
+            let nx = nx as usize;
+            let ny = ny as usize;
+            let idx = ny * w + nx;
+            if idx < img.len() && img[idx] != 0 {
+                return Some((nx, ny, d));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{DynamicImage, Rgb, RgbImage};
+
+    #[test]
+    fn BGR_정규화가_채널_위치_순서로_적용된다() {
+        let mut img = RgbImage::new(1, 1);
+        img.put_pixel(0, 0, Rgb([10, 20, 30]));
+
+        let tensor = preprocess(&DynamicImage::ImageRgb8(img));
+
+        let expected_b = (30.0 * SCALE - MEAN[0]) / STD[0];
+        let expected_g = (20.0 * SCALE - MEAN[1]) / STD[1];
+        let expected_r = (10.0 * SCALE - MEAN[2]) / STD[2];
+
+        assert!((tensor[[0, 0, 0, 0]] - expected_b).abs() < 1e-6);
+        assert!((tensor[[0, 1, 0, 0]] - expected_g).abs() < 1e-6);
+        assert!((tensor[[0, 2, 0, 0]] - expected_r).abs() < 1e-6);
+    }
 
     #[test]
     fn DB_후처리_텍스트_영역_검출() {
@@ -379,5 +603,23 @@ mod tests {
 
         let contours = find_contours(&bitmap, h, w);
         assert_eq!(contours.len(), 2, "두 개의 연결 컴포넌트가 검출되어야 함");
+    }
+
+    #[test]
+    fn 폴리곤_점수는_배경을_제외한다() {
+        let (h, w) = (6, 6);
+        let mut pred = vec![0.1f32; h * w];
+        let polygon = [[2.0, 1.0], [4.0, 2.0], [3.0, 4.0], [1.0, 3.0]];
+
+        for y in 0..h {
+            for x in 0..w {
+                if point_in_polygon(x as f32, y as f32, &polygon) {
+                    pred[y * w + x] = 0.9;
+                }
+            }
+        }
+
+        let score = box_score_poly(&pred, h, w, &polygon);
+        assert!(score > 0.85, "폴리곤 내부 평균 점수가 유지되어야 함: {score}");
     }
 }

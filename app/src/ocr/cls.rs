@@ -19,9 +19,10 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
     for y in 0..CLS_H as usize {
         for x in 0..CLS_W as usize {
             let pixel = rgb.get_pixel(x as u32, y as u32);
-            for c in 0..3 {
-                tensor[[c, y, x]] = (pixel[c] as f32 * SCALE - MEAN[c]) / STD[c];
-            }
+            // BGR 순서 + mean/std 채널 위치 순서 (PaddleOCR 방식)
+            tensor[[0, y, x]] = (pixel[2] as f32 * SCALE - MEAN[0]) / STD[0]; // B
+            tensor[[1, y, x]] = (pixel[1] as f32 * SCALE - MEAN[1]) / STD[1]; // G
+            tensor[[2, y, x]] = (pixel[0] as f32 * SCALE - MEAN[2]) / STD[2]; // R
         }
     }
 
@@ -46,4 +47,26 @@ pub(crate) fn classify(session: &mut Session, img: &DynamicImage) -> Result<ClsL
         .unwrap_or(0);
 
     Ok(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, Rgb, RgbImage};
+
+    #[test]
+    fn BGR_정규화가_채널_위치_순서로_적용된다() {
+        let mut img = RgbImage::new(1, 1);
+        img.put_pixel(0, 0, Rgb([10, 20, 30]));
+
+        let tensor = preprocess(&DynamicImage::ImageRgb8(img));
+
+        let expected_b = (30.0 * SCALE - MEAN[0]) / STD[0];
+        let expected_g = (20.0 * SCALE - MEAN[1]) / STD[1];
+        let expected_r = (10.0 * SCALE - MEAN[2]) / STD[2];
+
+        assert!((tensor[[0, 0, 0, 0]] - expected_b).abs() < 1e-6);
+        assert!((tensor[[0, 1, 0, 0]] - expected_g).abs() < 1e-6);
+        assert!((tensor[[0, 2, 0, 0]] - expected_r).abs() < 1e-6);
+    }
 }

@@ -169,4 +169,42 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn 중국어_이미지_추론_비교() {
+        if !models_available() {
+            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
+            return;
+        }
+
+        let test_img_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).with_file_name("test.jpg");
+        if !test_img_path.exists() {
+            eprintln!("테스트 이미지 없음: {test_img_path:?} — 건너뜀");
+            return;
+        }
+
+        let engine = OcrEngine::new(&models_dir()).expect("OcrEngine 초기화 실패");
+        let img = image::open(&test_img_path).expect("테스트 이미지 로드 실패");
+        let result = engine.predict(&img, 0.5);
+
+        match &result {
+            Ok(detections) => {
+                eprintln!("검출 결과: {} 개 영역", detections.len());
+                for (poly, text) in detections {
+                    eprintln!("  텍스트: {text:?}, 폴리곤: {poly:?}");
+                }
+                // Python 참조: 43개 박스, 38개 텍스트(score>=0.5)
+                // Rust 후처리가 다르므로 정확히 같진 않지만, 최소 20개 이상이어야 함
+                assert!(
+                    detections.len() >= 20,
+                    "검출 수 부족: {} (최소 20개 기대)",
+                    detections.len()
+                );
+            }
+            Err(e) => {
+                panic!("추론 실패: {e}");
+            }
+        }
+    }
+
 }
