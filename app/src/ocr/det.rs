@@ -203,9 +203,32 @@ fn min_area_rect(points: &[[f32; 2]]) -> MinAreaRect {
     }
 
     MinAreaRect {
-        points: best_rect,
+        points: order_box_points(&best_rect),
         min_side: best_w.min(best_h),
     }
+}
+
+fn order_box_points(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if points.len() != 4 {
+        return points.to_vec();
+    }
+
+    let mut pts = points.to_vec();
+    pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+
+    let (left0, left1) = if pts[0][1] <= pts[1][1] {
+        (pts[0], pts[1])
+    } else {
+        (pts[1], pts[0])
+    };
+
+    let (right0, right1) = if pts[2][1] <= pts[3][1] {
+        (pts[2], pts[3])
+    } else {
+        (pts[3], pts[2])
+    };
+
+    vec![left0, right0, right1, left1]
 }
 
 /// Andrew's monotone chain 알고리즘으로 convex hull을 구한다.
@@ -313,33 +336,14 @@ fn point_in_polygon(px: f32, py: f32, polygon: &[[f32; 2]]) -> bool {
 }
 
 fn unclip(points: &[[f32; 2]], ratio: f32) -> Vec<[f32; 2]> {
-    // 간소화된 unclip: 박스를 ratio만큼 확장
     let area = polygon_area(points);
     let perimeter = polygon_perimeter(points);
-
-    if perimeter < 1e-6 {
+    if perimeter < 1e-6 || points.len() < 3 {
         return points.to_vec();
     }
 
     let distance = area * ratio / perimeter;
-
-    // 센터를 기준으로 확장
-    let (cx, cy) = polygon_center(points);
-
-    points
-        .iter()
-        .map(|&[x, y]| {
-            let dx = x - cx;
-            let dy = y - cy;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist < 1e-6 {
-                [x, y]
-            } else {
-                let scale = (dist + distance) / dist;
-                [cx + dx * scale, cy + dy * scale]
-            }
-        })
-        .collect()
+    offset_convex_polygon(points, distance)
 }
 
 fn polygon_area(pts: &[[f32; 2]]) -> f32 {
@@ -368,11 +372,80 @@ fn polygon_perimeter(pts: &[[f32; 2]]) -> f32 {
     peri
 }
 
-fn polygon_center(pts: &[[f32; 2]]) -> (f32, f32) {
-    let n = pts.len() as f32;
-    let cx = pts.iter().map(|p| p[0]).sum::<f32>() / n;
-    let cy = pts.iter().map(|p| p[1]).sum::<f32>() / n;
-    (cx, cy)
+fn offset_convex_polygon(points: &[[f32; 2]], distance: f32) -> Vec<[f32; 2]> {
+    let n = points.len();
+    let signed_area = signed_polygon_area(points);
+    let orientation = if signed_area >= 0.0 { 1.0 } else { -1.0 };
+    let mut shifted = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let p0 = points[i];
+        let p1 = points[(i + 1) % n];
+        let dx = p1[0] - p0[0];
+        let dy = p1[1] - p0[1];
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-6 {
+            continue;
+        }
+
+        let outward = if orientation > 0.0 {
+            [dy / len, -dx / len]
+        } else {
+            [-dy / len, dx / len]
+        };
+        shifted.push([
+            [p0[0] + outward[0] * distance, p0[1] + outward[1] * distance],
+            [p1[0] + outward[0] * distance, p1[1] + outward[1] * distance],
+        ]);
+    }
+
+    if shifted.len() < 3 {
+        return points.to_vec();
+    }
+
+    let mut expanded = Vec::with_capacity(shifted.len());
+    for i in 0..shifted.len() {
+        let prev = shifted[(i + shifted.len() - 1) % shifted.len()];
+        let curr = shifted[i];
+        expanded.push(line_intersection(prev[0], prev[1], curr[0], curr[1]).unwrap_or(curr[0]));
+    }
+    expanded
+}
+
+fn line_intersection(a1: [f32; 2], a2: [f32; 2], b1: [f32; 2], b2: [f32; 2]) -> Option<[f32; 2]> {
+    let x1 = a1[0];
+    let y1 = a1[1];
+    let x2 = a2[0];
+    let y2 = a2[1];
+    let x3 = b1[0];
+    let y3 = b1[1];
+    let x4 = b2[0];
+    let y4 = b2[1];
+
+    let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if denom.abs() < 1e-6 {
+        return None;
+    }
+
+    let det_a = x1 * y2 - y1 * x2;
+    let det_b = x3 * y4 - y3 * x4;
+    Some([
+        (det_a * (x3 - x4) - (x1 - x2) * det_b) / denom,
+        (det_a * (y3 - y4) - (y1 - y2) * det_b) / denom,
+    ])
+}
+
+fn signed_polygon_area(pts: &[[f32; 2]]) -> f32 {
+    let n = pts.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area = 0f32;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+    }
+    area / 2.0
 }
 
 /// 외곽선 추적 (OpenCV findContours RETR_LIST 방식).
@@ -621,5 +694,25 @@ mod tests {
 
         let score = box_score_poly(&pred, h, w, &polygon);
         assert!(score > 0.85, "폴리곤 내부 평균 점수가 유지되어야 함: {score}");
+    }
+
+    #[test]
+    fn unclip은_중심_스케일링이_아니라_에지_오프셋으로_확장한다() {
+        let rect = [[0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [0.0, 2.0]];
+        let expanded = unclip(&rect, 1.5);
+
+        let min_x = expanded.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
+        let max_x = expanded.iter().map(|p| p[0]).fold(f32::MIN, f32::max);
+        let min_y = expanded.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+        let max_y = expanded.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+
+        assert!(min_x < 0.0 && max_x > 10.0);
+        assert!(min_y < 0.0 && max_y > 2.0);
+    }
+
+    #[test]
+    fn mini_box_점순서는_좌상_우상_우하_좌하다() {
+        let ordered = order_box_points(&[[9.0, 5.0], [1.0, 7.0], [8.0, 1.0], [2.0, 2.0]]);
+        assert_eq!(ordered, vec![[2.0, 2.0], [8.0, 1.0], [9.0, 5.0], [1.0, 7.0]]);
     }
 }

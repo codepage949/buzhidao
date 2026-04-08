@@ -1,4 +1,5 @@
 const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
+const DEFAULT_SCORE_THRESH: f32 = 0.5;
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -16,9 +17,9 @@ impl Config {
         let _ = dotenvy::dotenv();
         Ok(Self {
             source: env_or("SOURCE", "en"),
-            score_thresh: env_or("SCORE_THRESH", "0.8")
+            score_thresh: env_or("SCORE_THRESH", "0.5")
                 .parse()
-                .unwrap_or(0.8),
+                .unwrap_or(DEFAULT_SCORE_THRESH),
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
@@ -49,7 +50,7 @@ fn load_system_prompt() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_system_prompt, DEFAULT_SYSTEM_PROMPT};
+    use super::{load_system_prompt, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT};
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -90,5 +91,10 @@ mod tests {
 
         std::env::remove_var("SYSTEM_PROMPT_PATH");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn score_thresh_기본값은_0_5다() {
+        assert!((DEFAULT_SCORE_THRESH - 0.5).abs() < f32::EPSILON);
     }
 }
