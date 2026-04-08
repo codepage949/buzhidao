@@ -48,6 +48,24 @@ Tauri가 장치 이벤트를 자체 이벤트 루프에서 처리하게 해 창 
 → 팝업 전용 닫기 동작은 별도 Rust 커맨드로 분리하고,
 필요하면 `popup.hide()` 후 `overlay.set_focus()`로 포커스를 복구할 것.
 
+### paddle2onnx Windows 빌드 문제
+
+`paddle2onnx`는 Windows Python 3.12/3.13에서 DLL 로드 실패가 발생한다.
+Docker Linux 컨테이너(python:3.12-slim + libgomp1)에서 변환하면 문제없다.
+`scripts/export_onnx_docker.py` 참고.
+
+### PaddlePaddle 3.x 모델 형식 변경
+
+PaddlePaddle 3.x부터 추론 모델이 `.pdmodel` 대신 `inference.json`(PIR 형식) + `.pdiparams`를 사용한다.
+`paddle2onnx 2.1.0`은 이 형식을 지원하므로 `model_filename`에 `.json` 파일을 전달하면 된다.
+
+### ort 크레이트 API (2.0.0-rc.12)
+
+- `Session::run()`은 `&mut self`를 요구한다. 공유 상태로 사용하려면 `Mutex<Session>` 필요.
+- `try_extract_tensor::<f32>()`는 `(&Shape, &[f32])` 튜플을 반환한다. `ArrayView`가 아님.
+- `ort::inputs![]` 매크로는 배열을 직접 반환하므로 `.map_err()` 불필요.
+- `ndarray` 버전은 `ort`가 사용하는 버전과 일치시켜야 한다 (`cargo tree -p ort`로 확인).
+
 ### Docker 실행 구성과 테스트 경로 분리
 
 사용자가 "컨테이너로 올라간 프로그램 대상 테스트"를 원할 때
