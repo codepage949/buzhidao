@@ -108,3 +108,65 @@ fn crop_box(img: &DynamicImage, box_pts: &[[f64; 2]; 4]) -> DynamicImage {
 
     img.crop_imm(x, y, w, h)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn models_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models")
+    }
+
+    fn models_available() -> bool {
+        let dir = models_dir();
+        dir.join("det.onnx").exists()
+            && dir.join("cls.onnx").exists()
+            && dir.join("rec.onnx").exists()
+            && dir.join("rec_dict.txt").exists()
+    }
+
+    #[test]
+    fn 모델_로드_및_세션_초기화() {
+        if !models_available() {
+            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
+            return;
+        }
+        let engine = OcrEngine::new(&models_dir());
+        assert!(engine.is_ok(), "OcrEngine 초기화 실패: {:?}", engine.err());
+    }
+
+    #[test]
+    fn 테스트_이미지_추론() {
+        if !models_available() {
+            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
+            return;
+        }
+
+        let test_img_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).with_file_name("ocr/test.png");
+        if !test_img_path.exists() {
+            eprintln!("테스트 이미지 없음: {test_img_path:?} — 건너뜀");
+            return;
+        }
+
+        let engine = OcrEngine::new(&models_dir()).expect("OcrEngine 초기화 실패");
+        let img = image::open(&test_img_path).expect("테스트 이미지 로드 실패");
+        let result = engine.predict(&img, 0.5);
+
+        match &result {
+            Ok(detections) => {
+                eprintln!("검출 결과: {} 개 영역", detections.len());
+                for (poly, text) in detections {
+                    eprintln!("  텍스트: {text:?}, 폴리곤: {poly:?}");
+                }
+            }
+            Err(e) => {
+                panic!("추론 실패: {e}");
+            }
+        }
+
+        assert!(result.is_ok());
+    }
+
+}
