@@ -17,7 +17,9 @@ rdev = { version = "0.5.3", features = ["unstable_grab"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["multipart", "json"] }
+reqwest = { version = "0.12", features = ["json"] }
 screenshots = "0.8"
 image = "0.24"
 dotenvy = "0.15"
+ort = "2.0.0-rc.12"
+ndarray = "0.17"

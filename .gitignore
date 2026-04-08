@@ -1,6 +1,7 @@
 .*
 target/
 gen/
+app/models/*.onnx
 
 !.gitignore
 !.dockerignore

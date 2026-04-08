@@ -3,7 +3,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) source: String,
-    pub(crate) api_base_url: String,
+    pub(crate) score_thresh: f32,
     pub(crate) ai_gateway_api_key: String,
     pub(crate) ai_gateway_model: String,
     pub(crate) system_prompt: String,
@@ -16,7 +16,9 @@ impl Config {
         let _ = dotenvy::dotenv();
         Ok(Self {
             source: env_or("SOURCE", "en"),
-            api_base_url: env_or("API_BASE_URL", "http://127.0.0.1:8000"),
+            score_thresh: env_or("SCORE_THRESH", "0.8")
+                .parse()
+                .unwrap_or(0.8),
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,

@@ -17,7 +17,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png", "icons/icon.ico"]
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": ["models/*"]
   },
   "app": {
     "windows": [

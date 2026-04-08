@@ -1,4 +1,5 @@
 mod config;
+mod ocr;
 mod popup;
 mod services;
 mod window;
@@ -13,6 +14,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
+use crate::ocr::OcrEngine;
 use crate::popup::calc_popup_pos;
 use crate::services::{call_ai, capture_screen, run_ocr};
 use crate::window::{focus_active_window, focus_window, hide_window, place_overlay_window};
@@ -115,8 +117,18 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         focus_window(&app, "overlay");
     }
 
-    // 4. OCR 실행
-    match run_ocr(&cfg, info.image, orig_width, orig_height).await {
+    // 4. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
+    let engine = app.state::<Arc<OcrEngine>>().inner().clone();
+    let ocr_result = {
+        let img = info.image;
+        tauri::async_runtime::spawn_blocking(move || {
+            run_ocr(&cfg, &engine, img, orig_width, orig_height)
+        })
+        .await
+        .map_err(|e| format!("OCR 스레드 오류: {e}"))
+        .and_then(|r| r)
+    };
+    match ocr_result {
         Ok(ocr) => {
             if let Some(overlay) = app.get_webview_window("overlay") {
                 let _ = overlay.emit("ocr_result", &ocr);
@@ -145,6 +157,15 @@ pub fn run() {
         }))
         .manage(config)
         .setup(move |app| {
+            // OCR 엔진 초기화
+            let models_dir = app
+                .path()
+                .resource_dir()
+                .expect("리소스 디렉토리를 찾을 수 없음")
+                .join("models");
+            let engine =
+                OcrEngine::new(&models_dir).expect("OCR 엔진 초기화 실패");
+            app.manage(Arc::new(engine));
             // 시스템 트레이: 종료 메뉴
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&quit_item]).build()?;

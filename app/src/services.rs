@@ -1,8 +1,6 @@
 use crate::config::Config;
-use image::ImageFormat;
-use reqwest::multipart;
+use crate::ocr::OcrEngine;
 use serde::{Deserialize, Serialize};
-use std::io::Cursor;
 
 pub(crate) type OcrDetection = (Vec<[f64; 2]>, String);
 
@@ -74,48 +72,23 @@ pub(crate) fn capture_screen() -> Result<CaptureInfo, String> {
     })
 }
 
-pub(crate) async fn run_ocr(
+pub(crate) fn run_ocr(
     cfg: &Config,
+    engine: &OcrEngine,
     dyn_img: image::DynamicImage,
     orig_width: u32,
     orig_height: u32,
 ) -> Result<OcrResultPayload, String> {
-    let (ocr_png, scale) = if orig_width > 1024 {
+    let (img_for_ocr, scale) = if orig_width > 1024 {
         let ratio = 1024.0 / orig_width as f64;
         let new_h = (orig_height as f64 * ratio) as u32;
         let resized = dyn_img.resize_exact(1024, new_h, image::imageops::FilterType::Lanczos3);
-        let mut buf: Vec<u8> = Vec::new();
-        resized
-            .write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
-            .map_err(|e| e.to_string())?;
-        (buf, orig_width as f64 / 1024.0)
+        (resized, orig_width as f64 / 1024.0)
     } else {
-        let mut buf: Vec<u8> = Vec::new();
-        dyn_img
-            .write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
-            .map_err(|e| e.to_string())?;
-        (buf, 1.0)
+        (dyn_img, 1.0)
     };
 
-    let client = reqwest::Client::new();
-    let part = multipart::Part::bytes(ocr_png)
-        .file_name("capture.png")
-        .mime_str("image/png")
-        .map_err(|e| e.to_string())?;
-    let form = multipart::Form::new().part("file", part);
-
-    let url = format!("{}/infer/{}", cfg.api_base_url, cfg.source);
-    let resp = client
-        .post(&url)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("OCR 서버 요청 실패: {e}"))?;
-
-    let detections: Vec<OcrDetection> = resp
-        .json()
-        .await
-        .map_err(|e| format!("OCR 응답 파싱 실패: {e}"))?;
+    let detections = engine.predict(&img_for_ocr, cfg.score_thresh)?;
 
     Ok(OcrResultPayload {
         detections,
