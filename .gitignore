@@ -2,6 +2,10 @@
 target/
 gen/
 app/models/*.onnx
+app/models/rec_dict.txt
+__pycache__/
+*.py[cod]
+scripts/_export_tmp/
 
 !.gitignore
 !.dockerignore
