@@ -1,10 +1,10 @@
 mod config;
 mod ocr;
+mod platform;
 mod popup;
 mod services;
 mod window;
 
-use rdev::{grab, Event, EventType, Key};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -15,9 +15,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
 use crate::ocr::OcrEngine;
+use crate::platform::{capture_active_screen, install_capture_shortcut, prepare_overlay_for_capture};
 use crate::popup::calc_popup_pos;
-use crate::services::{call_ai, capture_screen, run_ocr};
-use crate::window::{focus_active_window, focus_window, hide_window, place_overlay_window};
+use crate::services::{call_ai, run_ocr};
+use crate::window::{focus_active_window, focus_window, hide_window};
 
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     let cfg = app.state::<Config>().inner().clone();
 
     // 1. 스크린샷 캡처 (블로킹 작업 → spawn_blocking)
-    let capture_result = tauri::async_runtime::spawn_blocking(capture_screen).await;
+    let capture_result = tauri::async_runtime::spawn_blocking(capture_active_screen).await;
     let info = match capture_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
@@ -104,18 +105,8 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
 
     let (orig_width, orig_height) = (info.orig_width, info.orig_height);
 
-    // 2. 팝업 숨김 (이전 번역 결과 초기화)
-    hide_window(&app, "popup");
-
-    // 3. 오버레이 즉시 표시 (로딩 상태)
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        let _ = overlay.emit("overlay_show", ());
-        let _ = overlay.set_ignore_cursor_events(false);
-        place_overlay_window(&overlay, info.x, info.y, info.orig_width, info.orig_height);
-        let _ = overlay.set_fullscreen(true);
-        let _ = overlay.show();
-        focus_window(&app, "overlay");
-    }
+    // 2. 오버레이 즉시 표시 (로딩 상태)
+    prepare_overlay_for_capture(&app, &info);
 
     // 4. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
     let engine = app.state::<Arc<OcrEngine>>().inner().clone();
@@ -184,29 +175,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            let handle = app.handle().clone();
-            let busy_clone = busy.clone();
-
-            // WH_KEYBOARD_LL 기반 전역 키보드 훅 (RegisterHotKey는 수식키 없는 PrintScreen 등록 불가)
-            std::thread::spawn(move || {
-                let _ = grab(move |event: Event| {
-                    if let EventType::KeyPress(Key::PrintScreen) = event.event_type {
-                        // 오버레이 표시 중이거나 처리 중이면 키만 억제하고 무시
-                        let overlay_visible = handle
-                            .get_webview_window("overlay")
-                            .and_then(|w| w.is_visible().ok())
-                            .unwrap_or(false);
-
-                        if !overlay_visible && !busy_clone.load(Ordering::SeqCst) {
-                            let h = handle.clone();
-                            let b = busy_clone.clone();
-                            tauri::async_runtime::spawn(async move {
-                                handle_prtsc(h, b).await;
-                            });
-                        }
-                        return None; // OS 기본 동작(캡처 저장 등) 항상 차단
-                    }
-                    Some(event)
+            install_capture_shortcut(app.handle().clone(), busy.clone(), |app, busy| {
+                tauri::async_runtime::spawn(async move {
+                    handle_prtsc(app, busy).await;
                 });
             });
 
