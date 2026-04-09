@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "app" / "models"
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 # det 파라미터 (PaddleOCR inference.yml 기반)
 DET_THRESH = 0.3

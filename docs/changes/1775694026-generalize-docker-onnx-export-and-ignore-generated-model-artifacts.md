@@ -27,7 +27,7 @@ Windows 전용 `%cd%` 같은 셸 문법이나 수동 명령 조합에 기대지 
 - `scripts/export_onnx.py`
   - 호스트 진입점으로 역할 변경
   - Docker 존재 여부 확인 및 설치 안내 출력
-  - `scripts/`와 `app/models/`를 절대 경로로 마운트
+  - `scripts/`와 `models/`를 절대 경로로 마운트
   - `docker run` 명령을 `subprocess` 인자 배열로 구성
   - 기본 이미지 `python:3.11-slim` 사용
   - 컨테이너 내부에서 `libgomp1`, `paddlepaddle`, `paddle2onnx`, `packaging`, `setuptools` 설치 후 변환 스크립트 실행
@@ -38,13 +38,13 @@ Windows 전용 `%cd%` 같은 셸 문법이나 수동 명령 조합에 기대지 
   - `rec_dict.txt` 추출 시 별도 dict 파일, JSON config, YAML config를 순서대로 탐색
   - `inference.yml`의 `character_dict` 리스트를 직접 파싱해 `rec_dict.txt` 생성
 - `.gitignore`
-  - `app/models/*.onnx`
-  - `app/models/rec_dict.txt`
+  - `models/*.onnx`
+  - `models/rec_dict.txt`
   - `__pycache__/`
   - `*.py[cod]`
   - `scripts/_export_tmp/`
 - Git 인덱스
-  - 이미 추적 중이던 `app/models/rec_dict.txt`를 인덱스에서 제거해 이후 생성 파일로 취급
+  - 이미 추적 중이던 `models/rec_dict.txt`를 인덱스에서 제거해 이후 생성 파일로 취급
 
 ## 테스트 계획
 

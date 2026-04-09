@@ -1,8 +1,0 @@
-{
-"identifier": "default",
-  "description": "Default capability for all windows",
-  "windows": ["overlay", "popup"],
-  "permissions": [
-    "core:default"
-  ]
-}

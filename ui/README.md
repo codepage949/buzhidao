@@ -18,7 +18,7 @@
 ## 📂 프로젝트 구조 (Structure)
 
 ```text
-app/ui/
+ui/
 ├── 🖼️ src/
 │   ├── overlay.tsx     # 전체 화면 투명 오버레이 컴포넌트
 │   ├── overlay.html    # 오버레이 윈도우 진입점
@@ -42,7 +42,7 @@ deno task dev
 
 ### 2️⃣ 프런트엔드 빌드
 ```bash
-# 정적 파일 생성 (app/ui/dist/ 경로)
+# 정적 파일 생성 (ui/dist/ 경로)
 deno task build
 ```
 

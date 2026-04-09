@@ -7,10 +7,10 @@
     - Docker 설치 및 실행 중
 
 산출물:
-    app/models/det.onnx
-    app/models/cls.onnx
-    app/models/rec.onnx
-    app/models/rec_dict.txt
+    models/det.onnx
+    models/cls.onnx
+    models/rec.onnx
+    models/rec_dict.txt
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 
 PROJ_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJ_ROOT / "scripts"
-APP_MODELS = PROJ_ROOT / "app" / "models"
+APP_MODELS = PROJ_ROOT / "models"
 
 DEFAULT_IMAGE = "python:3.11-slim"
 CONTAINER_SCRIPTS_DIR = "/workspace/scripts"
