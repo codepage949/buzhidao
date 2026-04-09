@@ -2,7 +2,7 @@
 
 사용법:
     pip install onnxruntime numpy opencv-python Pillow
-    python scripts/compare_onnx.py test.jpg
+    python scripts/compare_onnx.py <이미지 경로>
 """
 
 from __future__ import annotations

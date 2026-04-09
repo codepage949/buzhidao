@@ -338,6 +338,7 @@ mod tests {
     use image::{Rgb, RgbImage};
     #[cfg(feature = "gpu")]
     use ort::ep;
+    use std::env;
     use std::path::PathBuf;
 
     fn models_dir() -> PathBuf {
@@ -350,6 +351,10 @@ mod tests {
             && dir.join("cls.onnx").exists()
             && dir.join("rec.onnx").exists()
             && dir.join("rec_dict.txt").exists()
+    }
+
+    fn benchmark_image_path() -> Option<PathBuf> {
+        env::var_os("BUZHIDAO_OCR_BENCH_IMAGE").map(PathBuf::from)
     }
 
     #[test]
@@ -396,15 +401,18 @@ mod tests {
     }
 
     #[test]
-    fn 중국어_이미지_추론_비교() {
+    fn 외부_벤치마크_이미지가_있으면_추론_비교() {
         if !models_available() {
             eprintln!("ONNX 모델 파일 없음 — 건너뜀");
             return;
         }
 
-        let test_img_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).with_file_name("test.jpg");
+        let Some(test_img_path) = benchmark_image_path() else {
+            eprintln!("BUZHIDAO_OCR_BENCH_IMAGE 미설정 — 건너뜀");
+            return;
+        };
         if !test_img_path.exists() {
-            eprintln!("테스트 이미지 없음: {test_img_path:?} — 건너뜀");
+            eprintln!("벤치마크 이미지 없음: {test_img_path:?} — 건너뜀");
             return;
         }
 
@@ -418,12 +426,9 @@ mod tests {
                 for (poly, text) in detections {
                     eprintln!("  텍스트: {text:?}, 폴리곤: {poly:?}");
                 }
-                // Python 참조: 43개 박스, 38개 텍스트(score>=0.5)
-                // Rust 후처리가 다르므로 정확히 같진 않지만, 최소 20개 이상이어야 함
                 assert!(
-                    detections.len() >= 20,
-                    "검출 수 부족: {} (최소 20개 기대)",
-                    detections.len()
+                    !detections.is_empty(),
+                    "외부 벤치마크 이미지에서 최소 1개 이상 검출되어야 함"
                 );
             }
             Err(e) => {

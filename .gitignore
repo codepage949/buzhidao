@@ -6,6 +6,7 @@ models/rec_dict.txt
 __pycache__/
 *.py[cod]
 scripts/_export_tmp/
+benchmarks/
 app/
 
 !.gitignore
