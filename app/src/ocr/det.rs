@@ -4,7 +4,7 @@ use ort::session::Session;
 
 /// DB 후처리 파라미터 (inference.yml 기반)
 const THRESH: f32 = 0.3;
-const BOX_THRESH: f32 = 0.6;
+const BOX_THRESH: f32 = 0.5;
 const UNCLIP_RATIO: f32 = 1.5;
 const MAX_CANDIDATES: usize = 1000;
 const MIN_SIZE: f32 = 3.0;

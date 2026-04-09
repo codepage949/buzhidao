@@ -1,5 +1,5 @@
 mod cls;
-mod det;
+pub(crate) mod det;
 mod rec;
 
 use image::{DynamicImage, Rgb, RgbImage};
@@ -48,19 +48,32 @@ impl OcrEngine {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn predict(
         &self,
         img: &DynamicImage,
         score_thresh: f32,
     ) -> Result<Vec<OcrDetection>, String> {
-        let boxes = {
-            let mut session = self.det_session.lock().unwrap();
-            det::detect(&mut session, img)?
-        };
+        let boxes = self.detect(img)?;
+        self.recognize_boxes(img, &boxes, score_thresh)
+    }
 
+    /// det만 실행하여 텍스트 영역 폴리곤을 반환한다.
+    pub(crate) fn detect(&self, img: &DynamicImage) -> Result<Vec<det::DetBox>, String> {
+        let mut session = self.det_session.lock().unwrap();
+        det::detect(&mut session, img)
+    }
+
+    /// 주어진 박스들에 대해 cls+rec를 실행하여 인식 결과를 반환한다.
+    pub(crate) fn recognize_boxes(
+        &self,
+        img: &DynamicImage,
+        boxes: &[det::DetBox],
+        score_thresh: f32,
+    ) -> Result<Vec<OcrDetection>, String> {
         let mut detections = Vec::new();
 
-        for box_pts in &boxes {
+        for box_pts in boxes {
             let cropped = crop_box(img, box_pts);
 
             let label = {

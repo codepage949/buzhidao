@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::ocr::det::DetBox;
 use crate::ocr::OcrEngine;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
@@ -103,12 +104,14 @@ fn predict_with_tiles(
     img: &DynamicImage,
     score_thresh: f32,
 ) -> Result<Vec<OcrDetection>, String> {
-    let mut detections = engine.predict(img, score_thresh)?;
+    let full_boxes = engine.detect(img)?;
 
     if img.width().max(img.height()) < TILE_TRIGGER_SIZE {
-        return Ok(detections);
+        return engine.recognize_boxes(img, &full_boxes, score_thresh);
     }
 
+    // 1단계: 타일에서 det 수행
+    let mut tile_boxes = Vec::new();
     let tile_grid = tile_grid_for_size(img.width(), img.height());
     let tile_overlap = tile_overlap_for_grid(tile_grid);
     let tile_w = img.width().div_ceil(tile_grid);
@@ -122,274 +125,158 @@ fn predict_with_tiles(
             let y1 = ((row + 1) * tile_h + tile_overlap).min(img.height());
 
             let tile = img.crop_imm(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0));
-            let tile_detections = engine.predict(&tile, score_thresh)?;
-
-            for (polygon, text) in tile_detections {
-                let shifted: Vec<[f64; 2]> = polygon
-                    .into_iter()
-                    .map(|[x, y]| [x + x0 as f64, y + y0 as f64])
-                    .collect();
-                detections.push((shifted, text));
+            for mut box_pts in engine.detect(&tile)? {
+                for pt in &mut box_pts {
+                    pt[0] += x0 as f64;
+                    pt[1] += y0 as f64;
+                }
+                tile_boxes.push(box_pts);
             }
         }
     }
 
-    Ok(deduplicate_detections(detections))
+    // 2단계: 타일 박스 우선 병합
+    let unique_boxes = merge_tile_priority(full_boxes, tile_boxes);
+
+    // 3단계: 고유 박스에 대해서만 cls+rec 실행 (원본 이미지에서 crop)
+    engine.recognize_boxes(img, &unique_boxes, score_thresh)
 }
 
 fn tile_grid_for_size(width: u32, height: u32) -> u32 {
     let longest = width.max(height);
     if longest >= DENSE_TILE_TRIGGER_SIZE {
-        3
+        4
     } else {
-        2
+        3
     }
 }
 
 fn tile_overlap_for_grid(tile_grid: u32) -> u32 {
-    if tile_grid >= 3 {
+    if tile_grid >= 4 {
         BASE_TILE_OVERLAP + 64
     } else {
         BASE_TILE_OVERLAP
     }
 }
 
-fn deduplicate_detections(detections: Vec<OcrDetection>) -> Vec<OcrDetection> {
-    let mut deduped: Vec<OcrDetection> = Vec::new();
+/// 타일 박스 우선 병합.
+/// 1. 타일 박스끼리 NMS (인접 타일 오버랩 중복 제거)
+/// 2. 전체 이미지 박스 중 타일이 이미 커버하는 영역은 제거
+/// 3. 타일이 못 잡은 영역만 전체 이미지 박스로 보충
+fn merge_tile_priority(full_boxes: Vec<DetBox>, tile_boxes: Vec<DetBox>) -> Vec<DetBox> {
+    // 타일끼리 NMS
+    let unique_tiles = nms_boxes(tile_boxes);
 
-    'outer: for detection in detections {
-        for existing in &mut deduped {
-            if is_same_detection(existing, &detection) {
-                if should_replace(existing, &detection) {
-                    *existing = detection;
-                }
-                continue 'outer;
-            }
+    let tile_bounds: Vec<(f64, f64, f64, f64)> =
+        unique_tiles.iter().map(|b| detbox_bounds(b)).collect();
+
+    // 전체 이미지 박스 중 타일 박스가 커버하지 않는 것만 추가
+    let mut result = unique_tiles;
+    for full_box in full_boxes {
+        let fb = detbox_bounds(&full_box);
+        let covered = tile_bounds.iter().any(|&tb| {
+            let inter = bbox_intersection_area(fb, tb);
+            let full_area = bbox_area(fb);
+            // 전체 박스의 50% 이상이 타일 박스와 겹치면 커버된 것으로 간주
+            full_area > 0.0 && inter / full_area > 0.5
+        });
+        if !covered {
+            result.push(full_box);
         }
-        deduped.push(detection);
     }
 
-    deduped
+    result
 }
 
-fn is_same_detection(a: &OcrDetection, b: &OcrDetection) -> bool {
-    let a_box = polygon_bounds(&a.0);
-    let b_box = polygon_bounds(&b.0);
-    let iou = bbox_iou(a_box, b_box);
-    let overlap_min = bbox_overlap_min(a_box, b_box);
-    let overlap_max = bbox_overlap_max(a_box, b_box);
-    let center_dist = bbox_center_distance(a_box, b_box);
-    let scale = bbox_diag(a_box).max(bbox_diag(b_box));
-    let area_ratio = bbox_area_ratio(a_box, b_box);
-    let x_overlap = bbox_axis_overlap_ratio(a_box.0, a_box.2, b_box.0, b_box.2);
-    let y_overlap = bbox_axis_overlap_ratio(a_box.1, a_box.3, b_box.1, b_box.3);
-    let same_line = is_same_text_line(a_box, b_box);
+/// det 박스들의 순수 기하학적 NMS.
+fn nms_boxes(boxes: Vec<DetBox>) -> Vec<DetBox> {
+    if boxes.is_empty() {
+        return boxes;
+    }
 
-    if iou > 0.85 || overlap_min > 0.9 {
+    let mut indexed: Vec<(usize, (f64, f64, f64, f64), f64)> = boxes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let bounds = detbox_bounds(b);
+            let area = (bounds.2 - bounds.0) * (bounds.3 - bounds.1);
+            (i, bounds, area)
+        })
+        .collect();
+    indexed.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+
+    let mut keep = vec![true; boxes.len()];
+
+    for i in 0..indexed.len() {
+        if !keep[indexed[i].0] {
+            continue;
+        }
+        for j in (i + 1)..indexed.len() {
+            if !keep[indexed[j].0] {
+                continue;
+            }
+            if nms_should_suppress(indexed[i].1, indexed[j].1) {
+                keep[indexed[j].0] = false;
+            }
+        }
+    }
+
+    boxes
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep[*i])
+        .map(|(_, b)| b)
+        .collect()
+}
+
+fn detbox_bounds(b: &DetBox) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+    for &[x, y] in b {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+/// 작은 박스를 억제할지 판정한다.
+/// a는 큰 박스, b는 작은 박스 (면적 내림차순으로 호출).
+fn nms_should_suppress(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    let inter = bbox_intersection_area(a, b);
+    if inter <= 0.0 {
+        return false;
+    }
+
+    let area_a = bbox_area(a);
+    let area_b = bbox_area(b);
+
+    // IoU 기준
+    let union = area_a + area_b - inter;
+    if union > 0.0 && inter / union > 0.5 {
         return true;
     }
 
-    if overlap_max > 0.75 && center_dist < scale * 0.2 {
-        return true;
-    }
-
-    if texts_overlap_meaningfully(&a.1, &b.1)
-        && same_line
-        && x_overlap > 0.6
-        && overlap_max > 0.28
-    {
-        return true;
-    }
-
-    if texts_overlap_meaningfully(&a.1, &b.1)
-        && overlap_max > 0.4
-        && x_overlap > 0.78
-        && y_overlap > 0.82
-        && center_dist < scale * 0.25
-    {
-        return true;
-    }
-
-    if a.1 == b.1
-        && overlap_max > 0.45
-        && area_ratio < 3.5
-        && x_overlap > 0.8
-        && y_overlap > 0.75
-        && center_dist < scale * 0.3
-    {
-        return true;
-    }
-
-    if a.1 == b.1 && overlap_min > 0.55 && center_dist < scale * 0.35 {
+    // 작은 박스 포함 비율: 작은 박스의 70% 이상이 큰 박스에 포함
+    let min_area = area_a.min(area_b);
+    if min_area > 0.0 && inter / min_area > 0.7 {
         return true;
     }
 
     false
 }
 
-fn should_replace(current: &OcrDetection, candidate: &OcrDetection) -> bool {
-    if candidate.1.len() != current.1.len() {
-        return candidate.1.len() > current.1.len();
-    }
-
-    polygon_area_f64(&candidate.0) < polygon_area_f64(&current.0)
-}
-
-fn polygon_bounds(polygon: &[[f64; 2]]) -> (f64, f64, f64, f64) {
-    let mut min_x = f64::MAX;
-    let mut min_y = f64::MAX;
-    let mut max_x = f64::MIN;
-    let mut max_y = f64::MIN;
-
-    for &[x, y] in polygon {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-    }
-
-    (min_x, min_y, max_x, max_y)
-}
-
-fn texts_overlap_meaningfully(a: &str, b: &str) -> bool {
-    let a = normalize_detection_text(a);
-    let b = normalize_detection_text(b);
-
-    if a.len() < 2 || b.len() < 2 {
-        return false;
-    }
-
-    a.contains(&b) || b.contains(&a)
-}
-
-fn normalize_detection_text(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_whitespace() && !matches!(c, '.' | ',' | '·' | '。' | '，' | ':' | '：'))
-        .collect()
-}
-
-fn is_same_text_line(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
-    let y_overlap = bbox_axis_overlap_ratio(a.1, a.3, b.1, b.3);
-    let height_scale = bbox_height(a).max(bbox_height(b));
-    let center_y_gap = bbox_center_gap_y(a, b);
-
-    y_overlap > 0.72 && center_y_gap < height_scale * 0.45
-}
-
-fn bbox_iou(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
-    let inter = bbox_intersection_area(a, b);
-    if inter <= 0.0 {
-        return 0.0;
-    }
-
-    let area_a = (a.2 - a.0).max(0.0) * (a.3 - a.1).max(0.0);
-    let area_b = (b.2 - b.0).max(0.0) * (b.3 - b.1).max(0.0);
-    let union = area_a + area_b - inter;
-    if union <= 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
-}
-
-fn bbox_overlap_min(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
-    let inter = bbox_intersection_area(a, b);
-    if inter <= 0.0 {
-        return 0.0;
-    }
-    let area_a = (a.2 - a.0).max(0.0) * (a.3 - a.1).max(0.0);
-    let area_b = (b.2 - b.0).max(0.0) * (b.3 - b.1).max(0.0);
-    let min_area = area_a.min(area_b);
-    if min_area <= 0.0 {
-        0.0
-    } else {
-        inter / min_area
-    }
-}
-
-fn bbox_overlap_max(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
-    let inter = bbox_intersection_area(a, b);
-    if inter <= 0.0 {
-        return 0.0;
-    }
-    let max_area = bbox_area(a).max(bbox_area(b));
-    if max_area <= 0.0 {
-        0.0
-    } else {
-        inter / max_area
-    }
-}
-
-fn bbox_center_distance(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
-    let acx = (a.0 + a.2) * 0.5;
-    let acy = (a.1 + a.3) * 0.5;
-    let bcx = (b.0 + b.2) * 0.5;
-    let bcy = (b.1 + b.3) * 0.5;
-    let dx = acx - bcx;
-    let dy = acy - bcy;
-    (dx * dx + dy * dy).sqrt()
-}
-
-fn bbox_diag(b: (f64, f64, f64, f64)) -> f64 {
-    let w = (b.2 - b.0).max(0.0);
-    let h = (b.3 - b.1).max(0.0);
-    (w * w + h * h).sqrt()
-}
-
-fn bbox_height(b: (f64, f64, f64, f64)) -> f64 {
-    (b.3 - b.1).max(0.0)
-}
-
-fn bbox_center_gap_y(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
-    let ay = (a.1 + a.3) * 0.5;
-    let by = (b.1 + b.3) * 0.5;
-    (ay - by).abs()
-}
-
 fn bbox_area(b: (f64, f64, f64, f64)) -> f64 {
     (b.2 - b.0).max(0.0) * (b.3 - b.1).max(0.0)
-}
-
-fn bbox_area_ratio(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
-    let min_area = bbox_area(a).min(bbox_area(b));
-    let max_area = bbox_area(a).max(bbox_area(b));
-    if min_area <= 0.0 {
-        f64::INFINITY
-    } else {
-        max_area / min_area
-    }
-}
-
-fn bbox_axis_overlap_ratio(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
-    let inter = (a1.min(b1) - a0.max(b0)).max(0.0);
-    if inter <= 0.0 {
-        return 0.0;
-    }
-
-    let min_len = (a1 - a0).max(0.0).min((b1 - b0).max(0.0));
-    if min_len <= 0.0 {
-        0.0
-    } else {
-        inter / min_len
-    }
 }
 
 fn bbox_intersection_area(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
     let inter_w = (a.2.min(b.2) - a.0.max(b.0)).max(0.0);
     let inter_h = (a.3.min(b.3) - a.1.max(b.1)).max(0.0);
     inter_w * inter_h
-}
-
-fn polygon_area_f64(polygon: &[[f64; 2]]) -> f64 {
-    if polygon.len() < 3 {
-        return 0.0;
-    }
-    let mut area = 0.0;
-    for i in 0..polygon.len() {
-        let j = (i + 1) % polygon.len();
-        area += polygon[i][0] * polygon[j][1] - polygon[j][0] * polygon[i][1];
-    }
-    area.abs() / 2.0
 }
 
 pub(crate) async fn call_ai(cfg: &Config, text: &str) -> Result<String, String> {
@@ -434,116 +321,104 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 중복_검출은_더_긴_텍스트를_남긴다() {
-        let detections = vec![
-            (
-                vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]],
-                "abc".to_string(),
-            ),
-            (
-                vec![[1.0, 0.0], [10.5, 0.0], [10.5, 5.0], [1.0, 5.0]],
-                "abcdef".to_string(),
-            ),
+    fn NMS_억제_판정_IoU가_높으면_true() {
+        assert!(nms_should_suppress(
+            (0.0, 0.0, 100.0, 20.0),
+            (2.0, 1.0, 98.0, 19.0),
+        ));
+    }
+
+    #[test]
+    fn NMS_억제_판정_포함_비율이_높으면_true() {
+        assert!(nms_should_suppress(
+            (10.0, 10.0, 200.0, 30.0),
+            (50.0, 12.0, 150.0, 28.0),
+        ));
+    }
+
+    #[test]
+    fn NMS_억제_판정_겹치지_않으면_false() {
+        assert!(!nms_should_suppress(
+            (0.0, 0.0, 100.0, 20.0),
+            (0.0, 50.0, 100.0, 70.0),
+        ));
+    }
+
+    #[test]
+    fn NMS는_IoU가_높은_박스를_억제한다() {
+        let boxes = vec![
+            [[10.0, 10.0], [100.0, 10.0], [100.0, 30.0], [10.0, 30.0]],
+            [[12.0, 11.0], [98.0, 11.0], [98.0, 29.0], [12.0, 29.0]],
         ];
-
-        let deduped = deduplicate_detections(detections);
-        assert_eq!(deduped.len(), 1);
-        assert_eq!(deduped[0].1, "abcdef");
+        let result = nms_boxes(boxes);
+        assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn bbox_iou는_겹침을_계산한다() {
-        let iou = bbox_iou((0.0, 0.0, 10.0, 10.0), (5.0, 5.0, 15.0, 15.0));
-        assert!(iou > 0.1 && iou < 0.2);
+    fn NMS는_포함된_작은_박스를_억제한다() {
+        let boxes = vec![
+            [[10.0, 10.0], [200.0, 10.0], [200.0, 30.0], [10.0, 30.0]],
+            [[50.0, 12.0], [150.0, 12.0], [150.0, 28.0], [50.0, 28.0]],
+        ];
+        let result = nms_boxes(boxes);
+        assert_eq!(result.len(), 1);
+        // 큰 박스가 남아야 함
+        assert_eq!(result[0][0], [10.0, 10.0]);
     }
 
     #[test]
-    fn 포함된_박스는_중복으로_간주한다() {
-        let a = (
-            vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-            "hello".to_string(),
-        );
-        let b = (
-            vec![[1.0, 1.0], [19.0, 1.0], [19.0, 9.0], [1.0, 9.0]],
-            "hello".to_string(),
-        );
-
-        assert!(is_same_detection(&a, &b));
+    fn NMS는_떨어진_박스를_유지한다() {
+        let boxes = vec![
+            [[10.0, 10.0], [100.0, 10.0], [100.0, 30.0], [10.0, 30.0]],
+            [[10.0, 50.0], [100.0, 50.0], [100.0, 70.0], [10.0, 70.0]],
+        ];
+        let result = nms_boxes(boxes);
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn 멀리_떨어진_같은_텍스트는_중복이_아니다() {
-        let a = (
-            vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
-            "hello".to_string(),
-        );
-        let b = (
-            vec![[0.0, 100.0], [20.0, 100.0], [20.0, 110.0], [0.0, 110.0]],
-            "hello".to_string(),
-        );
-
-        assert!(!is_same_detection(&a, &b));
+    fn NMS는_같은_줄_다른_단어를_유지한다() {
+        // 같은 줄에서 겹치지 않는 두 단어
+        let boxes = vec![
+            [[10.0, 10.0], [80.0, 10.0], [80.0, 30.0], [10.0, 30.0]],
+            [[100.0, 10.0], [200.0, 10.0], [200.0, 30.0], [100.0, 30.0]],
+        ];
+        let result = nms_boxes(boxes);
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn 크기만_다르고_중심이_거의_같은_박스는_중복이다() {
-        let a = (
-            vec![[10.0, 10.0], [70.0, 10.0], [70.0, 30.0], [10.0, 30.0]],
-            "설정".to_string(),
-        );
-        let b = (
-            vec![[16.0, 12.0], [60.0, 12.0], [60.0, 28.0], [16.0, 28.0]],
-            "설정".to_string(),
-        );
-
-        assert!(is_same_detection(&a, &b));
+    fn 타일_우선_병합은_타일이_커버하는_전체_박스를_제거한다() {
+        let full_boxes = vec![
+            [[10.0, 10.0], [100.0, 10.0], [100.0, 30.0], [10.0, 30.0]],
+        ];
+        let tile_boxes = vec![
+            [[12.0, 11.0], [98.0, 11.0], [98.0, 29.0], [12.0, 29.0]],
+        ];
+        let result = merge_tile_priority(full_boxes, tile_boxes);
+        assert_eq!(result.len(), 1);
+        // 타일 박스가 남아야 함
+        assert_eq!(result[0][0], [12.0, 11.0]);
     }
 
     #[test]
-    fn 가까운_다른_줄은_중복이_아니다() {
-        let a = (
-            vec![[10.0, 10.0], [90.0, 10.0], [90.0, 28.0], [10.0, 28.0]],
-            "파일".to_string(),
-        );
-        let b = (
-            vec![[10.0, 30.0], [92.0, 30.0], [92.0, 48.0], [10.0, 48.0]],
-            "파일".to_string(),
-        );
-
-        assert!(!is_same_detection(&a, &b));
+    fn 타일_우선_병합은_타일이_못_잡은_영역을_전체_박스로_보충한다() {
+        let full_boxes = vec![
+            [[10.0, 10.0], [100.0, 10.0], [100.0, 30.0], [10.0, 30.0]],
+            [[10.0, 50.0], [100.0, 50.0], [100.0, 70.0], [10.0, 70.0]],
+        ];
+        let tile_boxes = vec![
+            [[12.0, 11.0], [98.0, 11.0], [98.0, 29.0], [12.0, 29.0]],
+        ];
+        let result = merge_tile_priority(full_boxes, tile_boxes);
+        // 타일 1개 + 커버 안 된 전체 박스 1개
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn 부분_문자열과_강한_중첩이_있으면_중복이다() {
-        let a = (
-            vec![[10.0, 10.0], [150.0, 10.0], [150.0, 32.0], [10.0, 32.0]],
-            "명사 中文词典。".to_string(),
-        );
-        let b = (
-            vec![[78.0, 11.0], [154.0, 11.0], [154.0, 31.0], [78.0, 31.0]],
-            "中文词典.".to_string(),
-        );
-
-        assert!(is_same_detection(&a, &b));
-    }
-
-    #[test]
-    fn 같은_줄의_우측_부분_문자열_박스는_중복이다() {
-        let a = (
-            vec![[10.0, 10.0], [180.0, 10.0], [180.0, 30.0], [10.0, 30.0]],
-            "명사 中文词典。 中文词典.".to_string(),
-        );
-        let b = (
-            vec![[122.0, 11.0], [181.0, 11.0], [181.0, 29.0], [122.0, 29.0]],
-            "中文词典.".to_string(),
-        );
-
-        assert!(is_same_detection(&a, &b));
-    }
-
-    #[test]
-    fn 큰_화면은_3x3_타일을_사용한다() {
-        assert_eq!(tile_grid_for_size(2560, 1440), 3);
-        assert_eq!(tile_grid_for_size(1920, 1080), 2);
+    fn 타일_그리드는_화면_크기에_따라_결정된다() {
+        assert_eq!(tile_grid_for_size(2560, 1440), 4);
+        assert_eq!(tile_grid_for_size(1920, 1080), 3);
+        assert_eq!(tile_grid_for_size(1200, 800), 3);
     }
 }

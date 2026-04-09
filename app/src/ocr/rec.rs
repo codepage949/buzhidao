@@ -52,9 +52,10 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
     for y in 0..REC_H as usize {
         for x in 0..target_w as usize {
             let pixel = rgb.get_pixel(x as u32, y as u32);
-            for c in 0..3 {
-                tensor[[c, y, x]] = pixel[c] as f32 / 255.0 / 0.5 - 1.0;
-            }
+            // BGR 순서 (PaddleOCR rec 모델은 BGR 입력으로 학습됨)
+            tensor[[0, y, x]] = pixel[2] as f32 / 255.0 / 0.5 - 1.0; // B
+            tensor[[1, y, x]] = pixel[1] as f32 / 255.0 / 0.5 - 1.0; // G
+            tensor[[2, y, x]] = pixel[0] as f32 / 255.0 / 0.5 - 1.0; // R
         }
     }
 
@@ -95,6 +96,28 @@ pub(crate) fn recognize(
 mod tests {
     use super::*;
     use ndarray::Array2;
+
+    #[test]
+    fn BGR_정규화가_채널_위치_순서로_적용된다() {
+        // R=200, G=100, B=50인 1x1 이미지
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            1,
+            1,
+            image::Rgb([200, 100, 50]),
+        ));
+        let tensor = preprocess(&img);
+        let b = tensor[[0, 0, 0, 0]]; // 채널 0 = B
+        let g = tensor[[0, 1, 0, 0]]; // 채널 1 = G
+        let r = tensor[[0, 2, 0, 0]]; // 채널 2 = R
+
+        let expected_b = 50.0 / 255.0 / 0.5 - 1.0;
+        let expected_g = 100.0 / 255.0 / 0.5 - 1.0;
+        let expected_r = 200.0 / 255.0 / 0.5 - 1.0;
+
+        assert!((b - expected_b).abs() < 1e-4, "B: {b} != {expected_b}");
+        assert!((g - expected_g).abs() < 1e-4, "G: {g} != {expected_g}");
+        assert!((r - expected_r).abs() < 1e-4, "R: {r} != {expected_r}");
+    }
 
     fn sample_dict() -> Vec<String> {
         vec!["a", "b", "c", "d", "e"]
