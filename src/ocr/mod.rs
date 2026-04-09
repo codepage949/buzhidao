@@ -3,6 +3,8 @@ pub(crate) mod det;
 mod rec;
 
 use image::{DynamicImage, Rgb, RgbImage};
+#[cfg(feature = "gpu")]
+use ort::ep;
 use ort::session::Session;
 use std::path::Path;
 use std::sync::Mutex;
@@ -20,20 +22,9 @@ pub(crate) struct OcrEngine {
 
 impl OcrEngine {
     pub(crate) fn new(models_dir: &Path) -> Result<Self, String> {
-        let det_session = Session::builder()
-            .map_err(|e| format!("det 세션 빌더 실패: {e}"))?
-            .commit_from_file(models_dir.join("det.onnx"))
-            .map_err(|e| format!("det 모델 로드 실패: {e}"))?;
-
-        let cls_session = Session::builder()
-            .map_err(|e| format!("cls 세션 빌더 실패: {e}"))?
-            .commit_from_file(models_dir.join("cls.onnx"))
-            .map_err(|e| format!("cls 모델 로드 실패: {e}"))?;
-
-        let rec_session = Session::builder()
-            .map_err(|e| format!("rec 세션 빌더 실패: {e}"))?
-            .commit_from_file(models_dir.join("rec.onnx"))
-            .map_err(|e| format!("rec 모델 로드 실패: {e}"))?;
+        let det_session = load_session(models_dir, "det")?;
+        let cls_session = load_session(models_dir, "cls")?;
+        let rec_session = load_session(models_dir, "rec")?;
 
         let dict_path = models_dir.join("rec_dict.txt");
         let dict_content =
@@ -99,6 +90,34 @@ impl OcrEngine {
 
         Ok(detections)
     }
+}
+
+fn load_session(models_dir: &Path, model_name: &str) -> Result<Session, String> {
+    let model_path = models_dir.join(format!("{model_name}.onnx"));
+    let builder = Session::builder().map_err(|e| format!("{model_name} 세션 빌더 실패: {e}"))?;
+    let mut builder = configure_execution_providers(builder, model_name)?;
+
+    builder
+        .commit_from_file(model_path)
+        .map_err(|e| format!("{model_name} 모델 로드 실패: {e}"))
+}
+
+#[cfg(feature = "gpu")]
+fn configure_execution_providers(
+    builder: ort::session::builder::SessionBuilder,
+    model_name: &str,
+) -> Result<ort::session::builder::SessionBuilder, String> {
+    builder
+        .with_execution_providers([ep::CUDA::default().build().fail_silently()])
+        .map_err(|e| format!("{model_name} 실행 provider 설정 실패: {e}"))
+}
+
+#[cfg(not(feature = "gpu"))]
+fn configure_execution_providers(
+    builder: ort::session::builder::SessionBuilder,
+    _model_name: &str,
+) -> Result<ort::session::builder::SessionBuilder, String> {
+    Ok(builder)
 }
 
 fn crop_box(img: &DynamicImage, box_pts: &[[f64; 2]; 4]) -> DynamicImage {
@@ -194,11 +213,7 @@ fn order_box_points(box_pts: &[[f64; 2]; 4]) -> [[f64; 2]; 4] {
     let start = pts
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            (a[0] + a[1])
-                .partial_cmp(&(b[0] + b[1]))
-                .unwrap()
-        })
+        .min_by(|(_, a), (_, b)| (a[0] + a[1]).partial_cmp(&(b[0] + b[1])).unwrap())
         .map(|(idx, _)| idx)
         .unwrap_or(0);
 
@@ -321,6 +336,8 @@ fn project_point(h: &[[f64; 3]; 3], x: f64, y: f64) -> [f64; 2] {
 mod tests {
     use super::*;
     use image::{Rgb, RgbImage};
+    #[cfg(feature = "gpu")]
+    use ort::ep;
     use std::path::PathBuf;
 
     fn models_dir() -> PathBuf {
@@ -385,8 +402,7 @@ mod tests {
             return;
         }
 
-        let test_img_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).with_file_name("test.jpg");
+        let test_img_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).with_file_name("test.jpg");
         if !test_img_path.exists() {
             eprintln!("테스트 이미지 없음: {test_img_path:?} — 건너뜀");
             return;
@@ -472,4 +488,11 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(feature = "gpu")]
+    fn OCR_세션은_CUDA_EP를_우선_시도한다() {
+        let providers = [ep::CUDA::default().build().fail_silently()];
+
+        assert!(providers[0].downcast_ref::<ep::CUDA>().is_some());
+    }
 }

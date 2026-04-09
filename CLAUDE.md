@@ -93,3 +93,11 @@ Vite가 `rollup` 같은 간접 의존성을 찾지 못할 수 있다.
 
 → 디렉토리 이동 후에는 `node_modules`를 복사하지 말고 삭제한 뒤
 대상 위치에서 `deno install`로 재생성할 것.
+
+### PowerShell로 Git 파일 내용을 되쓸 때 BOM/줄바꿈 주의
+
+`git show ... | Out-File` 또는 `Set-Content -Encoding UTF8`로 파일을 복원하면
+UTF-8 BOM이 붙거나 줄바꿈이 바뀌어 전체 파일 diff가 날 수 있다.
+
+→ 저장소 blob을 그대로 복원해야 할 때는 `git cat-file -p ... > file`처럼
+Git 출력 바이트를 그대로 쓰는 방식을 우선 사용할 것.

@@ -82,8 +82,16 @@ python scripts/export_onnx.py
 
 ### 3. 데스크톱 앱 실행
 
+CPU only 개발 실행:
+
 ```bash
 cargo tauri dev
+```
+
+GPU 개발 실행:
+
+```bash
+cargo tauri dev --features gpu
 ```
 
 프런트엔드 의존성이 비어 있거나 디렉터리 이동 직후라면 한 번 실행합니다.
@@ -104,6 +112,12 @@ cd ..
 cargo test
 ```
 
+- GPU 빌드 경로 테스트:
+
+```bash
+cargo test --features gpu
+```
+
 - UI 테스트:
 
 ```bash
@@ -115,6 +129,16 @@ deno task test
 
 ## 릴리즈
 
+CPU only 빌드:
+
 ```bash
 cargo tauri build
 ```
+
+GPU 빌드:
+
+```bash
+cargo tauri build --features gpu
+```
+
+GPU 빌드는 CUDA/cuDNN이 준비된 배포 환경을 대상으로 별도 아티팩트로 관리하는 것이 안전합니다.

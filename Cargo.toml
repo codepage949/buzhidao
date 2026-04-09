@@ -7,6 +7,10 @@ edition = "2021"
 name = "buzhidao_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+default = []
+gpu = ["ort/cuda"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
