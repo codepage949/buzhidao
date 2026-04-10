@@ -67,11 +67,15 @@ fn target_width(img: &DynamicImage) -> u32 {
     ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W)
 }
 
+// 너비 정렬 후 청크 단위 배치 처리 크기.
+// 청크 내 max_w로만 패딩하므로 LSTM time step을 대폭 줄인다.
+const REC_BATCH_SIZE: usize = 16;
+
 /// 배치 추론 시도. 성공하면 결과를 반환하고, 실패하면 None.
 /// 별도 함수로 분리해 SessionOutputs borrow를 즉시 해제한다.
 fn try_batch_recognize(
     session: &mut Session,
-    imgs: &[DynamicImage],
+    imgs: &[&DynamicImage],
     dict: &[String],
     max_w: u32,
 ) -> Option<Vec<(String, f32)>> {
@@ -117,25 +121,48 @@ fn try_batch_recognize(
     )
 }
 
-/// 여러 이미지를 배치로 인식한다.
-/// 모델이 동적 배치를 지원하지 않으면 순차 처리로 폴백한다.
+/// 여러 이미지를 너비 순 정렬 후 REC_BATCH_SIZE 단위 청크로 배치 인식한다.
+///
+/// 전체를 단일 배치로 처리하면 max_w가 최대 너비 이미지에 맞춰 폭발적으로 증가해
+/// LSTM time step이 불필요하게 많아진다. 청크 내 max_w로만 패딩하면 이를 방지한다.
 pub(crate) fn recognize_batch(
     session: &mut Session,
     imgs: &[DynamicImage],
     dict: &[String],
 ) -> Result<Vec<(String, f32)>, String> {
-    match imgs.len() {
-        0 => return Ok(vec![]),
-        1 => return Ok(vec![recognize(session, &imgs[0], dict)?]),
-        _ => {}
+    if imgs.is_empty() {
+        return Ok(vec![]);
+    }
+    if imgs.len() == 1 {
+        return Ok(vec![recognize(session, &imgs[0], dict)?]);
     }
 
-    let max_w = imgs.iter().map(target_width).max().unwrap_or(1);
-    if let Some(results) = try_batch_recognize(session, imgs, dict, max_w) {
-        return Ok(results);
+    // 너비 오름차순으로 인덱스를 정렬 — 청크 내 너비 편차를 최소화한다
+    let mut order: Vec<usize> = (0..imgs.len()).collect();
+    order.sort_by_key(|&i| target_width(&imgs[i]));
+
+    let mut results = vec![("".to_string(), 0.0f32); imgs.len()];
+
+    for chunk_idx in order.chunks(REC_BATCH_SIZE) {
+        let chunk: Vec<&DynamicImage> = chunk_idx.iter().map(|&i| &imgs[i]).collect();
+        let max_w = chunk.iter().map(|img| target_width(img)).max().unwrap_or(1);
+
+        let chunk_results = if let Some(r) = try_batch_recognize(session, &chunk, dict, max_w) {
+            r
+        } else {
+            // 배치 실패 시 순차 처리로 폴백
+            chunk
+                .iter()
+                .map(|img| recognize(session, img, dict))
+                .collect::<Result<_, _>>()?
+        };
+
+        for (&orig_i, result) in chunk_idx.iter().zip(chunk_results) {
+            results[orig_i] = result;
+        }
     }
-    // 배치 실패 시 순차 처리로 폴백
-    imgs.iter().map(|img| recognize(session, img, dict)).collect()
+
+    Ok(results)
 }
 
 /// 텍스트 인식: 이미지에서 텍스트를 추출한다.
