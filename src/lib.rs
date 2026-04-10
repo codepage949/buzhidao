@@ -138,10 +138,13 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
 
 // ── CUDA DLL 선탐색 ───────────────────────────────────────────────────────────
 
-/// CUDA 런타임 DLL을 ORT가 세션을 열기 전에 미리 로드한다.
+/// CUDA 및 cuDNN DLL을 ORT가 세션을 열기 전에 미리 로드한다.
 ///
 /// `ort::ep::cuda::preload_dylibs`를 사용하면 DLL 탐색 순서를 제어할 수 있다.
 /// 배포 패키지에 번들된 DLL이 있으면 시스템 PATH보다 우선 적용된다.
+///
+/// CUDA와 cuDNN DLL은 동일한 디렉토리에 둔다 (`cuda/`).
+/// cuDNN이 없으면 Conv2D 등 대부분의 연산이 CPU로 폴백되어 GPU 가속 효과가 없다.
 ///
 /// 탐색 순서:
 /// 1. `<실행파일 디렉토리>/cuda/`  (Tauri 번들 배포 시 리소스 위치)
@@ -167,7 +170,8 @@ fn preload_cuda_dylibs_early() {
     let cuda_dir: Option<PathBuf> = exe_cuda.or(env_cuda);
 
     if let Some(ref dir) = cuda_dir {
-        match cuda::preload_dylibs(Some(dir), None) {
+        // CUDA와 cuDNN DLL이 같은 디렉토리에 있으므로 동일한 경로를 전달한다
+        match cuda::preload_dylibs(Some(dir), Some(dir)) {
             Ok(()) => eprintln!("[CUDA] DLL 로드 성공: {}", dir.display()),
             Err(e) => eprintln!("[CUDA] DLL 로드 실패 ({}): {e}", dir.display()),
         }
