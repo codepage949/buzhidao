@@ -13,3 +13,4 @@ app/
 !.dockerignore
 !.env.example
 *.exe
+ort_diag.log
