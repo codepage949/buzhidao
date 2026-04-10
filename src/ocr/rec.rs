@@ -1,9 +1,15 @@
 use image::DynamicImage;
 use ndarray::{s, Array3, Array4, ArrayView2};
 use ort::session::Session;
+use rayon::prelude::*;
 
 const REC_H: u32 = 48;
-const MAX_W: u32 = 3200;
+/// PaddleOCR 기본 max_wh_ratio=20 → max_w = 48×20 = 960.
+/// 이 값을 초과하는 긴 텍스트 박스는 잘려도 실용적으로 문제 없다
+/// (960/4=240 time step = 약 80~120 글자).
+/// 화면 OCR에서는 긴 한 줄 텍스트보다 짧은 UI 문자열이 대부분이라
+/// 폭 상한을 더 낮춰도 인식률 손실보다 속도 이득이 더 크다.
+const MAX_W: u32 = 768;
 
 /// CTC 디코딩: 모델 출력에서 텍스트를 추출한다.
 fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
@@ -40,62 +46,71 @@ fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
     (text, avg_score)
 }
 
-fn preprocess(img: &DynamicImage) -> Array4<f32> {
-    let (w, h) = (img.width(), img.height());
-    let ratio = w as f32 / h as f32;
-    let target_w = ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W);
-
-    let resized = img.resize_exact(target_w, REC_H, image::imageops::FilterType::Triangle);
-    let rgb = resized.to_rgb8();
-
-    let mut tensor = Array3::<f32>::zeros((3, REC_H as usize, target_w as usize));
-    for y in 0..REC_H as usize {
-        for x in 0..target_w as usize {
-            let pixel = rgb.get_pixel(x as u32, y as u32);
-            // BGR 순서 (PaddleOCR rec 모델은 BGR 입력으로 학습됨)
-            tensor[[0, y, x]] = pixel[2] as f32 / 255.0 / 0.5 - 1.0; // B
-            tensor[[1, y, x]] = pixel[1] as f32 / 255.0 / 0.5 - 1.0; // G
-            tensor[[2, y, x]] = pixel[0] as f32 / 255.0 / 0.5 - 1.0; // R
-        }
-    }
-
-    tensor.insert_axis(ndarray::Axis(0))
-}
-
 fn target_width(img: &DynamicImage) -> u32 {
     let ratio = img.width() as f32 / img.height() as f32;
     ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W)
 }
 
-// 너비 정렬 후 청크 단위 배치 처리 크기.
-// 청크 내 max_w로만 패딩하므로 LSTM time step을 대폭 줄인다.
-const REC_BATCH_SIZE: usize = 16;
+/// 이미지를 rec 입력 텐서로 전처리한다.
+/// 반환값: shape=(3, REC_H, target_w) Array3
+fn preprocess_to_array(img: &DynamicImage) -> Array3<f32> {
+    let tw = target_width(img);
+    let resized = img.resize_exact(tw, REC_H, image::imageops::FilterType::Triangle);
+    let rgb = resized.to_rgb8();
 
-/// 배치 추론 시도. 성공하면 결과를 반환하고, 실패하면 None.
-/// 별도 함수로 분리해 SessionOutputs borrow를 즉시 해제한다.
-fn try_batch_recognize(
-    session: &mut Session,
-    imgs: &[&DynamicImage],
-    dict: &[String],
-    max_w: u32,
-) -> Option<Vec<(String, f32)>> {
-    let n = imgs.len();
-    // 패딩 값 -1.0 = 검은색 픽셀(RGB=0)에 해당하는 정규화 값
-    let mut batch = Array4::<f32>::from_elem((n, 3, REC_H as usize, max_w as usize), -1.0f32);
-    for (i, img) in imgs.iter().enumerate() {
-        let tw = target_width(img);
-        let resized = img.resize_exact(tw, REC_H, image::imageops::FilterType::Triangle);
-        let rgb = resized.to_rgb8();
-        for y in 0..REC_H as usize {
-            for x in 0..tw as usize {
-                let pixel = rgb.get_pixel(x as u32, y as u32);
-                batch[[i, 0, y, x]] = pixel[2] as f32 / 255.0 / 0.5 - 1.0;
-                batch[[i, 1, y, x]] = pixel[1] as f32 / 255.0 / 0.5 - 1.0;
-                batch[[i, 2, y, x]] = pixel[0] as f32 / 255.0 / 0.5 - 1.0;
-            }
+    let mut arr = Array3::<f32>::zeros((3, REC_H as usize, tw as usize));
+    for y in 0..REC_H as usize {
+        for x in 0..tw as usize {
+            let pixel = rgb.get_pixel(x as u32, y as u32);
+            // BGR 순서 (PaddleOCR rec 모델은 BGR 입력으로 학습됨)
+            arr[[0, y, x]] = pixel[2] as f32 / 255.0 / 0.5 - 1.0; // B
+            arr[[1, y, x]] = pixel[1] as f32 / 255.0 / 0.5 - 1.0; // G
+            arr[[2, y, x]] = pixel[0] as f32 / 255.0 / 0.5 - 1.0; // R
         }
     }
+    arr
+}
 
+fn preprocess(img: &DynamicImage) -> Array4<f32> {
+    preprocess_to_array(img).insert_axis(ndarray::Axis(0))
+}
+
+// 너비 정렬 후 청크 단위 배치 처리 크기.
+// 청크 내 max_w로만 패딩하므로 time step을 대폭 줄인다.
+const REC_BATCH_SIZE: usize = 24;
+const REC_BATCH_SIZE_MEDIUM_LARGE: usize = 16;
+const REC_BATCH_SIZE_LARGE: usize = 12;
+const REC_BATCH_SIZE_XL: usize = 8;
+const REC_BATCH_SIZE_XXL: usize = 6;
+const REC_BATCH_SIZE_XXXL: usize = 4;
+
+/// 워밍업에 사용할 너비 목록 (MAX_W=960 기준 자주 등장하는 크기들).
+/// 각 너비에 대해 실행해 cuDNN 알고리즘 캐시를 미리 채운다.
+pub(crate) const WARMUP_WIDTHS: &[u32] = &[96, 128, 192, 256, 320, 480, 640, 768];
+
+fn rec_batch_size_for_start_width(width: usize) -> usize {
+    if width >= 768 {
+        REC_BATCH_SIZE_XXXL
+    } else if width >= 640 {
+        REC_BATCH_SIZE_XXL
+    } else if width >= 500 {
+        REC_BATCH_SIZE_XL
+    } else if width >= 400 {
+        REC_BATCH_SIZE_LARGE
+    } else if width >= 236 {
+        REC_BATCH_SIZE_MEDIUM_LARGE
+    } else {
+        REC_BATCH_SIZE
+    }
+}
+
+/// 미리 조립된 배치 텐서로 추론한다. 성공하면 결과를 반환하고, 실패하면 None.
+fn try_batch_run(
+    session: &mut Session,
+    batch: Array4<f32>,
+    dict: &[String],
+    n: usize,
+) -> Option<Vec<(String, f32)>> {
     let input_values = ort::value::Value::from_array(batch).ok()?;
     let outputs = session.run(ort::inputs![input_values]).ok()?;
     let (shape, data) = outputs[0].try_extract_tensor::<f32>().ok()?;
@@ -121,10 +136,30 @@ fn try_batch_recognize(
     )
 }
 
+/// 미리 전처리된 단일 텐서를 추론한다 (배치 실패 시 폴백용).
+fn recognize_from_array(session: &mut Session, arr: Array3<f32>, dict: &[String]) -> (String, f32) {
+    (|| -> Option<(String, f32)> {
+        let arr4 = arr.insert_axis(ndarray::Axis(0));
+        let iv = ort::value::Value::from_array(arr4).ok()?;
+        let out = session.run(ort::inputs![iv]).ok()?;
+        let (shape, data) = out[0].try_extract_tensor::<f32>().ok()?;
+        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+        let (ts, nc) = if dims.len() == 3 {
+            (dims[1], dims[2])
+        } else {
+            (dims[0], dims[1])
+        };
+        let flat: Vec<f32> = data.to_vec();
+        let view = ndarray::ArrayView2::from_shape((ts, nc), &flat).ok()?;
+        Some(ctc_decode(&view, dict))
+    })()
+    .unwrap_or(("".to_string(), 0.0))
+}
+
 /// 여러 이미지를 너비 순 정렬 후 REC_BATCH_SIZE 단위 청크로 배치 인식한다.
 ///
-/// 전체를 단일 배치로 처리하면 max_w가 최대 너비 이미지에 맞춰 폭발적으로 증가해
-/// LSTM time step이 불필요하게 많아진다. 청크 내 max_w로만 패딩하면 이를 방지한다.
+/// 전처리는 rayon으로 병렬 수행해 CPU 대기를 줄인다.
+/// 청크 내 max_w로만 패딩하여 time step 폭발을 방지한다.
 pub(crate) fn recognize_batch(
     session: &mut Session,
     imgs: &[DynamicImage],
@@ -137,29 +172,89 @@ pub(crate) fn recognize_batch(
         return Ok(vec![recognize(session, &imgs[0], dict)?]);
     }
 
+    // 병렬 CPU 전처리: 모든 이미지를 동시에 리사이즈/정규화
+    let tensors: Vec<Array3<f32>> = imgs
+        .par_iter()
+        .map(|img| preprocess_to_array(img))
+        .collect();
+
     // 너비 오름차순으로 인덱스를 정렬 — 청크 내 너비 편차를 최소화한다
-    let mut order: Vec<usize> = (0..imgs.len()).collect();
-    order.sort_by_key(|&i| target_width(&imgs[i]));
+    let mut order: Vec<usize> = (0..tensors.len()).collect();
+    order.sort_by_key(|&i| tensors[i].dim().2); // dim().2 == target_width
 
     let mut results = vec![("".to_string(), 0.0f32); imgs.len()];
+    let widths: Vec<usize> = order.iter().map(|&i| tensors[i].dim().2).collect();
+    if let (Some(min_w), Some(max_w)) = (widths.first(), widths.last()) {
+        let p50 = widths[widths.len() / 2];
+        let p90 = widths[widths.len().saturating_mul(9) / 10];
+        eprintln!(
+            "[OCR] rec 너비 분포: n={}, min={}, p50={}, p90={}, max={}",
+            widths.len(),
+            min_w,
+            p50,
+            p90,
+            max_w
+        );
+    }
 
-    for chunk_idx in order.chunks(REC_BATCH_SIZE) {
-        let chunk: Vec<&DynamicImage> = chunk_idx.iter().map(|&i| &imgs[i]).collect();
-        let max_w = chunk.iter().map(|img| target_width(img)).max().unwrap_or(1);
+    let mut fallback_chunks = 0usize;
 
-        let chunk_results = if let Some(r) = try_batch_recognize(session, &chunk, dict, max_w) {
-            r
+    let mut chunk_no = 0usize;
+    let mut cursor = 0usize;
+    while cursor < order.len() {
+        let start_w = tensors[order[cursor]].dim().2;
+        let chunk_size = rec_batch_size_for_start_width(start_w);
+        let end = (cursor + chunk_size).min(order.len());
+        let chunk_idx = &order[cursor..end];
+        let max_w = chunk_idx
+            .iter()
+            .map(|&i| tensors[i].dim().2)
+            .max()
+            .unwrap_or(1);
+        let chunk_n = chunk_idx.len();
+
+        // 패딩 값 -1.0 = 검은색 픽셀(RGB=0)에 해당하는 정규화 값
+        let mut batch = Array4::<f32>::from_elem((chunk_n, 3, REC_H as usize, max_w), -1.0f32);
+        for (bi, &orig_i) in chunk_idx.iter().enumerate() {
+            let arr = &tensors[orig_i];
+            let tw = arr.dim().2;
+            batch.slice_mut(s![bi, .., .., ..tw]).assign(arr);
+        }
+
+        let t_chunk = std::time::Instant::now();
+        let (chunk_results, mode) = if let Some(r) = try_batch_run(session, batch, dict, chunk_n) {
+            (r, "batch")
         } else {
-            // 배치 실패 시 순차 처리로 폴백
-            chunk
-                .iter()
-                .map(|img| recognize(session, img, dict))
-                .collect::<Result<_, _>>()?
+            fallback_chunks += 1;
+            // 배치 실패 시 청크 내 순차 처리
+            (
+                chunk_idx
+                    .iter()
+                    .map(|&orig_i| recognize_from_array(session, tensors[orig_i].clone(), dict))
+                    .collect(),
+                "fallback",
+            )
         };
+        eprintln!(
+            "[OCR] rec 청크 {}: {}개, start_w={}, max_w={}, mode={}, {:.0}ms",
+            chunk_no + 1,
+            chunk_n,
+            start_w,
+            max_w,
+            mode,
+            t_chunk.elapsed().as_millis()
+        );
 
         for (&orig_i, result) in chunk_idx.iter().zip(chunk_results) {
             results[orig_i] = result;
         }
+
+        cursor = end;
+        chunk_no += 1;
+    }
+
+    if fallback_chunks > 0 {
+        eprintln!("[OCR] rec 배치 폴백 청크 수: {}", fallback_chunks);
     }
 
     Ok(results)
@@ -227,6 +322,25 @@ mod tests {
             .into_iter()
             .map(String::from)
             .collect()
+    }
+
+    #[test]
+    fn target_width는_MAX_W로_상한된다() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4000, 48));
+        assert_eq!(target_width(&img), MAX_W);
+    }
+
+    #[test]
+    fn rec_배치_크기는_tail_구간에서만_줄어든다() {
+        assert_eq!(rec_batch_size_for_start_width(235), REC_BATCH_SIZE);
+        assert_eq!(
+            rec_batch_size_for_start_width(236),
+            REC_BATCH_SIZE_MEDIUM_LARGE
+        );
+        assert_eq!(rec_batch_size_for_start_width(400), REC_BATCH_SIZE_LARGE);
+        assert_eq!(rec_batch_size_for_start_width(500), REC_BATCH_SIZE_XL);
+        assert_eq!(rec_batch_size_for_start_width(640), REC_BATCH_SIZE_XXL);
+        assert_eq!(rec_batch_size_for_start_width(768), REC_BATCH_SIZE_XXXL);
     }
 
     #[test]

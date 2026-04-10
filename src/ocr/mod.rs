@@ -11,10 +11,21 @@ use std::sync::Mutex;
 
 use crate::services::OcrDetection;
 
+/// 타일 병렬 det에 사용하는 세션 수.
+/// 타일을 이 수만큼 동시에 추론해 전체 타일 det 시간을 줄인다.
+const DET_POOL_SIZE: usize = 4;
+const CLS_SAMPLE_SIZE: usize = 24;
+const CLS_SAMPLE_ROTATED_THRESHOLD: usize = 3;
+const MIN_BOX_SIDE_FOR_OCR: f64 = 8.0;
+const MIN_BOX_AREA_FOR_OCR: f64 = 64.0;
+const MAX_BOX_HEIGHT_WIDTH_RATIO_FOR_OCR: f64 = 2.5;
+
 /// ONNX Runtime 기반 OCR 엔진.
 /// det(검출) → cls(방향분류) → rec(인식) 파이프라인.
 pub(crate) struct OcrEngine {
     det_session: Mutex<Session>,
+    /// 타일 병렬 처리를 위한 추가 det 세션 풀
+    det_pool: Vec<Mutex<Session>>,
     cls_session: Mutex<Session>,
     rec_session: Mutex<Session>,
     dict: Vec<String>,
@@ -23,6 +34,13 @@ pub(crate) struct OcrEngine {
 impl OcrEngine {
     pub(crate) fn new(models_dir: &Path) -> Result<Self, String> {
         let det_session = load_session(models_dir, "det")?;
+
+        // 타일 병렬 처리용 세션 풀 (DET_POOL_SIZE개)
+        let mut det_pool = Vec::with_capacity(DET_POOL_SIZE);
+        for _ in 0..DET_POOL_SIZE {
+            det_pool.push(Mutex::new(load_session(models_dir, "det")?));
+        }
+
         let cls_session = load_session(models_dir, "cls")?;
         let rec_session = load_session(models_dir, "rec")?;
 
@@ -33,17 +51,22 @@ impl OcrEngine {
 
         let engine = Self {
             det_session: Mutex::new(det_session),
+            det_pool,
             cls_session: Mutex::new(cls_session),
             rec_session: Mutex::new(rec_session),
             dict,
         };
 
-            engine.warmup();
+        engine.warmup();
 
         Ok(engine)
     }
 
     /// 더미 이미지로 각 세션을 한 번 실행해 GPU 커널을 워밍업한다.
+    ///
+    /// det 풀 세션은 실제 타일 크기(960×640)로 병렬 워밍업해
+    /// cuDNN 알고리즘 캐시를 각 세션에 채운다.
+    /// rec는 자주 등장하는 너비 버킷을 미리 실행해 cuDNN 알고리즘 캐시를 채운다.
     fn warmup(&self) {
         let dummy_large = DynamicImage::new_rgb8(320, 320);
         let dummy_crop = DynamicImage::new_rgb8(100, 32);
@@ -52,13 +75,46 @@ impl OcrEngine {
         let _ = self.detect(&dummy_large);
         eprintln!("[OCR] 워밍업 det: {:.0}ms", t.elapsed().as_millis());
 
+        // det 풀 세션: 타일 크기 더미 이미지로 병렬 워밍업
+        // (각 세션이 독립 cuDNN 캐시를 가지므로 개별 워밍업 필요)
         let t = std::time::Instant::now();
-        let _ = { let mut s = self.cls_session.lock().unwrap(); cls::classify(&mut s, &dummy_crop) };
-        eprintln!("[OCR] 워밍업 cls: {:.0}ms", t.elapsed().as_millis());
+        let dummy_tile = DynamicImage::new_rgb8(960, 640); // 2560×1440 3×3 타일 일반 크기
+        std::thread::scope(|s| {
+            for session_mutex in &self.det_pool {
+                s.spawn(|| {
+                    let mut session = session_mutex.lock().unwrap();
+                    let _ = det::detect(&mut session, &dummy_tile);
+                });
+            }
+        });
+        eprintln!(
+            "[OCR] 워밍업 det 풀 ({} 세션): {:.0}ms",
+            DET_POOL_SIZE,
+            t.elapsed().as_millis()
+        );
 
         let t = std::time::Instant::now();
-        let _ = { let mut s = self.rec_session.lock().unwrap(); rec::recognize(&mut s, &dummy_crop, &self.dict) };
-        eprintln!("[OCR] 워밍업 rec: {:.0}ms", t.elapsed().as_millis());
+        let _ = {
+            let mut s = self.cls_session.lock().unwrap();
+            cls::classify(&mut s, &dummy_crop)
+        };
+        eprintln!("[OCR] 워밍업 cls: {:.0}ms", t.elapsed().as_millis());
+
+        // rec: WARMUP_WIDTHS 각각에 대해 실행 → cuDNN 알고리즘 캐시 충전
+        // REC_H=48 이미지이므로 target_width = w 그대로 됨
+        let t = std::time::Instant::now();
+        for &w in rec::WARMUP_WIDTHS {
+            let dummy_rec = DynamicImage::new_rgb8(w, 48);
+            let _ = {
+                let mut s = self.rec_session.lock().unwrap();
+                rec::recognize(&mut s, &dummy_rec, &self.dict)
+            };
+        }
+        eprintln!(
+            "[OCR] 워밍업 rec ({}개 너비): {:.0}ms",
+            rec::WARMUP_WIDTHS.len(),
+            t.elapsed().as_millis()
+        );
     }
 
     #[cfg(test)]
@@ -68,7 +124,7 @@ impl OcrEngine {
         score_thresh: f32,
     ) -> Result<Vec<OcrDetection>, String> {
         let boxes = self.detect(img)?;
-        self.recognize_boxes(img, &boxes, score_thresh)
+        self.recognize_boxes(img, &boxes, score_thresh, true)
     }
 
     /// det만 실행하여 텍스트 영역 폴리곤을 반환한다.
@@ -77,26 +133,133 @@ impl OcrEngine {
         det::detect(&mut session, img)
     }
 
+    /// 타일 이미지 목록을 det 풀 세션으로 병렬 처리한다.
+    ///
+    /// tiles: (tile_x0, tile_y0, tile_image) 목록.
+    /// 각 박스 좌표는 원본 이미지 기준으로 복원된다.
+    pub(crate) fn detect_tiles(
+        &self,
+        tiles: &[(u32, u32, DynamicImage)],
+    ) -> Result<Vec<det::DetBox>, String> {
+        if tiles.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let pool_size = self.det_pool.len();
+        let chunk_size = tiles.len().div_ceil(pool_size).max(1);
+
+        // 타일을 pool_size 개 그룹으로 나누어 각 그룹을 다른 세션으로 병렬 처리
+        let result_groups: Vec<Result<Vec<det::DetBox>, String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = tiles
+                .chunks(chunk_size)
+                .enumerate()
+                .map(|(gi, chunk)| {
+                    let session_mutex = &self.det_pool[gi];
+                    s.spawn(move || -> Result<Vec<det::DetBox>, String> {
+                        let mut session = session_mutex.lock().map_err(|e| e.to_string())?;
+                        let mut boxes = Vec::new();
+                        for (x0, y0, tile) in chunk {
+                            for mut b in det::detect(&mut session, tile)? {
+                                for pt in &mut b {
+                                    pt[0] += *x0 as f64;
+                                    pt[1] += *y0 as f64;
+                                }
+                                boxes.push(b);
+                            }
+                        }
+                        Ok(boxes)
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("타일 det 스레드 패닉".to_string()))
+                })
+                .collect()
+        });
+
+        let mut all_boxes = Vec::new();
+        for r in result_groups {
+            all_boxes.extend(r?);
+        }
+        Ok(all_boxes)
+    }
+
     /// 주어진 박스들에 대해 cls+rec를 실행하여 인식 결과를 반환한다.
     pub(crate) fn recognize_boxes(
         &self,
         img: &DynamicImage,
         boxes: &[det::DetBox],
         score_thresh: f32,
+        enable_cls: bool,
     ) -> Result<Vec<OcrDetection>, String> {
         if boxes.is_empty() {
             return Ok(vec![]);
         }
 
-        // 모든 박스를 크롭한 뒤 cls를 배치로 처리 (GPU 호출 횟수 최소화)
-        let crops: Vec<DynamicImage> = boxes.iter().map(|b| crop_box(img, b)).collect();
+        let filtered_boxes: Vec<&det::DetBox> =
+            boxes.iter().filter(|b| should_keep_for_ocr(b)).collect();
+        let dropped_boxes = boxes.len().saturating_sub(filtered_boxes.len());
+        if dropped_boxes > 0 {
+            eprintln!(
+                "[OCR] ocr 박스 필터: {} -> {} ({}개 제외)",
+                boxes.len(),
+                filtered_boxes.len(),
+                dropped_boxes
+            );
+        }
+        if filtered_boxes.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 모든 박스를 크롭한 뒤 필요 시 cls를 배치로 처리한다.
+        let crops: Vec<DynamicImage> = filtered_boxes.iter().map(|b| crop_box(img, b)).collect();
 
         let t_cls = std::time::Instant::now();
-        let labels = {
+        let labels = if !enable_cls {
+            eprintln!("[OCR] cls 비활성화: 전체 생략");
+            vec![0; crops.len()]
+        } else if crops.len() <= CLS_SAMPLE_SIZE {
             let mut session = self.cls_session.lock().unwrap();
             cls::classify_batch(&mut session, &crops)?
+        } else {
+            let sample_indices = evenly_spaced_sample_indices(crops.len(), CLS_SAMPLE_SIZE);
+            let sample_crops: Vec<DynamicImage> =
+                sample_indices.iter().map(|&i| crops[i].clone()).collect();
+            let sample_labels = {
+                let mut session = self.cls_session.lock().unwrap();
+                cls::classify_batch(&mut session, &sample_crops)?
+            };
+            let sample_rotated = sample_labels.iter().filter(|&&label| label == 1).count();
+
+            if sample_rotated < CLS_SAMPLE_ROTATED_THRESHOLD {
+                eprintln!(
+                    "[OCR] cls 샘플 {}개 검사: 회전 {}개(<{}), 전체 생략",
+                    sample_crops.len(),
+                    sample_rotated,
+                    CLS_SAMPLE_ROTATED_THRESHOLD
+                );
+                vec![0; crops.len()]
+            } else {
+                eprintln!(
+                    "[OCR] cls 샘플 {}개 검사: 회전 {}개(>={}), 전체 실행",
+                    sample_crops.len(),
+                    sample_rotated,
+                    CLS_SAMPLE_ROTATED_THRESHOLD
+                );
+                let mut session = self.cls_session.lock().unwrap();
+                cls::classify_batch(&mut session, &crops)?
+            }
         };
-        eprintln!("[OCR] cls ({} 박스): {:.0}ms", crops.len(), t_cls.elapsed().as_millis());
+        let rotated = labels.iter().filter(|&&label| label == 1).count();
+        eprintln!(
+            "[OCR] cls ({} 박스): {:.0}ms",
+            crops.len(),
+            t_cls.elapsed().as_millis()
+        );
 
         let oriented_crops: Vec<DynamicImage> = crops
             .into_iter()
@@ -109,18 +272,66 @@ impl OcrEngine {
             let mut session = self.rec_session.lock().unwrap();
             rec::recognize_batch(&mut session, &oriented_crops, &self.dict)?
         };
-        eprintln!("[OCR] rec ({} 박스): {:.0}ms", oriented_crops.len(), t_rec.elapsed().as_millis());
+        eprintln!(
+            "[OCR] rec ({} 박스, rotate180 {}): {:.0}ms",
+            oriented_crops.len(),
+            rotated,
+            t_rec.elapsed().as_millis()
+        );
 
         let mut detections = Vec::new();
-        for (box_pts, (text, score)) in boxes.iter().zip(rec_results) {
+        for (box_pts, (text, score)) in filtered_boxes.into_iter().zip(rec_results) {
             if score >= score_thresh && !text.is_empty() {
-                let polygon: Vec<[f64; 2]> = box_pts.iter().map(|&pt| pt).collect();
+                let polygon: Vec<[f64; 2]> = box_pts.iter().copied().collect();
                 detections.push((polygon, text));
             }
         }
 
         Ok(detections)
     }
+}
+
+fn evenly_spaced_sample_indices(len: usize, sample_size: usize) -> Vec<usize> {
+    if len == 0 || sample_size == 0 {
+        return vec![];
+    }
+    if len <= sample_size {
+        return (0..len).collect();
+    }
+
+    let last = len - 1;
+    (0..sample_size)
+        .map(|i| i * last / (sample_size - 1))
+        .collect()
+}
+
+fn should_keep_for_ocr(box_pts: &det::DetBox) -> bool {
+    let (min_x, min_y, max_x, max_y) = det_box_bounds(box_pts);
+    let w = (max_x - min_x).max(0.0);
+    let h = (max_y - min_y).max(0.0);
+    let side = w.min(h);
+    let area = w * h;
+    let tall_ratio = if w > 0.0 { h / w } else { f64::INFINITY };
+
+    side >= MIN_BOX_SIDE_FOR_OCR
+        && area >= MIN_BOX_AREA_FOR_OCR
+        && tall_ratio <= MAX_BOX_HEIGHT_WIDTH_RATIO_FOR_OCR
+}
+
+fn det_box_bounds(box_pts: &det::DetBox) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+
+    for &[x, y] in box_pts {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    (min_x, min_y, max_x, max_y)
 }
 
 fn load_session(models_dir: &Path, model_name: &str) -> Result<Session, String> {
@@ -153,7 +364,10 @@ fn try_load_gpu_session(model_path: &Path, model_name: &str) -> Option<Session> 
 
     let mut builder = match Session::builder() {
         Ok(b) => b,
-        Err(e) => { eprintln!("[OCR] {model_name}: 세션 빌더 실패: {e}"); return None; }
+        Err(e) => {
+            eprintln!("[OCR] {model_name}: 세션 빌더 실패: {e}");
+            return None;
+        }
     };
     builder = match builder.with_execution_providers([ep::CUDA::default().build()]) {
         Ok(b) => b,
@@ -546,6 +760,38 @@ mod tests {
             assert!((p[0] - dst[i][0]).abs() < 1e-6);
             assert!((p[1] - dst[i][1]).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn cls_샘플_인덱스는_처음과_끝을_고르게_포함한다() {
+        let indices = evenly_spaced_sample_indices(100, 5);
+
+        assert_eq!(indices, vec![0, 24, 49, 74, 99]);
+    }
+
+    #[test]
+    fn 초소형_박스는_ocr_전에_제외한다() {
+        let tiny = [[10.0, 10.0], [15.0, 10.0], [15.0, 15.0], [10.0, 15.0]];
+        let normal = [[10.0, 10.0], [40.0, 10.0], [40.0, 24.0], [10.0, 24.0]];
+
+        assert!(!should_keep_for_ocr(&tiny));
+        assert!(should_keep_for_ocr(&normal));
+    }
+
+    #[test]
+    fn 극단적으로_세로로_긴_박스는_ocr_전에_제외한다() {
+        let tall = [[10.0, 10.0], [18.0, 10.0], [18.0, 40.0], [10.0, 40.0]];
+        let normal = [[10.0, 10.0], [34.0, 10.0], [34.0, 40.0], [10.0, 40.0]];
+
+        assert!(!should_keep_for_ocr(&tall));
+        assert!(should_keep_for_ocr(&normal));
+    }
+
+    #[test]
+    fn cls_샘플_회전_임계치_미만이면_전체를_생략한다() {
+        assert!(1 < CLS_SAMPLE_ROTATED_THRESHOLD);
+        assert!(2 < CLS_SAMPLE_ROTATED_THRESHOLD);
+        assert!(3 >= CLS_SAMPLE_ROTATED_THRESHOLD);
     }
 
     #[test]

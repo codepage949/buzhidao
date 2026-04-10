@@ -1,10 +1,14 @@
 const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
 const DEFAULT_SCORE_THRESH: f32 = 0.5;
+const DEFAULT_OCR_ENABLE_CLS: bool = false;
+const DEFAULT_OCR_DENSE_TILE_FAST_PATH: bool = false;
 
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) source: String,
     pub(crate) score_thresh: f32,
+    pub(crate) ocr_enable_cls: bool,
+    pub(crate) ocr_dense_tile_fast_path: bool,
     pub(crate) ai_gateway_api_key: String,
     pub(crate) ai_gateway_model: String,
     pub(crate) system_prompt: String,
@@ -20,6 +24,26 @@ impl Config {
             score_thresh: env_or("SCORE_THRESH", "0.5")
                 .parse()
                 .unwrap_or(DEFAULT_SCORE_THRESH),
+            ocr_enable_cls: env_or(
+                "OCR_ENABLE_CLS",
+                if DEFAULT_OCR_ENABLE_CLS {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .parse()
+            .unwrap_or(DEFAULT_OCR_ENABLE_CLS),
+            ocr_dense_tile_fast_path: env_or(
+                "OCR_DENSE_TILE_FAST_PATH",
+                if DEFAULT_OCR_DENSE_TILE_FAST_PATH {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .parse()
+            .unwrap_or(DEFAULT_OCR_DENSE_TILE_FAST_PATH),
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
@@ -50,7 +74,10 @@ fn load_system_prompt() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_system_prompt, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT};
+    use super::{
+        load_system_prompt, DEFAULT_OCR_DENSE_TILE_FAST_PATH, DEFAULT_OCR_ENABLE_CLS,
+        DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT,
+    };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -96,5 +123,15 @@ mod tests {
     #[test]
     fn score_thresh_기본값은_0_5다() {
         assert!((DEFAULT_SCORE_THRESH - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ocr_enable_cls_기본값은_false다() {
+        assert!(!DEFAULT_OCR_ENABLE_CLS);
+    }
+
+    #[test]
+    fn ocr_dense_tile_fast_path_기본값은_false다() {
+        assert!(!DEFAULT_OCR_DENSE_TILE_FAST_PATH);
     }
 }
