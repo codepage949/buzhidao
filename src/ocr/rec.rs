@@ -45,7 +45,7 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
     let ratio = w as f32 / h as f32;
     let target_w = ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W);
 
-    let resized = img.resize_exact(target_w, REC_H, image::imageops::FilterType::Lanczos3);
+    let resized = img.resize_exact(target_w, REC_H, image::imageops::FilterType::Triangle);
     let rgb = resized.to_rgb8();
 
     let mut tensor = Array3::<f32>::zeros((3, REC_H as usize, target_w as usize));
@@ -60,6 +60,82 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
     }
 
     tensor.insert_axis(ndarray::Axis(0))
+}
+
+fn target_width(img: &DynamicImage) -> u32 {
+    let ratio = img.width() as f32 / img.height() as f32;
+    ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W)
+}
+
+/// 배치 추론 시도. 성공하면 결과를 반환하고, 실패하면 None.
+/// 별도 함수로 분리해 SessionOutputs borrow를 즉시 해제한다.
+fn try_batch_recognize(
+    session: &mut Session,
+    imgs: &[DynamicImage],
+    dict: &[String],
+    max_w: u32,
+) -> Option<Vec<(String, f32)>> {
+    let n = imgs.len();
+    // 패딩 값 -1.0 = 검은색 픽셀(RGB=0)에 해당하는 정규화 값
+    let mut batch = Array4::<f32>::from_elem((n, 3, REC_H as usize, max_w as usize), -1.0f32);
+    for (i, img) in imgs.iter().enumerate() {
+        let tw = target_width(img);
+        let resized = img.resize_exact(tw, REC_H, image::imageops::FilterType::Triangle);
+        let rgb = resized.to_rgb8();
+        for y in 0..REC_H as usize {
+            for x in 0..tw as usize {
+                let pixel = rgb.get_pixel(x as u32, y as u32);
+                batch[[i, 0, y, x]] = pixel[2] as f32 / 255.0 / 0.5 - 1.0;
+                batch[[i, 1, y, x]] = pixel[1] as f32 / 255.0 / 0.5 - 1.0;
+                batch[[i, 2, y, x]] = pixel[0] as f32 / 255.0 / 0.5 - 1.0;
+            }
+        }
+    }
+
+    let input_values = ort::value::Value::from_array(batch).ok()?;
+    let outputs = session.run(ort::inputs![input_values]).ok()?;
+    let (shape, data) = outputs[0].try_extract_tensor::<f32>().ok()?;
+
+    let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+    // shape: [n, time_steps, num_classes]
+    if dims.len() != 3 || dims[0] != n {
+        return None;
+    }
+    let (time_steps, num_classes) = (dims[1], dims[2]);
+    let flat: Vec<f32> = data.to_vec();
+
+    Some(
+        (0..n)
+            .map(|i| {
+                let start = i * time_steps * num_classes;
+                let slice = &flat[start..start + time_steps * num_classes];
+                let view = ndarray::ArrayView2::from_shape((time_steps, num_classes), slice)
+                    .unwrap_or_else(|_| ndarray::ArrayView2::from_shape((0, 1), &[]).unwrap());
+                ctc_decode(&view, dict)
+            })
+            .collect(),
+    )
+}
+
+/// 여러 이미지를 배치로 인식한다.
+/// 모델이 동적 배치를 지원하지 않으면 순차 처리로 폴백한다.
+pub(crate) fn recognize_batch(
+    session: &mut Session,
+    imgs: &[DynamicImage],
+    dict: &[String],
+) -> Result<Vec<(String, f32)>, String> {
+    match imgs.len() {
+        0 => return Ok(vec![]),
+        1 => return Ok(vec![recognize(session, &imgs[0], dict)?]),
+        _ => {}
+    }
+
+    let max_w = imgs.iter().map(target_width).max().unwrap_or(1);
+    if let Some(results) = try_batch_recognize(session, imgs, dict, max_w) {
+        return Ok(results);
+    }
+    // 배치 실패 시 순차 처리로 폴백
+    imgs.iter().map(|img| recognize(session, img, dict)).collect()
 }
 
 /// 텍스트 인식: 이미지에서 텍스트를 추출한다.

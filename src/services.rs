@@ -104,7 +104,15 @@ fn predict_with_tiles(
     img: &DynamicImage,
     score_thresh: f32,
 ) -> Result<Vec<OcrDetection>, String> {
+    let t_det_full = std::time::Instant::now();
     let full_boxes = engine.detect(img)?;
+    eprintln!(
+        "[OCR] det 전체: {:.0}ms ({} 박스, {}×{})",
+        t_det_full.elapsed().as_millis(),
+        full_boxes.len(),
+        img.width(),
+        img.height()
+    );
 
     if img.width().max(img.height()) < TILE_TRIGGER_SIZE {
         return engine.recognize_boxes(img, &full_boxes, score_thresh);
@@ -117,6 +125,7 @@ fn predict_with_tiles(
     let tile_w = img.width().div_ceil(tile_grid);
     let tile_h = img.height().div_ceil(tile_grid);
 
+    let t_det_tiles = std::time::Instant::now();
     for row in 0..tile_grid {
         for col in 0..tile_grid {
             let x0 = col.saturating_mul(tile_w).saturating_sub(tile_overlap);
@@ -134,6 +143,13 @@ fn predict_with_tiles(
             }
         }
     }
+    eprintln!(
+        "[OCR] det 타일 {}×{}: {:.0}ms ({} 박스)",
+        tile_grid,
+        tile_grid,
+        t_det_tiles.elapsed().as_millis(),
+        tile_boxes.len()
+    );
 
     // 2단계: 타일 박스 우선 병합
     let unique_boxes = merge_tile_priority(full_boxes, tile_boxes);

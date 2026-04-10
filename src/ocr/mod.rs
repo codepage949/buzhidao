@@ -31,12 +31,34 @@ impl OcrEngine {
             std::fs::read_to_string(&dict_path).map_err(|e| format!("사전 파일 로드 실패: {e}"))?;
         let dict: Vec<String> = dict_content.lines().map(|s| s.to_string()).collect();
 
-        Ok(Self {
+        let engine = Self {
             det_session: Mutex::new(det_session),
             cls_session: Mutex::new(cls_session),
             rec_session: Mutex::new(rec_session),
             dict,
-        })
+        };
+
+            engine.warmup();
+
+        Ok(engine)
+    }
+
+    /// 더미 이미지로 각 세션을 한 번 실행해 GPU 커널을 워밍업한다.
+    fn warmup(&self) {
+        let dummy_large = DynamicImage::new_rgb8(320, 320);
+        let dummy_crop = DynamicImage::new_rgb8(100, 32);
+
+        let t = std::time::Instant::now();
+        let _ = self.detect(&dummy_large);
+        eprintln!("[OCR] 워밍업 det: {:.0}ms", t.elapsed().as_millis());
+
+        let t = std::time::Instant::now();
+        let _ = { let mut s = self.cls_session.lock().unwrap(); cls::classify(&mut s, &dummy_crop) };
+        eprintln!("[OCR] 워밍업 cls: {:.0}ms", t.elapsed().as_millis());
+
+        let t = std::time::Instant::now();
+        let _ = { let mut s = self.rec_session.lock().unwrap(); rec::recognize(&mut s, &dummy_crop, &self.dict) };
+        eprintln!("[OCR] 워밍업 rec: {:.0}ms", t.elapsed().as_millis());
     }
 
     #[cfg(test)]
@@ -62,26 +84,35 @@ impl OcrEngine {
         boxes: &[det::DetBox],
         score_thresh: f32,
     ) -> Result<Vec<OcrDetection>, String> {
+        if boxes.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 모든 박스를 크롭한 뒤 cls를 배치로 처리 (GPU 호출 횟수 최소화)
+        let crops: Vec<DynamicImage> = boxes.iter().map(|b| crop_box(img, b)).collect();
+
+        let t_cls = std::time::Instant::now();
+        let labels = {
+            let mut session = self.cls_session.lock().unwrap();
+            cls::classify_batch(&mut session, &crops)?
+        };
+        eprintln!("[OCR] cls ({} 박스): {:.0}ms", crops.len(), t_cls.elapsed().as_millis());
+
+        let oriented_crops: Vec<DynamicImage> = crops
+            .into_iter()
+            .zip(labels)
+            .map(|(crop, label)| if label == 1 { crop.rotate180() } else { crop })
+            .collect();
+
+        let t_rec = std::time::Instant::now();
+        let rec_results = {
+            let mut session = self.rec_session.lock().unwrap();
+            rec::recognize_batch(&mut session, &oriented_crops, &self.dict)?
+        };
+        eprintln!("[OCR] rec ({} 박스): {:.0}ms", oriented_crops.len(), t_rec.elapsed().as_millis());
+
         let mut detections = Vec::new();
-
-        for box_pts in boxes {
-            let cropped = crop_box(img, box_pts);
-
-            let label = {
-                let mut session = self.cls_session.lock().unwrap();
-                cls::classify(&mut session, &cropped)?
-            };
-            let oriented = if label == 1 {
-                cropped.rotate180()
-            } else {
-                cropped
-            };
-
-            let (text, score) = {
-                let mut session = self.rec_session.lock().unwrap();
-                rec::recognize(&mut session, &oriented, &self.dict)?
-            };
-
+        for (box_pts, (text, score)) in boxes.iter().zip(rec_results) {
             if score >= score_thresh && !text.is_empty() {
                 let polygon: Vec<[f64; 2]> = box_pts.iter().map(|&pt| pt).collect();
                 detections.push((polygon, text));
@@ -94,30 +125,54 @@ impl OcrEngine {
 
 fn load_session(models_dir: &Path, model_name: &str) -> Result<Session, String> {
     let model_path = models_dir.join(format!("{model_name}.onnx"));
-    let builder = Session::builder().map_err(|e| format!("{model_name} 세션 빌더 실패: {e}"))?;
-    let mut builder = configure_execution_providers(builder, model_name)?;
 
-    builder
-        .commit_from_file(model_path)
+    // GPU 빌드: GPU 세션 시도 → 실패 시 CPU로 폴백
+    #[cfg(feature = "gpu")]
+    if let Some(session) = try_load_gpu_session(&model_path, model_name) {
+        return Ok(session);
+    }
+
+    Session::builder()
+        .map_err(|e| format!("{model_name} 세션 빌더 실패: {e}"))?
+        .commit_from_file(&model_path)
         .map_err(|e| format!("{model_name} 모델 로드 실패: {e}"))
 }
 
+/// CUDA EP로 GPU 세션 생성을 시도한다. 실패 시 원인을 출력하고 None을 반환한다.
+///
+/// CUDA DLL은 `preload_cuda_dylibs_early()`에서 이미 로드됐거나
+/// 시스템 PATH에 있어야 한다.
 #[cfg(feature = "gpu")]
-fn configure_execution_providers(
-    builder: ort::session::builder::SessionBuilder,
-    model_name: &str,
-) -> Result<ort::session::builder::SessionBuilder, String> {
-    builder
-        .with_execution_providers([ep::CUDA::default().build().fail_silently()])
-        .map_err(|e| format!("{model_name} 실행 provider 설정 실패: {e}"))
-}
+fn try_load_gpu_session(model_path: &Path, model_name: &str) -> Option<Session> {
+    use ort::execution_providers::ExecutionProvider as _;
 
-#[cfg(not(feature = "gpu"))]
-fn configure_execution_providers(
-    builder: ort::session::builder::SessionBuilder,
-    _model_name: &str,
-) -> Result<ort::session::builder::SessionBuilder, String> {
-    Ok(builder)
+    if !ep::CUDA::default().is_available().unwrap_or(false) {
+        eprintln!("[OCR] {model_name}: CUDA EP 사용 불가 — CPU로 폴백");
+        return None;
+    }
+
+    let mut builder = match Session::builder() {
+        Ok(b) => b,
+        Err(e) => { eprintln!("[OCR] {model_name}: 세션 빌더 실패: {e}"); return None; }
+    };
+    builder = match builder.with_execution_providers([ep::CUDA::default().build()]) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[OCR] {model_name}: CUDA EP 등록 실패 — CPU로 폴백\n  원인: {e}");
+            return None;
+        }
+    };
+
+    match builder.commit_from_file(model_path) {
+        Ok(session) => {
+            eprintln!("[OCR] {model_name}: GPU 세션 생성 성공 (CUDA)");
+            Some(session)
+        }
+        Err(e) => {
+            eprintln!("[OCR] {model_name}: GPU 모델 로드 실패 — CPU로 폴백\n  원인: {e}");
+            None
+        }
+    }
 }
 
 fn crop_box(img: &DynamicImage, box_pts: &[[f64; 2]; 4]) -> DynamicImage {

@@ -136,9 +136,55 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     busy.store(false, Ordering::SeqCst);
 }
 
+// ── CUDA DLL 선탐색 ───────────────────────────────────────────────────────────
+
+/// CUDA 런타임 DLL을 ORT가 세션을 열기 전에 미리 로드한다.
+///
+/// `ort::ep::cuda::preload_dylibs`를 사용하면 DLL 탐색 순서를 제어할 수 있다.
+/// 배포 패키지에 번들된 DLL이 있으면 시스템 PATH보다 우선 적용된다.
+///
+/// 탐색 순서:
+/// 1. `<실행파일 디렉토리>/cuda/`  (Tauri 번들 배포 시 리소스 위치)
+/// 2. `CUDA_PATH` 환경변수 → `{CUDA_PATH}/bin`  (개발 시 CUDA 툴킷)
+/// 3. 아무것도 없으면 호출 생략 — ORT가 시스템 PATH에서 자동 탐색
+#[cfg(feature = "gpu")]
+fn preload_cuda_dylibs_early() {
+    use ort::ep::cuda;
+    use std::path::PathBuf;
+
+    // 1. 실행파일 옆 cuda/ 폴더 (Tauri 번들 / 개발 시 target/debug/cuda/)
+    let exe_cuda = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("cuda")))
+        .filter(|p| p.exists());
+
+    // 2. CUDA_PATH 환경변수 (Windows CUDA 툴킷 기본 설치 경로)
+    let env_cuda = std::env::var_os("CUDA_PATH")
+        .or_else(|| std::env::var_os("CUDA_HOME"))
+        .map(|v| PathBuf::from(v).join("bin"))
+        .filter(|p| p.exists());
+
+    let cuda_dir: Option<PathBuf> = exe_cuda.or(env_cuda);
+
+    if let Some(ref dir) = cuda_dir {
+        match cuda::preload_dylibs(Some(dir), None) {
+            Ok(()) => eprintln!("[CUDA] DLL 로드 성공: {}", dir.display()),
+            Err(e) => eprintln!("[CUDA] DLL 로드 실패 ({}): {e}", dir.display()),
+        }
+    }
+    // cuda_dir == None이면 아무것도 하지 않는다 — ORT가 PATH에서 자동 탐색한다
+}
+
 // ── 앱 진입점 ─────────────────────────────────────────────────────────────────
 
 pub fn run() {
+    // GPU 빌드: CUDA 런타임 DLL을 조기 로드한다.
+    // 1순위 — Tauri 리소스 디렉토리의 cuda/ 및 cudnn/ 폴더 (배포 번들)
+    // 2순위 — CUDA_PATH 환경변수 (개발 시 CUDA 툴킷 설치 경로)
+    // 3순위 — 시스템 PATH (CUDA 툴킷이 전역 설치된 경우 자동 탐색)
+    #[cfg(feature = "gpu")]
+    preload_cuda_dylibs_early();
+
     let config = Config::from_env().expect("설정 로드 실패");
     let busy = Arc::new(AtomicBool::new(false));
 

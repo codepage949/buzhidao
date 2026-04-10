@@ -36,7 +36,7 @@ fn resize_for_det(img: &DynamicImage) -> (DynamicImage, f64, f64) {
     new_h = ((new_h + stride - 1) / stride) * stride;
     new_w = ((new_w + stride - 1) / stride) * stride;
 
-    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
     let ratio_h = new_h as f64 / h as f64;
     let ratio_w = new_w as f64 / w as f64;
 
