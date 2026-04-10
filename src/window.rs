@@ -44,7 +44,10 @@ fn overlay_target_bounds(
     width: u32,
     height: u32,
 ) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
-    (PhysicalPosition::new(x, y), PhysicalSize::new(width, height))
+    (
+        PhysicalPosition::new(x, y),
+        PhysicalSize::new(width, height),
+    )
 }
 
 fn window_visible(app: &AppHandle, label: &str) -> bool {

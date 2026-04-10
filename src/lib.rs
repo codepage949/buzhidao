@@ -15,7 +15,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
 use crate::ocr::OcrEngine;
-use crate::platform::{capture_active_screen, install_capture_shortcut, prepare_overlay_for_capture};
+use crate::platform::{
+    capture_active_screen, install_capture_shortcut, prepare_overlay_for_capture,
+};
 use crate::popup::calc_popup_pos;
 use crate::services::{call_ai, run_ocr};
 use crate::window::{focus_active_window, focus_window, hide_window};
@@ -204,8 +206,7 @@ pub fn run() {
                 .resource_dir()
                 .expect("리소스 디렉토리를 찾을 수 없음")
                 .join("models");
-            let engine =
-                OcrEngine::new(&models_dir).expect("OCR 엔진 초기화 실패");
+            let engine = OcrEngine::new(&models_dir).expect("OCR 엔진 초기화 실패");
             app.manage(Arc::new(engine));
             // 시스템 트레이: 종료 메뉴
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;

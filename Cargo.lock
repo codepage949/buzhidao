@@ -339,6 +339,7 @@ dependencies = [
  "image",
  "ndarray",
  "ort",
+ "rayon",
  "rdev",
  "reqwest 0.12.28",
  "screenshots",

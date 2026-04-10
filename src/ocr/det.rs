@@ -64,9 +64,18 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
 }
 
 /// DB 후처리: 히트맵에서 텍스트 박스를 추출한다.
-fn db_postprocess(pred: &[f32], pred_h: usize, pred_w: usize, src_h: u32, src_w: u32) -> Vec<DetBox> {
+fn db_postprocess(
+    pred: &[f32],
+    pred_h: usize,
+    pred_w: usize,
+    src_h: u32,
+    src_w: u32,
+) -> Vec<DetBox> {
     // 이진화
-    let bitmap: Vec<u8> = pred.iter().map(|&v| if v > THRESH { 1u8 } else { 0u8 }).collect();
+    let bitmap: Vec<u8> = pred
+        .iter()
+        .map(|&v| if v > THRESH { 1u8 } else { 0u8 })
+        .collect();
 
     // 연결 컴포넌트 찾기 (간단한 flood fill 기반)
     let contours = find_contours(&bitmap, pred_h, pred_w);
@@ -121,7 +130,9 @@ pub(crate) fn detect(session: &mut Session, img: &DynamicImage) -> Result<Vec<De
     let pred_w = resized.width() as usize;
 
     let input_values = ort::value::Value::from_array(input).map_err(|e| e.to_string())?;
-    let outputs = session.run(ort::inputs![input_values]).map_err(|e| e.to_string())?;
+    let outputs = session
+        .run(ort::inputs![input_values])
+        .map_err(|e| e.to_string())?;
 
     let (_shape, data) = outputs[0]
         .try_extract_tensor::<f32>()
@@ -234,7 +245,11 @@ fn order_box_points(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
 /// Andrew's monotone chain 알고리즘으로 convex hull을 구한다.
 fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     let mut pts: Vec<[f32; 2]> = points.to_vec();
-    pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap().then(a[1].partial_cmp(&b[1]).unwrap()));
+    pts.sort_by(|a, b| {
+        a[0].partial_cmp(&b[0])
+            .unwrap()
+            .then(a[1].partial_cmp(&b[1]).unwrap())
+    });
     pts.dedup();
 
     let n = pts.len();
@@ -316,7 +331,11 @@ fn box_score_poly(pred: &[f32], bh: usize, bw: usize, box_pts: &[[f32; 2]]) -> f
         }
     }
 
-    if count == 0 { 0.0 } else { (sum / count as f64) as f32 }
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f64) as f32
+    }
 }
 
 /// 점이 폴리곤 내부에 있는지 판단 (ray casting).
@@ -693,7 +712,10 @@ mod tests {
         }
 
         let score = box_score_poly(&pred, h, w, &polygon);
-        assert!(score > 0.85, "폴리곤 내부 평균 점수가 유지되어야 함: {score}");
+        assert!(
+            score > 0.85,
+            "폴리곤 내부 평균 점수가 유지되어야 함: {score}"
+        );
     }
 
     #[test]
@@ -713,6 +735,9 @@ mod tests {
     #[test]
     fn mini_box_점순서는_좌상_우상_우하_좌하다() {
         let ordered = order_box_points(&[[9.0, 5.0], [1.0, 7.0], [8.0, 1.0], [2.0, 2.0]]);
-        assert_eq!(ordered, vec![[2.0, 2.0], [8.0, 1.0], [9.0, 5.0], [1.0, 7.0]]);
+        assert_eq!(
+            ordered,
+            vec![[2.0, 2.0], [8.0, 1.0], [9.0, 5.0], [1.0, 7.0]]
+        );
     }
 }
