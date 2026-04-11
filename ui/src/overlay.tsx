@@ -14,8 +14,8 @@ type OcrResultPayload = {
   orig_width: number;
   orig_height: number;
   source: string;
-  x_delta: number;
-  y_delta: number;
+  word_gap: number;
+  line_gap: number;
 };
 
 type State =
@@ -58,8 +58,8 @@ function OverlayApp() {
       ? groupDetectionsWithBounds(
           state.ocr.detections,
           state.ocr.source,
-          state.ocr.x_delta,
-          state.ocr.y_delta,
+          state.ocr.word_gap,
+          state.ocr.line_gap,
         )
       : [];
 

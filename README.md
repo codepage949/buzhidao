@@ -61,8 +61,8 @@
 - `AI_GATEWAY_API_KEY`
 - `AI_GATEWAY_MODEL`
 - `SYSTEM_PROMPT_PATH` (선택)
-- `X_DELTA`
-- `Y_DELTA`
+- `WORD_GAP`
+- `LINE_GAP`
 
 예시는 [.env.example](.env.example)에 있습니다.
 

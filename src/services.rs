@@ -10,8 +10,8 @@ pub(crate) struct OcrResultPayload {
     pub(crate) orig_width: u32,
     pub(crate) orig_height: u32,
     pub(crate) source: String,
-    pub(crate) x_delta: i32,
-    pub(crate) y_delta: i32,
+    pub(crate) word_gap: i32,
+    pub(crate) line_gap: i32,
 }
 
 pub(crate) struct CaptureInfo {
@@ -96,8 +96,8 @@ pub(crate) fn run_ocr(
         orig_width,
         orig_height,
         source: cfg.source.clone(),
-        x_delta: cfg.x_delta,
-        y_delta: cfg.y_delta,
+        word_gap: cfg.word_gap,
+        line_gap: cfg.line_gap,
     })
 }
 

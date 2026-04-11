@@ -9,8 +9,8 @@ pub(crate) struct Config {
     pub(crate) ai_gateway_api_key: String,
     pub(crate) ai_gateway_model: String,
     pub(crate) system_prompt: String,
-    pub(crate) x_delta: i32,
-    pub(crate) y_delta: i32,
+    pub(crate) word_gap: i32,
+    pub(crate) line_gap: i32,
 }
 
 impl Config {
@@ -24,8 +24,8 @@ impl Config {
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
-            x_delta: env_or("X_DELTA", "25").parse().unwrap_or(25),
-            y_delta: env_or("Y_DELTA", "225").parse().unwrap_or(225),
+            word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(20),
+            line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(15),
         })
     }
 }
