@@ -1,5 +1,14 @@
 ## 회고
 
+### bbox 그루핑 canMerge 비대칭 조건 버그
+
+`item.x - group.right <= xGap` 단방향 조건은 item이 group 왼쪽에 있을 때
+음수가 되어 항상 통과한다 (예: 오른쪽 컬럼 아래 줄에 왼쪽 컬럼이 잘못 병합).
+
+→ X 범위 겹침 기준으로 교체:
+`item.x <= group.right + xGap AND item.right >= group.x - xGap`
+좌우 양방향 대칭이어야 한다.
+
 ### Tauri 투명 오버레이 창 (Windows)
 
 투명 WebView2 창에서 마우스 이벤트가 아래 창으로 통과하는 문제가 있다.
