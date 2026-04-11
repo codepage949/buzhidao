@@ -95,23 +95,13 @@ impl OcrEngine {
     }
 
     /// det만 실행하여 텍스트 영역 폴리곤을 반환한다.
-    ///
-    /// 이미지가 `tile_size`보다 크면 타일로 분할하여 원본 해상도 그대로 처리한다.
     pub(crate) fn detect(
         &self,
         img: &DynamicImage,
-        tile_size: u32,
+        resize_long: u32,
     ) -> Result<Vec<det::DetBox>, String> {
-        const TILE_OVERLAP: u32 = 100;
         let mut session = self.det_session.lock().unwrap();
-        det::detect_tiled(
-            &mut session,
-            img,
-            tile_size,
-            TILE_OVERLAP,
-            self.det_thresh,
-            self.box_thresh,
-        )
+        det::detect_with_resize_long(&mut session, img, resize_long, self.det_thresh, self.box_thresh)
     }
 
     /// 주어진 박스들에 대해 cls+rec를 실행하여 인식 결과를 반환한다.
@@ -167,6 +157,24 @@ impl OcrEngine {
             .zip(oriented_crops.iter())
             .enumerate()
         {
+            if debug_trace {
+                let single = {
+                    let mut session = self.rec_session.lock().unwrap();
+                    rec::recognize(&mut session, crop, &self.dict)
+                };
+                match single {
+                    Ok((single_text, single_score)) => {
+                        eprintln!(
+                            "[OCR][rec-compare] #{idx:02} batch=({score:.3}, {:?}) single=({single_score:.3}, {:?})",
+                            text,
+                            single_text
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("[OCR][rec-compare] #{idx:02} single compare failed: {err}");
+                    }
+                }
+            }
             let accepted = should_accept_recognition(&text, score, score_thresh);
             if debug_trace {
                 if let Err(err) = save_debug_crop(crop, idx, accepted, score, &text) {

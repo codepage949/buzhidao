@@ -257,7 +257,6 @@ function OverlayApp() {
               }}
               onMouseEnter={() => setHoveredIdx(i)}
               onMouseLeave={() => setHoveredIdx(null)}
-              title={group.text}
               style={{
                 position: "absolute",
                 left: `${cssX}px`,
@@ -272,6 +271,31 @@ function OverlayApp() {
                 transition: "border-color 0.1s, background 0.1s",
               }}
             />
+            {isHovered && (
+              <div
+                style={{
+                  position: "absolute",
+                  left: `${cssX}px`,
+                  top: `${Math.max(cssY - 56, 0)}px`,
+                  maxWidth: "480px",
+                  padding: "6px 8px",
+                  fontSize: "12px",
+                  lineHeight: "1.35",
+                  color: "#ffffff",
+                  background: "rgba(15, 23, 42, 0.96)",
+                  border: "1px solid rgba(148, 163, 184, 0.9)",
+                  borderRadius: "6px",
+                  boxShadow: "0 8px 24px rgba(0, 0, 0, 0.35)",
+                  pointerEvents: "none",
+                  whiteSpace: "normal",
+                  wordBreak: "break-word",
+                  boxSizing: "border-box",
+                  zIndex: 50,
+                }}
+              >
+                {group.text}
+              </div>
+            )}
             {state.kind === "ready" && state.ocr.debug_trace && (
               <div
                 style={{

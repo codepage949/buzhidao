@@ -146,83 +146,7 @@ pub(crate) fn detect_with_resize_long(
     db_postprocess(&pred, pred_h, pred_w, src_h, src_w, det_thresh, box_thresh)
 }
 
-/// 화면을 `tile_size × tile_size` 타일로 분할하여 det를 실행하고 박스를 병합한다.
-///
-/// 전체 이미지를 축소하지 않으므로 작은 텍스트도 원본 해상도 그대로 det에 입력된다.
-/// 타일 경계에서 중복 생성된 박스는 IoU 기반으로 제거한다.
-pub(crate) fn detect_tiled(
-    session: &mut Session,
-    img: &DynamicImage,
-    tile_size: u32,
-    tile_overlap: u32,
-    det_thresh: f32,
-    box_thresh: f32,
-) -> Result<Vec<DetBox>, String> {
-    let (img_w, img_h) = (img.width(), img.height());
-
-    // 이미지가 타일보다 작으면 직접 실행
-    if img_w <= tile_size && img_h <= tile_size {
-        return detect_with_resize_long(session, img, tile_size, det_thresh, box_thresh);
-    }
-
-    let step = (tile_size - tile_overlap).max(1);
-    let x_offsets = tile_offsets(img_w, tile_size, step);
-    let y_offsets = tile_offsets(img_h, tile_size, step);
-    let n_tiles = x_offsets.len() * y_offsets.len();
-
-    let mut all_boxes = Vec::new();
-
-    for &tile_y in &y_offsets {
-        for &tile_x in &x_offsets {
-            let tile_w = tile_size.min(img_w - tile_x);
-            let tile_h = tile_size.min(img_h - tile_y);
-            let tile = img.crop_imm(tile_x, tile_y, tile_w, tile_h);
-
-            let tile_boxes =
-                detect_with_resize_long(session, &tile, tile_size, det_thresh, box_thresh)?;
-
-            // 타일 좌표 → 원본 이미지 좌표로 변환
-            for mut box_pts in tile_boxes {
-                for pt in &mut box_pts {
-                    pt[0] += tile_x as f64;
-                    pt[1] += tile_y as f64;
-                }
-                all_boxes.push(box_pts);
-            }
-        }
-    }
-
-    eprintln!(
-        "[det] 타일 분할: {}×{} 화면 → {}타일 (tile={}, overlap={})",
-        img_w, img_h, n_tiles, tile_size, tile_overlap
-    );
-
-    Ok(deduplicate_boxes(all_boxes))
-}
-
-/// 타일 시작 좌표 목록을 계산한다.
-/// 마지막 타일은 항상 이미지 끝에 정렬된다 (경계 누락 방지).
-fn tile_offsets(img_size: u32, tile_size: u32, step: u32) -> Vec<u32> {
-    if img_size <= tile_size {
-        return vec![0];
-    }
-    let mut offsets = Vec::new();
-    let mut pos = 0u32;
-    loop {
-        offsets.push(pos);
-        if pos + tile_size >= img_size {
-            break;
-        }
-        pos = (pos + step).min(img_size - tile_size);
-    }
-    // 마지막 타일이 이미지 끝에 닿지 않으면 추가
-    let last = img_size - tile_size;
-    if offsets.last() != Some(&last) {
-        offsets.push(last);
-    }
-    offsets
-}
-
+#[cfg(test)]
 /// 겹치는 박스를 AABB IoU 기준으로 제거한다 (greedy NMS).
 fn deduplicate_boxes(boxes: Vec<DetBox>) -> Vec<DetBox> {
     let n = boxes.len();
@@ -236,7 +160,9 @@ fn deduplicate_boxes(boxes: Vec<DetBox>) -> Vec<DetBox> {
             if suppress[j] {
                 continue;
             }
-            if aabb_iou(&boxes[i], &boxes[j]) > 0.5 {
+            if aabb_iou(&boxes[i], &boxes[j]) > 0.5
+                || aabb_overlap_ratio_of_smaller(&boxes[i], &boxes[j]) > 0.9
+            {
                 suppress[j] = true;
             }
         }
@@ -250,28 +176,15 @@ fn deduplicate_boxes(boxes: Vec<DetBox>) -> Vec<DetBox> {
         .collect()
 }
 
+#[cfg(test)]
 /// 두 DetBox의 축-정렬 bounding box IoU를 계산한다.
 fn aabb_iou(a: &DetBox, b: &DetBox) -> f64 {
-    let ax0 = a.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
-    let ax1 = a.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
-    let ay0 = a.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
-    let ay1 = a.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
-
-    let bx0 = b.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
-    let bx1 = b.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
-    let by0 = b.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
-    let by1 = b.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
-
-    let ix0 = ax0.max(bx0);
-    let ix1 = ax1.min(bx1);
-    let iy0 = ay0.max(by0);
-    let iy1 = ay1.min(by1);
-
-    if ix1 <= ix0 || iy1 <= iy0 {
+    let (ax0, ay0, ax1, ay1) = aabb_bounds(a);
+    let (bx0, by0, bx1, by1) = aabb_bounds(b);
+    let inter = aabb_intersection_area((ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1));
+    if inter <= 0.0 {
         return 0.0;
     }
-
-    let inter = (ix1 - ix0) * (iy1 - iy0);
     let area_a = (ax1 - ax0) * (ay1 - ay0);
     let area_b = (bx1 - bx0) * (by1 - by0);
     let union = area_a + area_b - inter;
@@ -280,6 +193,46 @@ fn aabb_iou(a: &DetBox, b: &DetBox) -> f64 {
         0.0
     } else {
         inter / union
+    }
+}
+
+#[cfg(test)]
+fn aabb_overlap_ratio_of_smaller(a: &DetBox, b: &DetBox) -> f64 {
+    let (ax0, ay0, ax1, ay1) = aabb_bounds(a);
+    let (bx0, by0, bx1, by1) = aabb_bounds(b);
+    let inter = aabb_intersection_area((ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1));
+    if inter <= 0.0 {
+        return 0.0;
+    }
+    let area_a = (ax1 - ax0) * (ay1 - ay0);
+    let area_b = (bx1 - bx0) * (by1 - by0);
+    let smaller = area_a.min(area_b);
+    if smaller <= 0.0 {
+        0.0
+    } else {
+        inter / smaller
+    }
+}
+
+#[cfg(test)]
+fn aabb_bounds(b: &DetBox) -> (f64, f64, f64, f64) {
+    let x0 = b.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+    let x1 = b.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
+    let y0 = b.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
+    let y1 = b.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
+    (x0, y0, x1, y1)
+}
+
+#[cfg(test)]
+fn aabb_intersection_area(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
+    let ix0 = a.0.max(b.0);
+    let ix1 = a.2.min(b.2);
+    let iy0 = a.1.max(b.1);
+    let iy1 = a.3.min(b.3);
+    if ix1 <= ix0 || iy1 <= iy0 {
+        0.0
+    } else {
+        (ix1 - ix0) * (iy1 - iy0)
     }
 }
 
@@ -880,28 +833,6 @@ mod tests {
     }
 
     #[test]
-    fn tile_offsets_이미지가_타일보다_작으면_오프셋_하나() {
-        let offsets = tile_offsets(800, 1024, 924);
-        assert_eq!(offsets, vec![0]);
-    }
-
-    #[test]
-    fn tile_offsets_1920_너비는_두_타일() {
-        // 1920×1080 화면, tile=1024, overlap=100, step=924
-        let offsets = tile_offsets(1920, 1024, 924);
-        assert_eq!(offsets.len(), 2);
-        assert_eq!(offsets[0], 0);
-        assert_eq!(offsets[1], 896); // 1920 - 1024 = 896
-    }
-
-    #[test]
-    fn tile_offsets_마지막_타일은_항상_이미지_끝에_닿는다() {
-        let offsets = tile_offsets(2000, 1024, 924);
-        let last = *offsets.last().unwrap();
-        assert_eq!(last, 2000 - 1024); // 976
-    }
-
-    #[test]
     fn aabb_iou_완전_겹침은_1_0() {
         let a: DetBox = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
         assert!((aabb_iou(&a, &a) - 1.0).abs() < 1e-9);
@@ -921,5 +852,13 @@ mod tests {
         let c: DetBox = [[100.0, 0.0], [110.0, 0.0], [110.0, 5.0], [100.0, 5.0]]; // 분리됨
         let result = deduplicate_boxes(vec![a, b, c]);
         assert_eq!(result.len(), 2, "겹치는 박스 하나는 제거되어야 함");
+    }
+
+    #[test]
+    fn deduplicate_boxes_포함_중복_박스_제거() {
+        let large: DetBox = [[0.0, 0.0], [100.0, 0.0], [100.0, 20.0], [0.0, 20.0]];
+        let small: DetBox = [[10.0, 2.0], [70.0, 2.0], [70.0, 18.0], [10.0, 18.0]];
+        let result = deduplicate_boxes(vec![large, small]);
+        assert_eq!(result.len(), 1, "큰 박스 안의 부분 중복 박스는 제거되어야 함");
     }
 }

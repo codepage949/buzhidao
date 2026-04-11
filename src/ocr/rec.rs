@@ -86,6 +86,8 @@ const REC_BATCH_SIZE_XL: usize = 8;
 const REC_BATCH_SIZE_XXL: usize = 6;
 const REC_BATCH_SIZE_XXXL: usize = 4;
 const REC_SINGLE_RETRY_SCORE: f32 = 0.7;
+const REC_SINGLE_RETRY_SUSPICIOUS_WIDTH: usize = 120;
+const REC_SINGLE_RETRY_SHORT_TEXT_LEN: usize = 4;
 
 /// 워밍업에 사용할 너비 목록 (MAX_W=960 기준 자주 등장하는 크기들).
 /// 각 너비에 대해 실행해 cuDNN 알고리즘 캐시를 미리 채운다.
@@ -105,6 +107,26 @@ fn rec_batch_size_for_start_width(width: usize) -> usize {
     } else {
         REC_BATCH_SIZE
     }
+}
+
+fn non_whitespace_char_count(text: &str) -> usize {
+    text.chars().filter(|c| !c.is_whitespace()).count()
+}
+
+fn should_retry_single_result(text: &str, score: f32, width: usize) -> bool {
+    score < REC_SINGLE_RETRY_SCORE
+        || (width >= REC_SINGLE_RETRY_SUSPICIOUS_WIDTH
+            && non_whitespace_char_count(text) <= REC_SINGLE_RETRY_SHORT_TEXT_LEN)
+}
+
+fn should_prefer_retry_result(current: &(String, f32), retried: &(String, f32)) -> bool {
+    let current_len = non_whitespace_char_count(&current.0);
+    let retried_len = non_whitespace_char_count(&retried.0);
+
+    retried.1 > current.1
+        || (retried_len >= current_len + 2 && retried.1 + 0.1 >= current.1)
+        || (retried_len >= current_len + 4 && retried.1 + 0.25 >= current.1)
+        || (current_len == 0 && retried_len > 0)
 }
 
 /// 미리 조립된 배치 텐서로 추론한다. 성공하면 결과를 반환하고, 실패하면 None.
@@ -260,12 +282,13 @@ pub(crate) fn recognize_batch(
 
     let mut retried = 0usize;
     for &orig_i in &order {
-        let score = results[orig_i].1;
-        if score >= REC_SINGLE_RETRY_SCORE {
+        let current = &results[orig_i];
+        let width = tensors[orig_i].dim().2;
+        if !should_retry_single_result(&current.0, current.1, width) {
             continue;
         }
         let retried_result = recognize_from_array(session, &tensors[orig_i], dict);
-        if retried_result.1 > score {
+        if should_prefer_retry_result(current, &retried_result) {
             results[orig_i] = retried_result;
         }
         retried += 1;
@@ -397,6 +420,33 @@ mod tests {
     #[test]
     fn low_score_single_retry_기준은_0_7이다() {
         assert!((REC_SINGLE_RETRY_SCORE - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn 긴_crop의_두글자_결과는_single_retry_대상이다() {
+        assert!(should_retry_single_result("你好", 0.95, 200));
+        assert!(should_retry_single_result("ab", 0.88, 200));
+        assert!(!should_retry_single_result("你好世界", 0.95, 80));
+    }
+
+    #[test]
+    fn 긴_crop의_세글자_절단도_single_retry_대상이다() {
+        assert!(should_retry_single_result("就好。", 0.775, 140));
+        assert!(!should_retry_single_result("就好像下雪了一样。", 0.775, 140));
+    }
+
+    #[test]
+    fn retry가_점수는_조금_낮아도_의미있게_길면_채택된다() {
+        let current = ("你好".to_string(), 0.95);
+        let retried = ("你好世界".to_string(), 0.87);
+        assert!(should_prefer_retry_result(&current, &retried));
+    }
+
+    #[test]
+    fn retry가_훨씬_긴_문장을_주면_점수차가_커도_채택된다() {
+        let current = ("就好。".to_string(), 0.775);
+        let retried = ("就好像下雪了一样。".to_string(), 0.997);
+        assert!(should_prefer_retry_result(&current, &retried));
     }
 
     #[test]
