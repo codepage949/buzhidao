@@ -24,7 +24,7 @@ fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
         let (max_idx, &max_val) = row
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap();
 
         if max_idx != 0 && Some(max_idx) != prev_idx {
@@ -51,6 +51,9 @@ fn target_width(img: &DynamicImage) -> u32 {
     ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W)
 }
 
+// rec 정규화: pixel / 255.0 / 0.5 - 1.0 = pixel * (2.0/255.0) - 1.0
+const REC_SCALE: f32 = 2.0 / 255.0;
+
 /// 이미지를 rec 입력 텐서로 전처리한다.
 /// 반환값: shape=(3, REC_H, target_w) Array3
 fn preprocess_to_array(img: &DynamicImage) -> Array3<f32> {
@@ -58,15 +61,17 @@ fn preprocess_to_array(img: &DynamicImage) -> Array3<f32> {
     let resized = img.resize_exact(tw, REC_H, image::imageops::FilterType::Triangle);
     let rgb = resized.to_rgb8();
 
-    let mut arr = Array3::<f32>::zeros((3, REC_H as usize, tw as usize));
-    for y in 0..REC_H as usize {
-        for x in 0..tw as usize {
-            let pixel = rgb.get_pixel(x as u32, y as u32);
-            // BGR 순서 (PaddleOCR rec 모델은 BGR 입력으로 학습됨)
-            arr[[0, y, x]] = pixel[2] as f32 / 255.0 / 0.5 - 1.0; // B
-            arr[[1, y, x]] = pixel[1] as f32 / 255.0 / 0.5 - 1.0; // G
-            arr[[2, y, x]] = pixel[0] as f32 / 255.0 / 0.5 - 1.0; // R
-        }
+    // as_raw()로 연속 메모리 직접 접근: bounds check 없이 RGBRGB... 순서로 순회
+    let raw = rgb.as_raw();
+    let tw_usize = tw as usize;
+    let mut arr = Array3::<f32>::zeros((3, REC_H as usize, tw_usize));
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        let y = i / tw_usize;
+        let x = i % tw_usize;
+        // BGR 순서 (PaddleOCR rec 모델은 BGR 입력으로 학습됨)
+        arr[[0, y, x]] = chunk[2] as f32 * REC_SCALE - 1.0; // B
+        arr[[1, y, x]] = chunk[1] as f32 * REC_SCALE - 1.0; // G
+        arr[[2, y, x]] = chunk[0] as f32 * REC_SCALE - 1.0; // R
     }
     arr
 }
@@ -121,13 +126,12 @@ fn try_batch_run(
         return None;
     }
     let (time_steps, num_classes) = (dims[1], dims[2]);
-    let flat: Vec<f32> = data.to_vec();
 
     Some(
         (0..n)
             .map(|i| {
                 let start = i * time_steps * num_classes;
-                let slice = &flat[start..start + time_steps * num_classes];
+                let slice = &data[start..start + time_steps * num_classes];
                 let view = ndarray::ArrayView2::from_shape((time_steps, num_classes), slice)
                     .unwrap_or_else(|_| ndarray::ArrayView2::from_shape((0, 1), &[]).unwrap());
                 ctc_decode(&view, dict)
@@ -137,9 +141,9 @@ fn try_batch_run(
 }
 
 /// 미리 전처리된 단일 텐서를 추론한다 (배치 실패 시 폴백용).
-fn recognize_from_array(session: &mut Session, arr: Array3<f32>, dict: &[String]) -> (String, f32) {
+fn recognize_from_array(session: &mut Session, arr: &Array3<f32>, dict: &[String]) -> (String, f32) {
     (|| -> Option<(String, f32)> {
-        let arr4 = arr.insert_axis(ndarray::Axis(0));
+        let arr4 = arr.clone().insert_axis(ndarray::Axis(0));
         let iv = ort::value::Value::from_array(arr4).ok()?;
         let out = session.run(ort::inputs![iv]).ok()?;
         let (shape, data) = out[0].try_extract_tensor::<f32>().ok()?;
@@ -149,8 +153,7 @@ fn recognize_from_array(session: &mut Session, arr: Array3<f32>, dict: &[String]
         } else {
             (dims[0], dims[1])
         };
-        let flat: Vec<f32> = data.to_vec();
-        let view = ndarray::ArrayView2::from_shape((ts, nc), &flat).ok()?;
+        let view = ndarray::ArrayView2::from_shape((ts, nc), data).ok()?;
         Some(ctc_decode(&view, dict))
     })()
     .unwrap_or(("".to_string(), 0.0))
@@ -230,7 +233,7 @@ pub(crate) fn recognize_batch(
             (
                 chunk_idx
                     .iter()
-                    .map(|&orig_i| recognize_from_array(session, tensors[orig_i].clone(), dict))
+                    .map(|&orig_i| recognize_from_array(session, &tensors[orig_i], dict))
                     .collect(),
                 "fallback",
             )
@@ -283,8 +286,7 @@ pub(crate) fn recognize(
         (dims[0], dims[1])
     };
 
-    let flat: Vec<f32> = data.to_vec();
-    let logits_2d = ArrayView2::from_shape((time_steps, num_classes), &flat)
+    let logits_2d = ArrayView2::from_shape((time_steps, num_classes), data)
         .map_err(|e| format!("rec 출력 reshape 실패: {e}"))?;
 
     Ok(ctc_decode(&logits_2d, dict))

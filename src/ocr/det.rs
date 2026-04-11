@@ -45,16 +45,17 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
     let rgb = img.to_rgb8();
     let (w, h) = (rgb.width() as usize, rgb.height() as usize);
 
+    // as_raw()로 연속 메모리 직접 접근: bounds check 없이 RGBRGB... 순서로 순회
+    let raw = rgb.as_raw();
     let mut tensor = Array3::<f32>::zeros((3, h, w));
-    for y in 0..h {
-        for x in 0..w {
-            let pixel = rgb.get_pixel(x as u32, y as u32);
-            // BGR 순서 (PaddleOCR det는 BGR 입력)
-            // mean/std는 채널 위치 순서로 적용 (PaddleOCR이 OpenCV BGR에 그대로 적용)
-            tensor[[0, y, x]] = (pixel[2] as f32 * SCALE - MEAN[0]) / STD[0]; // B
-            tensor[[1, y, x]] = (pixel[1] as f32 * SCALE - MEAN[1]) / STD[1]; // G
-            tensor[[2, y, x]] = (pixel[0] as f32 * SCALE - MEAN[2]) / STD[2]; // R
-        }
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        let y = i / w;
+        let x = i % w;
+        // BGR 순서 (PaddleOCR det는 BGR 입력)
+        // mean/std는 채널 위치 순서로 적용 (PaddleOCR이 OpenCV BGR에 그대로 적용)
+        tensor[[0, y, x]] = (chunk[2] as f32 * SCALE - MEAN[0]) / STD[0]; // B
+        tensor[[1, y, x]] = (chunk[1] as f32 * SCALE - MEAN[1]) / STD[1]; // G
+        tensor[[2, y, x]] = (chunk[0] as f32 * SCALE - MEAN[2]) / STD[2]; // R
     }
 
     tensor.insert_axis(ndarray::Axis(0))

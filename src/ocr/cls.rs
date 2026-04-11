@@ -19,15 +19,16 @@ fn preprocess_inner(img: &DynamicImage) -> Array3<f32> {
     let resized = img.resize_exact(CLS_W, CLS_H, image::imageops::FilterType::Triangle);
     let rgb = resized.to_rgb8();
 
+    // as_raw()로 연속 메모리 직접 접근: bounds check 없이 RGBRGB... 순서로 순회
+    let raw = rgb.as_raw();
     let mut tensor = Array3::<f32>::zeros((3, CLS_H as usize, CLS_W as usize));
-    for y in 0..CLS_H as usize {
-        for x in 0..CLS_W as usize {
-            let pixel = rgb.get_pixel(x as u32, y as u32);
-            // BGR 순서 + mean/std 채널 위치 순서 (PaddleOCR 방식)
-            tensor[[0, y, x]] = (pixel[2] as f32 * SCALE - MEAN[0]) / STD[0]; // B
-            tensor[[1, y, x]] = (pixel[1] as f32 * SCALE - MEAN[1]) / STD[1]; // G
-            tensor[[2, y, x]] = (pixel[0] as f32 * SCALE - MEAN[2]) / STD[2]; // R
-        }
+    for (i, chunk) in raw.chunks_exact(3).enumerate() {
+        let y = i / CLS_W as usize;
+        let x = i % CLS_W as usize;
+        // BGR 순서 + mean/std 채널 위치 순서 (PaddleOCR 방식)
+        tensor[[0, y, x]] = (chunk[2] as f32 * SCALE - MEAN[0]) / STD[0]; // B
+        tensor[[1, y, x]] = (chunk[1] as f32 * SCALE - MEAN[1]) / STD[1]; // G
+        tensor[[2, y, x]] = (chunk[0] as f32 * SCALE - MEAN[2]) / STD[2]; // R
     }
     tensor
 }
@@ -51,7 +52,7 @@ pub(crate) fn classify(session: &mut Session, img: &DynamicImage) -> Result<ClsL
     let label = data
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)
         .unwrap_or(0);
 
@@ -83,8 +84,8 @@ fn try_batch_classify_tensors(
 }
 
 /// 미리 전처리된 단일 텐서를 추론한다 (배치 실패 시 폴백용).
-fn classify_from_tensor(session: &mut Session, tensor: Array3<f32>) -> ClsLabel {
-    let arr4 = tensor.insert_axis(ndarray::Axis(0));
+fn classify_from_tensor(session: &mut Session, tensor: &Array3<f32>) -> ClsLabel {
+    let arr4 = tensor.clone().insert_axis(ndarray::Axis(0));
     (|| -> Option<ClsLabel> {
         let iv = ort::value::Value::from_array(arr4).ok()?;
         let out = session.run(ort::inputs![iv]).ok()?;
@@ -122,7 +123,7 @@ pub(crate) fn classify_batch(
             // 배치 실패 시 청크 내 순차 처리
             chunk
                 .iter()
-                .map(|t| classify_from_tensor(session, t.clone()))
+                .map(|t| classify_from_tensor(session, t))
                 .collect()
         };
         for (i, label) in labels.into_iter().enumerate() {

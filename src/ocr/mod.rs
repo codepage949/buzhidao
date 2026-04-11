@@ -12,8 +12,6 @@ use std::sync::Mutex;
 use crate::config::OCR_DET_RESIZE_LONG;
 use crate::services::OcrDetection;
 
-const CLS_SAMPLE_SIZE: usize = 24;
-
 /// ONNX Runtime 기반 OCR 엔진.
 /// det(검출) → cls(방향분류) → rec(인식) 파이프라인.
 pub(crate) struct OcrEngine {
@@ -113,16 +111,11 @@ impl OcrEngine {
             return Ok(vec![]);
         }
 
-        let filtered_boxes: Vec<&det::DetBox> = boxes.iter().collect();
-
-        // 모든 박스를 크롭한 뒤 필요 시 cls를 배치로 처리한다.
-        let crops: Vec<DynamicImage> = filtered_boxes.iter().map(|b| crop_box(img, b)).collect();
+        // 모든 박스를 크롭한 뒤 cls를 배치로 처리한다.
+        let crops: Vec<DynamicImage> = boxes.iter().map(|b| crop_box(img, b)).collect();
 
         let t_cls = std::time::Instant::now();
-        let labels = if crops.len() <= CLS_SAMPLE_SIZE {
-            let mut session = self.cls_session.lock().unwrap();
-            cls::classify_batch(&mut session, &crops)?
-        } else {
+        let labels = {
             let mut session = self.cls_session.lock().unwrap();
             cls::classify_batch(&mut session, &crops)?
         };
@@ -152,7 +145,7 @@ impl OcrEngine {
         );
 
         let mut detections = Vec::new();
-        for (box_pts, (text, score)) in filtered_boxes.into_iter().zip(rec_results) {
+        for (box_pts, (text, score)) in boxes.iter().zip(rec_results) {
             if score >= score_thresh && !text.is_empty() {
                 let polygon: Vec<[f64; 2]> = box_pts.iter().copied().collect();
                 detections.push((polygon, text));
@@ -589,11 +582,6 @@ mod tests {
             assert!((p[0] - dst[i][0]).abs() < 1e-6);
             assert!((p[1] - dst[i][1]).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn 단일_ocr_모드는_cls_샘플_생략을_사용하지_않는다() {
-        assert_eq!(CLS_SAMPLE_SIZE, 24);
     }
 
     #[test]
