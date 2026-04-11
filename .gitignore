@@ -7,10 +7,9 @@ __pycache__/
 *.py[cod]
 scripts/_export_tmp/
 benchmarks/
-app/
+cuda/
 
 !.gitignore
 !.dockerignore
 !.env.example
 *.exe
-ort_diag.log

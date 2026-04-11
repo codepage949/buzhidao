@@ -15,10 +15,13 @@
     "frontendDist": "ui/dist"
   },
   "bundle": {
-    "active": true,
+    "active": false,
     "targets": "all",
     "icon": ["icons/icon.png", "icons/icon.ico"],
-    "resources": ["models/*"]
+    "resources": [
+      "models/*",
+      "cuda/*"
+    ]
   },
   "app": {
     "windows": [
