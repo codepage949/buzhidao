@@ -330,35 +330,6 @@ pub(crate) fn recognize(
 }
 
 #[cfg(test)]
-pub(crate) fn recognize_batch_vs_single(
-    session: &mut Session,
-    img: &DynamicImage,
-    dict: &[String],
-) -> Result<((String, f32), (String, f32)), String> {
-    let batch = recognize_batch(session, std::slice::from_ref(img), dict)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "batch 결과가 비어 있음".to_string())?;
-    let single = recognize(session, img, dict)?;
-    Ok((batch, single))
-}
-
-#[cfg(test)]
-pub(crate) fn recognize_multi_batch_vs_single(
-    session: &mut Session,
-    imgs: &[DynamicImage],
-    target_index: usize,
-    dict: &[String],
-) -> Result<((String, f32), (String, f32)), String> {
-    let batch = recognize_batch(session, imgs, dict)?
-        .into_iter()
-        .nth(target_index)
-        .ok_or_else(|| "batch target 결과가 비어 있음".to_string())?;
-    let single = recognize(session, &imgs[target_index], dict)?;
-    Ok((batch, single))
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use ndarray::Array2;

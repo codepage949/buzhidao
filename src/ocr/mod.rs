@@ -157,24 +157,6 @@ impl OcrEngine {
             .zip(oriented_crops.iter())
             .enumerate()
         {
-            if debug_trace {
-                let single = {
-                    let mut session = self.rec_session.lock().unwrap();
-                    rec::recognize(&mut session, crop, &self.dict)
-                };
-                match single {
-                    Ok((single_text, single_score)) => {
-                        eprintln!(
-                            "[OCR][rec-compare] #{idx:02} batch=({score:.3}, {:?}) single=({single_score:.3}, {:?})",
-                            text,
-                            single_text
-                        );
-                    }
-                    Err(err) => {
-                        eprintln!("[OCR][rec-compare] #{idx:02} single compare failed: {err}");
-                    }
-                }
-            }
             let accepted = should_accept_recognition(&text, score, score_thresh);
             if debug_trace {
                 if let Err(err) = save_debug_crop(crop, idx, accepted, score, &text) {
@@ -587,14 +569,6 @@ mod tests {
         env::var_os("BUZHIDAO_OCR_BENCH_IMAGE").map(PathBuf::from)
     }
 
-    fn benchmark_crop_path() -> Option<PathBuf> {
-        env::var_os("BUZHIDAO_OCR_BENCH_CROP").map(PathBuf::from)
-    }
-
-    fn benchmark_crop_dir() -> Option<PathBuf> {
-        env::var_os("BUZHIDAO_OCR_BENCH_CROP_DIR").map(PathBuf::from)
-    }
-
     #[test]
     fn 모델_로드_및_세션_초기화() {
         if !models_available() {
@@ -673,95 +647,6 @@ mod tests {
                 panic!("추론 실패: {e}");
             }
         }
-    }
-
-    #[test]
-    fn 외부_crop이_있으면_rec_batch와_single을_비교한다() {
-        if !models_available() {
-            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
-            return;
-        }
-
-        let Some(crop_path) = benchmark_crop_path() else {
-            eprintln!("BUZHIDAO_OCR_BENCH_CROP 미설정 — 건너뜀");
-            return;
-        };
-        if !crop_path.exists() {
-            eprintln!("벤치마크 crop 없음: {crop_path:?} — 건너뜀");
-            return;
-        }
-
-        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4).expect("OcrEngine 초기화 실패");
-        let img = image::open(&crop_path).expect("crop 이미지 로드 실패");
-        let mut session = engine.rec_session.lock().unwrap();
-        let (batch, single) =
-            rec::recognize_batch_vs_single(&mut session, &img, &engine.dict).expect("rec 비교 실패");
-
-        eprintln!(
-            "[REC compare] crop={:?}\n  batch : score={:.3} text={:?}\n  single: score={:.3} text={:?}",
-            crop_path,
-            batch.1,
-            batch.0,
-            single.1,
-            single.0
-        );
-    }
-
-    #[test]
-    fn 외부_crop이_있으면_multi_batch와_single을_비교한다() {
-        if !models_available() {
-            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
-            return;
-        }
-
-        let Some(crop_path) = benchmark_crop_path() else {
-            eprintln!("BUZHIDAO_OCR_BENCH_CROP 미설정 — 건너뜀");
-            return;
-        };
-        let Some(crop_dir) = benchmark_crop_dir() else {
-            eprintln!("BUZHIDAO_OCR_BENCH_CROP_DIR 미설정 — 건너뜀");
-            return;
-        };
-        if !crop_path.exists() || !crop_dir.exists() {
-            eprintln!("crop 또는 crop dir 없음 — 건너뜀");
-            return;
-        }
-
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(&crop_dir)
-            .map_err(|e| format!("crop dir 읽기 실패: {e}"))
-            .expect("crop dir 읽기 실패")
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))
-            .collect();
-        paths.sort();
-
-        let target_index = paths
-            .iter()
-            .position(|p| p == &crop_path)
-            .expect("target crop이 crop dir에 있어야 함");
-        let imgs: Vec<DynamicImage> = paths
-            .iter()
-            .map(|p| image::open(p).expect("crop 이미지 로드 실패"))
-            .collect();
-
-        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4).expect("OcrEngine 초기화 실패");
-        let mut session = engine.rec_session.lock().unwrap();
-        let (batch, single) = rec::recognize_multi_batch_vs_single(
-            &mut session,
-            &imgs,
-            target_index,
-            &engine.dict,
-        )
-        .expect("multi rec 비교 실패");
-
-        eprintln!(
-            "[REC multi compare] crop={:?}\n  multi : score={:.3} text={:?}\n  single: score={:.3} text={:?}",
-            crop_path,
-            batch.1,
-            batch.0,
-            single.1,
-            single.0
-        );
     }
 
     #[test]
