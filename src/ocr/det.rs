@@ -18,10 +18,8 @@ const SCALE: f32 = 1.0 / 255.0;
 pub(crate) type DetBox = [[f64; 2]; 4];
 
 /// 이미지를 32 배수 크기로 리사이즈한다 (resize_long=960).
-fn resize_for_det(img: &DynamicImage) -> (DynamicImage, f64, f64) {
+fn resize_for_det(img: &DynamicImage, resize_long: u32) -> (DynamicImage, f64, f64) {
     let (w, h) = (img.width(), img.height());
-    let resize_long = 960u32;
-
     let ratio = if h > w {
         resize_long as f64 / h as f64
     } else {
@@ -31,7 +29,6 @@ fn resize_for_det(img: &DynamicImage) -> (DynamicImage, f64, f64) {
     let mut new_h = (h as f64 * ratio) as u32;
     let mut new_w = (w as f64 * ratio) as u32;
 
-    // 128 배수로 올림
     let stride = 128u32;
     new_h = ((new_h + stride - 1) / stride) * stride;
     new_w = ((new_w + stride - 1) / stride) * stride;
@@ -120,10 +117,13 @@ fn db_postprocess(
     boxes
 }
 
-/// ONNX 추론 실행
-pub(crate) fn detect(session: &mut Session, img: &DynamicImage) -> Result<Vec<DetBox>, String> {
+pub(crate) fn detect_with_resize_long(
+    session: &mut Session,
+    img: &DynamicImage,
+    resize_long: u32,
+) -> Result<Vec<DetBox>, String> {
     let (src_w, src_h) = (img.width(), img.height());
-    let (resized, _ratio_h, _ratio_w) = resize_for_det(img);
+    let (resized, _ratio_h, _ratio_w) = resize_for_det(img, resize_long);
     let input = preprocess(&resized);
 
     let pred_h = resized.height() as usize;
@@ -739,5 +739,25 @@ mod tests {
             ordered,
             vec![[2.0, 2.0], [8.0, 1.0], [9.0, 5.0], [1.0, 7.0]]
         );
+    }
+
+    #[test]
+    fn det_resize_long은_128_배수로_올림된다() {
+        let img = DynamicImage::ImageRgb8(RgbImage::new(1000, 500));
+        let (resized, _, _) = resize_for_det(&img, 1024);
+
+        assert_eq!(resized.width(), 1024);
+        assert_eq!(resized.height(), 512);
+    }
+
+    #[test]
+    fn det_resize_long은_작은_입력도_stride에_맞춰_확대될_수_있다() {
+        let img = DynamicImage::ImageRgb8(RgbImage::new(854, 480));
+        let (resized, ratio_h, ratio_w) = resize_for_det(&img, 1152);
+
+        assert_eq!(resized.width(), 1152);
+        assert_eq!(resized.height(), 768);
+        assert!(ratio_w > 1.0);
+        assert!(ratio_h > 1.0);
     }
 }
