@@ -19,10 +19,12 @@ pub(crate) struct OcrEngine {
     cls_session: Mutex<Session>,
     rec_session: Mutex<Session>,
     dict: Vec<String>,
+    det_thresh: f32,
+    box_thresh: f32,
 }
 
 impl OcrEngine {
-    pub(crate) fn new(models_dir: &Path) -> Result<Self, String> {
+    pub(crate) fn new(models_dir: &Path, det_thresh: f32, box_thresh: f32) -> Result<Self, String> {
         let det_session = load_session(models_dir, "det")?;
 
         let cls_session = load_session(models_dir, "cls")?;
@@ -38,6 +40,8 @@ impl OcrEngine {
             cls_session: Mutex::new(cls_session),
             rec_session: Mutex::new(rec_session),
             dict,
+            det_thresh,
+            box_thresh,
         };
 
         engine.warmup();
@@ -87,17 +91,27 @@ impl OcrEngine {
         score_thresh: f32,
     ) -> Result<Vec<OcrDetection>, String> {
         let boxes = self.detect(img, OCR_DET_RESIZE_LONG)?;
-        self.recognize_boxes(img, &boxes, score_thresh)
+        self.recognize_boxes(img, &boxes, score_thresh, false)
     }
 
     /// det만 실행하여 텍스트 영역 폴리곤을 반환한다.
+    ///
+    /// 이미지가 `tile_size`보다 크면 타일로 분할하여 원본 해상도 그대로 처리한다.
     pub(crate) fn detect(
         &self,
         img: &DynamicImage,
-        det_resize_long: u32,
+        tile_size: u32,
     ) -> Result<Vec<det::DetBox>, String> {
+        const TILE_OVERLAP: u32 = 100;
         let mut session = self.det_session.lock().unwrap();
-        det::detect_with_resize_long(&mut session, img, det_resize_long)
+        det::detect_tiled(
+            &mut session,
+            img,
+            tile_size,
+            TILE_OVERLAP,
+            self.det_thresh,
+            self.box_thresh,
+        )
     }
 
     /// 주어진 박스들에 대해 cls+rec를 실행하여 인식 결과를 반환한다.
@@ -106,6 +120,7 @@ impl OcrEngine {
         img: &DynamicImage,
         boxes: &[det::DetBox],
         score_thresh: f32,
+        debug_trace: bool,
     ) -> Result<Vec<OcrDetection>, String> {
         if boxes.is_empty() {
             return Ok(vec![]);
@@ -145,8 +160,17 @@ impl OcrEngine {
         );
 
         let mut detections = Vec::new();
-        for (box_pts, (text, score)) in boxes.iter().zip(rec_results) {
-            if score >= score_thresh && !text.is_empty() {
+        for (idx, (box_pts, (text, score))) in boxes.iter().zip(rec_results).enumerate() {
+            let accepted = should_accept_recognition(&text, score, score_thresh);
+            if debug_trace {
+                eprintln!(
+                    "[OCR][rec] #{idx:02} {} score={score:.3} text={:?} box={:?}",
+                    if accepted { "accept" } else { "reject" },
+                    text,
+                    box_pts
+                );
+            }
+            if accepted {
                 let polygon: Vec<[f64; 2]> = box_pts.iter().copied().collect();
                 detections.push((polygon, text));
             }
@@ -154,6 +178,57 @@ impl OcrEngine {
 
         Ok(detections)
     }
+}
+
+fn should_accept_recognition(text: &str, score: f32, score_thresh: f32) -> bool {
+    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if chars.is_empty() {
+        return false;
+    }
+
+    let cjk_count = chars.iter().filter(|&&c| is_cjk_char(c)).count();
+    let ascii_alnum_count = chars.iter().filter(|&&c| c.is_ascii_alphanumeric()).count();
+    let punct_count = chars
+        .iter()
+        .filter(|&&c| !is_cjk_char(c) && !c.is_ascii_alphanumeric())
+        .count();
+    let cjk_ratio = cjk_count as f32 / chars.len() as f32;
+    let ascii_only = ascii_alnum_count == chars.len();
+
+    if cjk_count == 0 {
+        if ascii_alnum_count == 0 {
+            return false;
+        }
+        if chars.len() <= 3 && ascii_alnum_count <= 2 {
+            return false;
+        }
+        if punct_count >= ascii_alnum_count && chars.len() <= 8 {
+            return false;
+        }
+    }
+    if ascii_only && chars.len() <= 2 {
+        return false;
+    }
+    if score >= score_thresh {
+        return true;
+    }
+
+    score >= (score_thresh - 0.1).max(0.0)
+        && cjk_count >= 2
+        && cjk_ratio >= 0.6
+        && ascii_alnum_count * 2 <= chars.len()
+}
+
+fn is_cjk_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x3040..=0x309F
+            | 0x30A0..=0x30FF
+            | 0xAC00..=0xD7AF
+    )
 }
 
 fn load_session(models_dir: &Path, model_name: &str) -> Result<Session, String> {
@@ -454,7 +529,7 @@ mod tests {
             eprintln!("ONNX 모델 파일 없음 — 건너뜀");
             return;
         }
-        let engine = OcrEngine::new(&models_dir());
+        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4);
         assert!(engine.is_ok(), "OcrEngine 초기화 실패: {:?}", engine.err());
     }
 
@@ -472,7 +547,7 @@ mod tests {
             return;
         }
 
-        let engine = OcrEngine::new(&models_dir()).expect("OcrEngine 초기화 실패");
+        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4).expect("OcrEngine 초기화 실패");
         let img = image::open(&test_img_path).expect("테스트 이미지 로드 실패");
         let result = engine.predict(&img, 0.5);
 
@@ -507,7 +582,7 @@ mod tests {
             return;
         }
 
-        let engine = OcrEngine::new(&models_dir()).expect("OcrEngine 초기화 실패");
+        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4).expect("OcrEngine 초기화 실패");
         let img = image::open(&test_img_path).expect("테스트 이미지 로드 실패");
         let result = engine.predict(&img, 0.5);
 
@@ -590,5 +665,28 @@ mod tests {
         let providers = [ep::CUDA::default().build().fail_silently()];
 
         assert!(providers[0].downcast_ref::<ep::CUDA>().is_some());
+    }
+
+    #[test]
+    fn 저신뢰_cjk_문장_조각은_통과시킨다() {
+        assert!(should_accept_recognition("常要么", 0.41, 0.5));
+        assert!(should_accept_recognition("雪了一。", 0.43, 0.5));
+    }
+
+    #[test]
+    fn 저신뢰_ascii_잡음은_막는다() {
+        assert!(!should_accept_recognition("a", 0.54, 0.5));
+        assert!(!should_accept_recognition("7", 0.81, 0.5));
+        assert!(!should_accept_recognition("AB", 0.77, 0.5));
+        assert!(!should_accept_recognition("^A", 0.83, 0.5));
+        assert!(!should_accept_recognition("×", 0.92, 0.5));
+        assert!(!should_accept_recognition("c'0'", 0.35, 0.5));
+        assert!(!should_accept_recognition("'7'.'1'", 0.51, 0.6));
+    }
+
+    #[test]
+    fn 정상적인_ascii_단어는_유지한다() {
+        assert!(should_accept_recognition("File", 0.91, 0.5));
+        assert!(should_accept_recognition("Settings", 0.87, 0.5));
     }
 }

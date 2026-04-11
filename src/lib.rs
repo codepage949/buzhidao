@@ -205,7 +205,12 @@ pub fn run() {
                 .resource_dir()
                 .expect("리소스 디렉토리를 찾을 수 없음")
                 .join("models");
-            let engine = OcrEngine::new(&models_dir).expect("OCR 엔진 초기화 실패");
+            let (det_thresh, box_thresh) = {
+                let cfg = app.state::<Config>();
+                (cfg.det_thresh, cfg.box_thresh)
+            };
+            let engine =
+                OcrEngine::new(&models_dir, det_thresh, box_thresh).expect("OCR 엔진 초기화 실패");
             app.manage(Arc::new(engine));
             // 시스템 트레이: 종료 메뉴
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;

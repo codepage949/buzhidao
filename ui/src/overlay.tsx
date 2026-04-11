@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
   groupDetectionsWithBounds,
+  rawDetectionsWithBounds,
   type DetectionGroup,
   type RawDetection,
 } from "./detection";
@@ -16,6 +17,7 @@ type OcrResultPayload = {
   source: string;
   word_gap: number;
   line_gap: number;
+  debug_trace: boolean;
 };
 
 type State =
@@ -51,8 +53,6 @@ function OverlayApp() {
     if (e.key === "Escape") close();
   }, [close]);
 
-  if (state.kind === "hidden") return null;
-
   const groups =
     state.kind === "ready"
       ? groupDetectionsWithBounds(
@@ -62,6 +62,18 @@ function OverlayApp() {
           state.ocr.line_gap,
         )
       : [];
+  const rawItems =
+    state.kind === "ready"
+      ? rawDetectionsWithBounds(state.ocr.detections)
+      : [];
+
+  useEffect(() => {
+    if (state.kind !== "ready" || !state.ocr.debug_trace) return;
+    console.log("[OCR][overlay] raw items", rawItems);
+    console.log("[OCR][overlay] grouped items", groups);
+  }, [groups, rawItems, state]);
+
+  if (state.kind === "hidden") return null;
 
   const cssScaleX =
     state.kind === "ready" ? window.innerWidth / state.ocr.orig_width : 1;
@@ -167,6 +179,30 @@ function OverlayApp() {
       )}
 
       {/* OCR 감지 박스 */}
+      {state.kind === "ready" && state.ocr.debug_trace &&
+        rawItems.map((item, i) => {
+          const cssX = item.bounds.x * cssScaleX;
+          const cssY = item.bounds.y * cssScaleY;
+          const cssW = item.bounds.width * cssScaleX;
+          const cssH = item.bounds.height * cssScaleY;
+          return (
+            <div
+              key={`raw-${i}`}
+              title={`raw: ${item.text}`}
+              style={{
+                position: "absolute",
+                left: `${cssX}px`,
+                top: `${cssY}px`,
+                width: `${cssW}px`,
+                height: `${cssH}px`,
+                border: "1px dashed rgba(255, 64, 128, 0.95)",
+                background: "rgba(255, 64, 128, 0.08)",
+                pointerEvents: "none",
+                boxSizing: "border-box",
+              }}
+            />
+          );
+        })}
       {groups.map((group: DetectionGroup, i: number) => {
         const cssX = group.bounds.x * cssScaleX;
         const cssY = group.bounds.y * cssScaleY;

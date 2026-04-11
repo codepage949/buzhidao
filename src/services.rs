@@ -12,6 +12,7 @@ pub(crate) struct OcrResultPayload {
     pub(crate) source: String,
     pub(crate) word_gap: i32,
     pub(crate) line_gap: i32,
+    pub(crate) debug_trace: bool,
 }
 
 pub(crate) struct CaptureInfo {
@@ -89,7 +90,7 @@ pub(crate) fn run_ocr(
         OCR_DET_RESIZE_LONG
     );
 
-    let detections = engine.recognize_boxes(&dyn_img, &boxes, cfg.score_thresh)?;
+    let detections = engine.recognize_boxes(&dyn_img, &boxes, cfg.score_thresh, cfg.ocr_debug_trace)?;
 
     Ok(OcrResultPayload {
         detections,
@@ -98,6 +99,7 @@ pub(crate) fn run_ocr(
         source: cfg.source.clone(),
         word_gap: cfg.word_gap,
         line_gap: cfg.line_gap,
+        debug_trace: cfg.ocr_debug_trace,
     })
 }
 

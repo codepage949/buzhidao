@@ -3,8 +3,6 @@ use ndarray::{Array3, Array4};
 use ort::session::Session;
 
 /// DB 후처리 파라미터 (inference.yml 기반)
-const THRESH: f32 = 0.3;
-const BOX_THRESH: f32 = 0.5;
 const UNCLIP_RATIO: f32 = 1.5;
 const MAX_CANDIDATES: usize = 1000;
 const MIN_SIZE: f32 = 3.0;
@@ -68,15 +66,17 @@ fn db_postprocess(
     pred_w: usize,
     src_h: u32,
     src_w: u32,
-) -> Vec<DetBox> {
+    det_thresh: f32,
+    box_thresh: f32,
+) -> Result<Vec<DetBox>, String> {
     // 이진화
     let bitmap: Vec<u8> = pred
         .iter()
-        .map(|&v| if v > THRESH { 1u8 } else { 0u8 })
+        .map(|&v| if v > det_thresh { 1u8 } else { 0u8 })
         .collect();
 
-    // 연결 컴포넌트 찾기 (간단한 flood fill 기반)
-    let contours = find_contours(&bitmap, pred_h, pred_w);
+    // OpenCV와 동일한 contour 추출 경로 사용
+    let contours = find_contours(&bitmap, pred_h, pred_w)?;
 
     let w_scale = src_w as f64 / pred_w as f64;
     let h_scale = src_h as f64 / pred_h as f64;
@@ -88,20 +88,20 @@ fn db_postprocess(
         }
 
         // 최소 경계 사각형
-        let rect = min_area_rect(contour);
+        let rect = min_area_rect(contour)?;
         if rect.min_side < MIN_SIZE {
             continue;
         }
 
         // 박스 점수: min_area_rect의 4점을 polygon mask로 사용 (PaddleOCR 방식)
         let score = box_score_poly(pred, pred_h, pred_w, &rect.points);
-        if score < BOX_THRESH {
+        if score < box_thresh {
             continue;
         }
 
         // unclip
-        let expanded = unclip(&rect.points, UNCLIP_RATIO);
-        let expanded_rect = min_area_rect(&expanded);
+        let expanded = unclip(&rect.points, UNCLIP_RATIO)?;
+        let expanded_rect = min_area_rect(&expanded)?;
         if expanded_rect.min_side < MIN_SIZE + 2.0 {
             continue;
         }
@@ -115,13 +115,15 @@ fn db_postprocess(
         boxes.push(det_box);
     }
 
-    boxes
+    Ok(boxes)
 }
 
 pub(crate) fn detect_with_resize_long(
     session: &mut Session,
     img: &DynamicImage,
     resize_long: u32,
+    det_thresh: f32,
+    box_thresh: f32,
 ) -> Result<Vec<DetBox>, String> {
     let (src_w, src_h) = (img.width(), img.height());
     let (resized, _ratio_h, _ratio_w) = resize_for_det(img, resize_long);
@@ -141,7 +143,144 @@ pub(crate) fn detect_with_resize_long(
     let pred: Vec<f32> = data.to_vec();
 
     // 출력은 [1, 1, H, W] 형태
-    Ok(db_postprocess(&pred, pred_h, pred_w, src_h, src_w))
+    db_postprocess(&pred, pred_h, pred_w, src_h, src_w, det_thresh, box_thresh)
+}
+
+/// 화면을 `tile_size × tile_size` 타일로 분할하여 det를 실행하고 박스를 병합한다.
+///
+/// 전체 이미지를 축소하지 않으므로 작은 텍스트도 원본 해상도 그대로 det에 입력된다.
+/// 타일 경계에서 중복 생성된 박스는 IoU 기반으로 제거한다.
+pub(crate) fn detect_tiled(
+    session: &mut Session,
+    img: &DynamicImage,
+    tile_size: u32,
+    tile_overlap: u32,
+    det_thresh: f32,
+    box_thresh: f32,
+) -> Result<Vec<DetBox>, String> {
+    let (img_w, img_h) = (img.width(), img.height());
+
+    // 이미지가 타일보다 작으면 직접 실행
+    if img_w <= tile_size && img_h <= tile_size {
+        return detect_with_resize_long(session, img, tile_size, det_thresh, box_thresh);
+    }
+
+    let step = (tile_size - tile_overlap).max(1);
+    let x_offsets = tile_offsets(img_w, tile_size, step);
+    let y_offsets = tile_offsets(img_h, tile_size, step);
+    let n_tiles = x_offsets.len() * y_offsets.len();
+
+    let mut all_boxes = Vec::new();
+
+    for &tile_y in &y_offsets {
+        for &tile_x in &x_offsets {
+            let tile_w = tile_size.min(img_w - tile_x);
+            let tile_h = tile_size.min(img_h - tile_y);
+            let tile = img.crop_imm(tile_x, tile_y, tile_w, tile_h);
+
+            let tile_boxes =
+                detect_with_resize_long(session, &tile, tile_size, det_thresh, box_thresh)?;
+
+            // 타일 좌표 → 원본 이미지 좌표로 변환
+            for mut box_pts in tile_boxes {
+                for pt in &mut box_pts {
+                    pt[0] += tile_x as f64;
+                    pt[1] += tile_y as f64;
+                }
+                all_boxes.push(box_pts);
+            }
+        }
+    }
+
+    eprintln!(
+        "[det] 타일 분할: {}×{} 화면 → {}타일 (tile={}, overlap={})",
+        img_w, img_h, n_tiles, tile_size, tile_overlap
+    );
+
+    Ok(deduplicate_boxes(all_boxes))
+}
+
+/// 타일 시작 좌표 목록을 계산한다.
+/// 마지막 타일은 항상 이미지 끝에 정렬된다 (경계 누락 방지).
+fn tile_offsets(img_size: u32, tile_size: u32, step: u32) -> Vec<u32> {
+    if img_size <= tile_size {
+        return vec![0];
+    }
+    let mut offsets = Vec::new();
+    let mut pos = 0u32;
+    loop {
+        offsets.push(pos);
+        if pos + tile_size >= img_size {
+            break;
+        }
+        pos = (pos + step).min(img_size - tile_size);
+    }
+    // 마지막 타일이 이미지 끝에 닿지 않으면 추가
+    let last = img_size - tile_size;
+    if offsets.last() != Some(&last) {
+        offsets.push(last);
+    }
+    offsets
+}
+
+/// 겹치는 박스를 AABB IoU 기준으로 제거한다 (greedy NMS).
+fn deduplicate_boxes(boxes: Vec<DetBox>) -> Vec<DetBox> {
+    let n = boxes.len();
+    let mut suppress = vec![false; n];
+
+    for i in 0..n {
+        if suppress[i] {
+            continue;
+        }
+        for j in i + 1..n {
+            if suppress[j] {
+                continue;
+            }
+            if aabb_iou(&boxes[i], &boxes[j]) > 0.5 {
+                suppress[j] = true;
+            }
+        }
+    }
+
+    boxes
+        .into_iter()
+        .zip(suppress)
+        .filter(|(_, s)| !s)
+        .map(|(b, _)| b)
+        .collect()
+}
+
+/// 두 DetBox의 축-정렬 bounding box IoU를 계산한다.
+fn aabb_iou(a: &DetBox, b: &DetBox) -> f64 {
+    let ax0 = a.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+    let ax1 = a.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
+    let ay0 = a.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
+    let ay1 = a.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
+
+    let bx0 = b.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+    let bx1 = b.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
+    let by0 = b.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
+    let by1 = b.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
+
+    let ix0 = ax0.max(bx0);
+    let ix1 = ax1.min(bx1);
+    let iy0 = ay0.max(by0);
+    let iy1 = ay1.min(by1);
+
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return 0.0;
+    }
+
+    let inter = (ix1 - ix0) * (iy1 - iy0);
+    let area_a = (ax1 - ax0) * (ay1 - ay0);
+    let area_b = (bx1 - bx0) * (by1 - by0);
+    let union = area_a + area_b - inter;
+
+    if union <= 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
 }
 
 // ── 기하 유틸리티 ────────────────────────────────────────────────────────────
@@ -151,16 +290,15 @@ struct MinAreaRect {
     min_side: f32,
 }
 
-fn min_area_rect(points: &[[f32; 2]]) -> MinAreaRect {
+fn min_area_rect(points: &[[f32; 2]]) -> Result<MinAreaRect, String> {
     let hull = convex_hull(points);
     if hull.len() < 2 {
-        return MinAreaRect {
+        return Ok(MinAreaRect {
             points: hull.clone(),
             min_side: 0.0,
-        };
+        });
     }
 
-    // 각 hull edge 방향으로 투영해 최소 면적 회전 사각형을 찾는다
     let mut best_area = f32::MAX;
     let mut best_rect = vec![[0.0f32; 2]; 4];
     let mut best_w = 0.0f32;
@@ -175,13 +313,12 @@ fn min_area_rect(points: &[[f32; 2]]) -> MinAreaRect {
         if len < 1e-6 {
             continue;
         }
-        // edge 단위 벡터 + 수직 벡터
+
         let ux = ex / len;
         let uy = ey / len;
         let vx = -uy;
         let vy = ux;
 
-        // hull 점들을 (u, v) 좌표로 투영
         let mut min_u = f32::MAX;
         let mut max_u = f32::MIN;
         let mut min_v = f32::MAX;
@@ -204,7 +341,6 @@ fn min_area_rect(points: &[[f32; 2]]) -> MinAreaRect {
             best_area = area;
             best_w = w;
             best_h = h;
-            // 4개 꼭짓점을 원래 좌표로 역변환
             best_rect = vec![
                 [min_u * ux + min_v * vx, min_u * uy + min_v * vy],
                 [max_u * ux + min_v * vx, max_u * uy + min_v * vy],
@@ -214,10 +350,10 @@ fn min_area_rect(points: &[[f32; 2]]) -> MinAreaRect {
         }
     }
 
-    MinAreaRect {
+    Ok(MinAreaRect {
         points: order_box_points(&best_rect),
         min_side: best_w.min(best_h),
-    }
+    })
 }
 
 fn order_box_points(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
@@ -355,15 +491,15 @@ fn point_in_polygon(px: f32, py: f32, polygon: &[[f32; 2]]) -> bool {
     inside
 }
 
-fn unclip(points: &[[f32; 2]], ratio: f32) -> Vec<[f32; 2]> {
+fn unclip(points: &[[f32; 2]], ratio: f32) -> Result<Vec<[f32; 2]>, String> {
     let area = polygon_area(points);
     let perimeter = polygon_perimeter(points);
     if perimeter < 1e-6 || points.len() < 3 {
-        return points.to_vec();
+        return Ok(points.to_vec());
     }
 
     let distance = area * ratio / perimeter;
-    offset_convex_polygon(points, distance)
+    Ok(offset_convex_polygon(points, distance))
 }
 
 fn polygon_area(pts: &[[f32; 2]]) -> f32 {
@@ -468,10 +604,7 @@ fn signed_polygon_area(pts: &[[f32; 2]]) -> f32 {
     area / 2.0
 }
 
-/// 외곽선 추적 (OpenCV findContours RETR_LIST 방식).
-/// Suzuki-Abe border following 알고리즘의 간소화 버전.
-fn find_contours(bitmap: &[u8], h: usize, w: usize) -> Vec<Vec<[f32; 2]>> {
-    // 1px 패딩 추가 (경계 처리 단순화)
+fn find_contours(bitmap: &[u8], h: usize, w: usize) -> Result<Vec<Vec<[f32; 2]>>, String> {
     let ph = h + 2;
     let pw = w + 2;
     let mut padded = vec![0i32; ph * pw];
@@ -484,9 +617,7 @@ fn find_contours(bitmap: &[u8], h: usize, w: usize) -> Vec<Vec<[f32; 2]>> {
     }
 
     let mut contours = Vec::new();
-    let mut nbd: i32 = 1; // border 번호
-
-    // 8방향 이웃 (시계 방향): E, SE, S, SW, W, NW, N, NE
+    let mut nbd: i32 = 1;
     let dir8: [(isize, isize); 8] = [
         (1, 0),
         (1, 1),
@@ -502,37 +633,30 @@ fn find_contours(bitmap: &[u8], h: usize, w: usize) -> Vec<Vec<[f32; 2]>> {
         for x in 1..pw - 1 {
             let idx = y * pw + x;
 
-            // 외곽선 시작점: 0→1 전이 (외부 경계)
             if padded[idx] == 1 && padded[idx - 1] == 0 {
                 nbd += 1;
                 let contour = trace_border(&mut padded, pw, x, y, nbd, 0, &dir8);
                 if contour.len() >= 4 {
-                    // 패딩 보정: (-1, -1)
                     let pts: Vec<[f32; 2]> = contour
                         .iter()
                         .map(|&(cx, cy)| [(cx as isize - 1) as f32, (cy as isize - 1) as f32])
                         .collect();
                     contours.push(pts);
                 }
-            }
-            // 내부 경계: 1→0 전이
-            else if padded[idx] >= 1 && padded[idx + 1] == 0 {
+            } else if padded[idx] >= 1 && padded[idx + 1] == 0 {
                 nbd += 1;
                 trace_border(&mut padded, pw, x, y, nbd, 4, &dir8);
-                // 내부 경계(홀)는 무시 (RETR_LIST에서는 반환하지만 OCR에선 불필요)
             }
 
-            // 이미 방문된 외곽선 내부 픽셀 스킵 방지
             if padded[idx] != 0 && padded[idx] == 1 {
                 padded[idx] = -nbd;
             }
         }
     }
 
-    contours
+    Ok(contours)
 }
 
-/// 하나의 외곽선을 추적한다 (border following).
 fn trace_border(
     img: &mut [i32],
     w: usize,
@@ -543,14 +667,11 @@ fn trace_border(
     dir8: &[(isize, isize); 8],
 ) -> Vec<(usize, usize)> {
     let mut contour = Vec::new();
-
-    // 시작 방향에서 반시계 방향으로 첫 번째 이웃 찾기
     let first_neighbor = find_first_nonzero_neighbor(img, w, start_x, start_y, start_dir, dir8);
 
     let (first_x, first_y, first_dir) = match first_neighbor {
         Some(v) => v,
         None => {
-            // 고립 픽셀
             img[start_y * w + start_x] = -nbd;
             return vec![(start_x, start_y)];
         }
@@ -560,21 +681,17 @@ fn trace_border(
 
     let mut cx = first_x;
     let mut cy = first_y;
-    let mut from_dir = (first_dir + 4) % 8; // 돌아온 방향
+    let mut from_dir = (first_dir + 4) % 8;
 
     loop {
         contour.push((cx, cy));
 
-        // 이 픽셀의 경계 마킹
         let idx = cy * w + cx;
         if img[idx] == 1 {
             img[idx] = nbd;
-        } else if img[idx] > 1 {
-            // 이미 다른 경계에 속함 — 그대로 유지
         }
 
-        // 다음 이웃 찾기 (from_dir에서 시계 방향으로)
-        let search_start = (from_dir + 2) % 8; // from_dir의 다음 시계 방향
+        let search_start = (from_dir + 2) % 8;
         let next = find_first_nonzero_neighbor(img, w, cx, cy, search_start, dir8);
 
         match next {
@@ -587,19 +704,17 @@ fn trace_border(
         }
 
         if cx == first_x && cy == first_y && contour.len() > 1 {
-            // 시작점으로 돌아옴 — 중복 제거
             break;
         }
 
         if contour.len() > 100_000 {
-            break; // 안전 장치
+            break;
         }
     }
 
     contour
 }
 
-/// 주어진 방향부터 시계 방향으로 순회하며 첫 번째 비-제로 이웃을 찾는다.
 fn find_first_nonzero_neighbor(
     img: &[i32],
     w: usize,
@@ -657,7 +772,8 @@ mod tests {
             }
         }
 
-        let boxes = db_postprocess(&pred, h, w, 100, 100);
+        let boxes =
+            db_postprocess(&pred, h, w, 100, 100, 0.3, 0.5).expect("DB 후처리가 성공해야 함");
         assert!(!boxes.is_empty(), "텍스트 박스가 검출되어야 함");
 
         // 첫 번째 박스가 올바른 영역에 있는지 확인
@@ -672,7 +788,8 @@ mod tests {
     fn DB_후처리_빈_히트맵() {
         let (h, w) = (10, 10);
         let pred = vec![0.0f32; h * w];
-        let boxes = db_postprocess(&pred, h, w, 100, 100);
+        let boxes =
+            db_postprocess(&pred, h, w, 100, 100, 0.3, 0.5).expect("DB 후처리가 성공해야 함");
         assert!(boxes.is_empty(), "빈 히트맵에서 박스가 없어야 함");
     }
 
@@ -694,7 +811,7 @@ mod tests {
             }
         }
 
-        let contours = find_contours(&bitmap, h, w);
+        let contours = find_contours(&bitmap, h, w).expect("contour 추출이 성공해야 함");
         assert_eq!(contours.len(), 2, "두 개의 연결 컴포넌트가 검출되어야 함");
     }
 
@@ -722,7 +839,7 @@ mod tests {
     #[test]
     fn unclip은_중심_스케일링이_아니라_에지_오프셋으로_확장한다() {
         let rect = [[0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [0.0, 2.0]];
-        let expanded = unclip(&rect, 1.5);
+        let expanded = unclip(&rect, 1.5).expect("unclip이 성공해야 함");
 
         let min_x = expanded.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
         let max_x = expanded.iter().map(|p| p[0]).fold(f32::MIN, f32::max);
@@ -760,5 +877,49 @@ mod tests {
         assert_eq!(resized.height(), 768);
         assert!(ratio_w > 1.0);
         assert!(ratio_h > 1.0);
+    }
+
+    #[test]
+    fn tile_offsets_이미지가_타일보다_작으면_오프셋_하나() {
+        let offsets = tile_offsets(800, 1024, 924);
+        assert_eq!(offsets, vec![0]);
+    }
+
+    #[test]
+    fn tile_offsets_1920_너비는_두_타일() {
+        // 1920×1080 화면, tile=1024, overlap=100, step=924
+        let offsets = tile_offsets(1920, 1024, 924);
+        assert_eq!(offsets.len(), 2);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[1], 896); // 1920 - 1024 = 896
+    }
+
+    #[test]
+    fn tile_offsets_마지막_타일은_항상_이미지_끝에_닿는다() {
+        let offsets = tile_offsets(2000, 1024, 924);
+        let last = *offsets.last().unwrap();
+        assert_eq!(last, 2000 - 1024); // 976
+    }
+
+    #[test]
+    fn aabb_iou_완전_겹침은_1_0() {
+        let a: DetBox = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
+        assert!((aabb_iou(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn aabb_iou_완전_분리는_0_0() {
+        let a: DetBox = [[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]];
+        let b: DetBox = [[10.0, 0.0], [15.0, 0.0], [15.0, 5.0], [10.0, 5.0]];
+        assert_eq!(aabb_iou(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn deduplicate_boxes_중복_박스_제거() {
+        let a: DetBox = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
+        let b: DetBox = [[0.5, 0.0], [10.5, 0.0], [10.5, 5.0], [0.5, 5.0]]; // 거의 동일
+        let c: DetBox = [[100.0, 0.0], [110.0, 0.0], [110.0, 5.0], [100.0, 5.0]]; // 분리됨
+        let result = deduplicate_boxes(vec![a, b, c]);
+        assert_eq!(result.len(), 2, "겹치는 박스 하나는 제거되어야 함");
     }
 }

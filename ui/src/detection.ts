@@ -14,11 +14,9 @@ export type DetectionGroup = {
   bounds: BoundingBox;
 };
 
-export function isSourceLanguage(text: string, source: string): boolean {
-  return source === "en" ? /[a-zA-Z]/.test(text) : /[\u4e00-\u9fa5]/.test(text);
-}
+export type DetectionItem = DetectionGroup;
 
-function polygonToBounds(polygon: DetectionPolygon): BoundingBox {
+export function polygonToBounds(polygon: DetectionPolygon): BoundingBox {
   const xs = polygon.map(([x]) => x);
   const ys = polygon.map(([, y]) => y);
   const x = Math.min(...xs);
@@ -72,12 +70,9 @@ export function groupDetectionsWithBounds(
   xGap: number,
   yGap: number,
 ): DetectionGroup[] {
-  // 1. 소스 언어 필터 + bounds 계산
-  const items = detections.flatMap(([polygon, rawText]) => {
-    const text = rawText.trim();
-    if (!text || !isSourceLanguage(text, source)) return [];
-    return [{ text, bounds: polygonToBounds(polygon) }];
-  });
+  // 1. OCR 통과 결과는 언어 기준으로 다시 버리지 않고 모두 그룹핑한다.
+  // source는 joinText의 공백 규칙에만 사용한다.
+  const items = rawDetectionsWithBounds(detections);
 
   // 2. Y→X 오름차순 정렬 (읽기 순서 보장)
   items.sort(
@@ -102,6 +97,16 @@ export function groupDetectionsWithBounds(
   }
 
   return groups;
+}
+
+export function rawDetectionsWithBounds(
+  detections: RawDetection[],
+): DetectionItem[] {
+  return detections.flatMap(([polygon, rawText]) => {
+    const text = rawText.trim();
+    if (!text) return [];
+    return [{ text, bounds: polygonToBounds(polygon) }];
+  });
 }
 
 export function groupDetections(

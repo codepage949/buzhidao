@@ -63,6 +63,9 @@
 - `SYSTEM_PROMPT_PATH` (선택)
 - `WORD_GAP`
 - `LINE_GAP`
+- `DET_THRESH` (선택, 기본 0.2)
+- `BOX_THRESH` (선택, 기본 0.4)
+- `OCR_DEBUG_TRACE` (선택, 기본 `false`) : 터미널에 `rec` accept/reject 로그 출력, 오버레이에 raw 박스 표시
 
 예시는 [.env.example](.env.example)에 있습니다.
 

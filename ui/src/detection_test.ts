@@ -2,7 +2,6 @@ import { assertEquals } from "@std/assert";
 import {
   groupDetections,
   groupDetectionsWithBounds,
-  isSourceLanguage,
   type RawDetection,
 } from "./detection.ts";
 
@@ -24,24 +23,6 @@ function det(
     text,
   ];
 }
-
-// ── isSourceLanguage ──────────────────────────────────────────────────────────
-
-Deno.test("isSourceLanguage - 설정된 소스 언어와 일치하면 true", () => {
-  assertEquals(isSourceLanguage("hello", "en"), true);
-  assertEquals(isSourceLanguage("你好", "en"), false);
-  assertEquals(isSourceLanguage("你好", "ch"), true);
-});
-
-Deno.test("isSourceLanguage - 빈 문자열은 false", () => {
-  assertEquals(isSourceLanguage("", "en"), false);
-  assertEquals(isSourceLanguage("", "ch"), false);
-});
-
-Deno.test("isSourceLanguage - 숫자·기호만 있으면 false", () => {
-  assertEquals(isSourceLanguage("123!@#", "en"), false);
-  assertEquals(isSourceLanguage("123!@#", "ch"), false);
-});
 
 // ── groupDetections ───────────────────────────────────────────────────────────
 
@@ -91,13 +72,13 @@ Deno.test("groupDetections - 인접 줄, Y 간격 > yGap → 별도 그룹", () 
   assertEquals(groupDetections(ds, "en", 20, 15), ["Para", "Two"]);
 });
 
-Deno.test("groupDetections - 비소스 언어·빈 문자열 필터링", () => {
+Deno.test("groupDetections - 빈 문자열만 제외하고 OCR 결과는 유지", () => {
   const ds: RawDetection[] = [
     det(0, 0, 50, 20, "  "),
     det(0, 30, 50, 20, "你好"),
     det(0, 60, 80, 20, "Answer"),
   ];
-  assertEquals(groupDetections(ds, "en", 20, 15), ["Answer"]);
+  assertEquals(groupDetections(ds, "en", 20, 15), ["你好 Answer"]);
 });
 
 Deno.test("groupDetections - 중국어는 공백 없이 병합", () => {

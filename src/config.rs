@@ -6,11 +6,16 @@ pub(crate) const OCR_DET_RESIZE_LONG: u32 = 1024;
 pub(crate) struct Config {
     pub(crate) source: String,
     pub(crate) score_thresh: f32,
+    pub(crate) ocr_debug_trace: bool,
     pub(crate) ai_gateway_api_key: String,
     pub(crate) ai_gateway_model: String,
     pub(crate) system_prompt: String,
     pub(crate) word_gap: i32,
     pub(crate) line_gap: i32,
+    /// det 히트맵 이진화 임계값 (낮을수록 더 많은 텍스트 픽셀 포함)
+    pub(crate) det_thresh: f32,
+    /// det 박스 채택 임계값 (낮을수록 더 많은 박스 채택)
+    pub(crate) box_thresh: f32,
 }
 
 impl Config {
@@ -21,11 +26,16 @@ impl Config {
             score_thresh: env_or("SCORE_THRESH", "0.5")
                 .parse()
                 .unwrap_or(DEFAULT_SCORE_THRESH),
+            ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false")
+                .parse()
+                .unwrap_or(false),
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
             word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(20),
             line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(15),
+            det_thresh: env_or("DET_THRESH", "0.2").parse().unwrap_or(0.2),
+            box_thresh: env_or("BOX_THRESH", "0.4").parse().unwrap_or(0.4),
         })
     }
 }
@@ -52,7 +62,7 @@ fn load_system_prompt() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_system_prompt, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT, OCR_DET_RESIZE_LONG,
+        env_or, load_system_prompt, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT, OCR_DET_RESIZE_LONG,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -99,6 +109,18 @@ mod tests {
     #[test]
     fn score_thresh_기본값은_0_5다() {
         assert!((DEFAULT_SCORE_THRESH - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ocr_debug_trace_기본값은_false다() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("OCR_DEBUG_TRACE");
+
+        let value = env_or("OCR_DEBUG_TRACE", "false")
+            .parse::<bool>()
+            .expect("bool 파싱이 되어야 한다");
+
+        assert!(!value);
     }
 
     #[test]
