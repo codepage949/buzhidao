@@ -4,12 +4,9 @@ use ort::session::Session;
 use rayon::prelude::*;
 
 const REC_H: u32 = 48;
-/// PaddleOCR 기본 max_wh_ratio=20 → max_w = 48×20 = 960.
-/// 이 값을 초과하는 긴 텍스트 박스는 잘려도 실용적으로 문제 없다
-/// (960/4=240 time step = 약 80~120 글자).
-/// 화면 OCR에서는 긴 한 줄 텍스트보다 짧은 UI 문자열이 대부분이라
-/// 폭 상한을 더 낮춰도 인식률 손실보다 속도 이득이 더 크다.
-const MAX_W: u32 = 768;
+/// PaddleOCR 참조 구현과 맞추기 위해 폭 상한을 충분히 크게 둔다.
+/// 긴 문장을 768로 강하게 압축하면 수평 정보가 뭉개져 오인식이 늘어난다.
+const MAX_W: u32 = 3200;
 
 /// CTC 디코딩: 모델 출력에서 텍스트를 추출한다.
 fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
@@ -48,7 +45,7 @@ fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
 
 fn target_width(img: &DynamicImage) -> u32 {
     let ratio = img.width() as f32 / img.height() as f32;
-    ((REC_H as f32 * ratio).ceil() as u32).min(MAX_W)
+    ((REC_H as f32 * ratio + 0.5) as u32).min(MAX_W)
 }
 
 // rec 정규화: pixel / 255.0 / 0.5 - 1.0 = pixel * (2.0/255.0) - 1.0
@@ -88,6 +85,7 @@ const REC_BATCH_SIZE_LARGE: usize = 12;
 const REC_BATCH_SIZE_XL: usize = 8;
 const REC_BATCH_SIZE_XXL: usize = 6;
 const REC_BATCH_SIZE_XXXL: usize = 4;
+const REC_SINGLE_RETRY_SCORE: f32 = 0.7;
 
 /// 워밍업에 사용할 너비 목록 (MAX_W=960 기준 자주 등장하는 크기들).
 /// 각 너비에 대해 실행해 cuDNN 알고리즘 캐시를 미리 채운다.
@@ -260,6 +258,22 @@ pub(crate) fn recognize_batch(
         eprintln!("[OCR] rec 배치 폴백 청크 수: {}", fallback_chunks);
     }
 
+    let mut retried = 0usize;
+    for &orig_i in &order {
+        let score = results[orig_i].1;
+        if score >= REC_SINGLE_RETRY_SCORE {
+            continue;
+        }
+        let retried_result = recognize_from_array(session, &tensors[orig_i], dict);
+        if retried_result.1 > score {
+            results[orig_i] = retried_result;
+        }
+        retried += 1;
+    }
+    if retried > 0 {
+        eprintln!("[OCR] rec low-score single retry 수: {}", retried);
+    }
+
     Ok(results)
 }
 
@@ -290,6 +304,35 @@ pub(crate) fn recognize(
         .map_err(|e| format!("rec 출력 reshape 실패: {e}"))?;
 
     Ok(ctc_decode(&logits_2d, dict))
+}
+
+#[cfg(test)]
+pub(crate) fn recognize_batch_vs_single(
+    session: &mut Session,
+    img: &DynamicImage,
+    dict: &[String],
+) -> Result<((String, f32), (String, f32)), String> {
+    let batch = recognize_batch(session, std::slice::from_ref(img), dict)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "batch 결과가 비어 있음".to_string())?;
+    let single = recognize(session, img, dict)?;
+    Ok((batch, single))
+}
+
+#[cfg(test)]
+pub(crate) fn recognize_multi_batch_vs_single(
+    session: &mut Session,
+    imgs: &[DynamicImage],
+    target_index: usize,
+    dict: &[String],
+) -> Result<((String, f32), (String, f32)), String> {
+    let batch = recognize_batch(session, imgs, dict)?
+        .into_iter()
+        .nth(target_index)
+        .ok_or_else(|| "batch target 결과가 비어 있음".to_string())?;
+    let single = recognize(session, &imgs[target_index], dict)?;
+    Ok((batch, single))
 }
 
 #[cfg(test)]
@@ -333,6 +376,12 @@ mod tests {
     }
 
     #[test]
+    fn target_width는_참조구현처럼_round_half_up을_쓴다() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(101, 48));
+        assert_eq!(target_width(&img), 101);
+    }
+
+    #[test]
     fn rec_배치_크기는_tail_구간에서만_줄어든다() {
         assert_eq!(rec_batch_size_for_start_width(235), REC_BATCH_SIZE);
         assert_eq!(
@@ -343,6 +392,11 @@ mod tests {
         assert_eq!(rec_batch_size_for_start_width(500), REC_BATCH_SIZE_XL);
         assert_eq!(rec_batch_size_for_start_width(640), REC_BATCH_SIZE_XXL);
         assert_eq!(rec_batch_size_for_start_width(768), REC_BATCH_SIZE_XXXL);
+    }
+
+    #[test]
+    fn low_score_single_retry_기준은_0_7이다() {
+        assert!((REC_SINGLE_RETRY_SCORE - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]

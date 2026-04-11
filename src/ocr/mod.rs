@@ -6,11 +6,11 @@ use image::{DynamicImage, Rgb, RgbImage};
 #[cfg(feature = "gpu")]
 use ort::ep;
 use ort::session::Session;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::config::OCR_DET_RESIZE_LONG;
-use crate::services::OcrDetection;
+use crate::services::{OcrDebugDetection, OcrDetection};
 
 /// ONNX Runtime 기반 OCR 엔진.
 /// det(검출) → cls(방향분류) → rec(인식) 파이프라인.
@@ -91,7 +91,7 @@ impl OcrEngine {
         score_thresh: f32,
     ) -> Result<Vec<OcrDetection>, String> {
         let boxes = self.detect(img, OCR_DET_RESIZE_LONG)?;
-        self.recognize_boxes(img, &boxes, score_thresh, false)
+        Ok(self.recognize_boxes(img, &boxes, score_thresh, false)?.0)
     }
 
     /// det만 실행하여 텍스트 영역 폴리곤을 반환한다.
@@ -121,9 +121,9 @@ impl OcrEngine {
         boxes: &[det::DetBox],
         score_thresh: f32,
         debug_trace: bool,
-    ) -> Result<Vec<OcrDetection>, String> {
+    ) -> Result<(Vec<OcrDetection>, Vec<OcrDebugDetection>), String> {
         if boxes.is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
 
         // 모든 박스를 크롭한 뒤 cls를 배치로 처리한다.
@@ -160,9 +160,18 @@ impl OcrEngine {
         );
 
         let mut detections = Vec::new();
-        for (idx, (box_pts, (text, score))) in boxes.iter().zip(rec_results).enumerate() {
+        let mut debug_detections = Vec::new();
+        for (idx, ((box_pts, (text, score)), crop)) in boxes
+            .iter()
+            .zip(rec_results)
+            .zip(oriented_crops.iter())
+            .enumerate()
+        {
             let accepted = should_accept_recognition(&text, score, score_thresh);
             if debug_trace {
+                if let Err(err) = save_debug_crop(crop, idx, accepted, score, &text) {
+                    eprintln!("[OCR][rec] #{idx:02} crop save failed: {err}");
+                }
                 eprintln!(
                     "[OCR][rec] #{idx:02} {} score={score:.3} text={:?} box={:?}",
                     if accepted { "accept" } else { "reject" },
@@ -170,13 +179,14 @@ impl OcrEngine {
                     box_pts
                 );
             }
+            let polygon: Vec<[f64; 2]> = box_pts.iter().copied().collect();
+            debug_detections.push((polygon.clone(), text.clone(), score, accepted));
             if accepted {
-                let polygon: Vec<[f64; 2]> = box_pts.iter().copied().collect();
                 detections.push((polygon, text));
             }
         }
 
-        Ok(detections)
+        Ok((detections, debug_detections))
     }
 }
 
@@ -217,6 +227,52 @@ fn should_accept_recognition(text: &str, score: f32, score_thresh: f32) -> bool 
         && cjk_count >= 2
         && cjk_ratio >= 0.6
         && ascii_alnum_count * 2 <= chars.len()
+}
+
+fn save_debug_crop(
+    crop: &DynamicImage,
+    idx: usize,
+    accepted: bool,
+    score: f32,
+    text: &str,
+) -> Result<(), String> {
+    let base_dir = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("target")
+        .join("ocr-debug-crops");
+    std::fs::create_dir_all(&base_dir)
+        .map_err(|e| format!("디버그 crop 디렉토리 생성 실패: {e}"))?;
+
+    let status = if accepted { "accept" } else { "reject" };
+    let score_tag = format!("{:.3}", score).replace('.', "_");
+    let text_tag = sanitize_debug_filename(text);
+    let file_name = format!("{idx:02}-{status}-s{score_tag}-{text_tag}.png");
+    let path = base_dir.join(file_name);
+    crop.save(&path)
+        .map_err(|e| format!("디버그 crop 저장 실패 ({}): {e}", path.display()))
+}
+
+fn sanitize_debug_filename(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if c.is_ascii_alphanumeric() || is_cjk_char(c) {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+        if out.len() >= 24 {
+            break;
+        }
+    }
+
+    if out.is_empty() {
+        "empty".to_string()
+    } else {
+        out
+    }
 }
 
 fn is_cjk_char(c: char) -> bool {
@@ -523,6 +579,14 @@ mod tests {
         env::var_os("BUZHIDAO_OCR_BENCH_IMAGE").map(PathBuf::from)
     }
 
+    fn benchmark_crop_path() -> Option<PathBuf> {
+        env::var_os("BUZHIDAO_OCR_BENCH_CROP").map(PathBuf::from)
+    }
+
+    fn benchmark_crop_dir() -> Option<PathBuf> {
+        env::var_os("BUZHIDAO_OCR_BENCH_CROP_DIR").map(PathBuf::from)
+    }
+
     #[test]
     fn 모델_로드_및_세션_초기화() {
         if !models_available() {
@@ -601,6 +665,95 @@ mod tests {
                 panic!("추론 실패: {e}");
             }
         }
+    }
+
+    #[test]
+    fn 외부_crop이_있으면_rec_batch와_single을_비교한다() {
+        if !models_available() {
+            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
+            return;
+        }
+
+        let Some(crop_path) = benchmark_crop_path() else {
+            eprintln!("BUZHIDAO_OCR_BENCH_CROP 미설정 — 건너뜀");
+            return;
+        };
+        if !crop_path.exists() {
+            eprintln!("벤치마크 crop 없음: {crop_path:?} — 건너뜀");
+            return;
+        }
+
+        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4).expect("OcrEngine 초기화 실패");
+        let img = image::open(&crop_path).expect("crop 이미지 로드 실패");
+        let mut session = engine.rec_session.lock().unwrap();
+        let (batch, single) =
+            rec::recognize_batch_vs_single(&mut session, &img, &engine.dict).expect("rec 비교 실패");
+
+        eprintln!(
+            "[REC compare] crop={:?}\n  batch : score={:.3} text={:?}\n  single: score={:.3} text={:?}",
+            crop_path,
+            batch.1,
+            batch.0,
+            single.1,
+            single.0
+        );
+    }
+
+    #[test]
+    fn 외부_crop이_있으면_multi_batch와_single을_비교한다() {
+        if !models_available() {
+            eprintln!("ONNX 모델 파일 없음 — 건너뜀");
+            return;
+        }
+
+        let Some(crop_path) = benchmark_crop_path() else {
+            eprintln!("BUZHIDAO_OCR_BENCH_CROP 미설정 — 건너뜀");
+            return;
+        };
+        let Some(crop_dir) = benchmark_crop_dir() else {
+            eprintln!("BUZHIDAO_OCR_BENCH_CROP_DIR 미설정 — 건너뜀");
+            return;
+        };
+        if !crop_path.exists() || !crop_dir.exists() {
+            eprintln!("crop 또는 crop dir 없음 — 건너뜀");
+            return;
+        }
+
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&crop_dir)
+            .map_err(|e| format!("crop dir 읽기 실패: {e}"))
+            .expect("crop dir 읽기 실패")
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))
+            .collect();
+        paths.sort();
+
+        let target_index = paths
+            .iter()
+            .position(|p| p == &crop_path)
+            .expect("target crop이 crop dir에 있어야 함");
+        let imgs: Vec<DynamicImage> = paths
+            .iter()
+            .map(|p| image::open(p).expect("crop 이미지 로드 실패"))
+            .collect();
+
+        let engine = OcrEngine::new(&models_dir(), 0.2, 0.4).expect("OcrEngine 초기화 실패");
+        let mut session = engine.rec_session.lock().unwrap();
+        let (batch, single) = rec::recognize_multi_batch_vs_single(
+            &mut session,
+            &imgs,
+            target_index,
+            &engine.dict,
+        )
+        .expect("multi rec 비교 실패");
+
+        eprintln!(
+            "[REC multi compare] crop={:?}\n  multi : score={:.3} text={:?}\n  single: score={:.3} text={:?}",
+            crop_path,
+            batch.1,
+            batch.0,
+            single.1,
+            single.0
+        );
     }
 
     #[test]

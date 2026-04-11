@@ -15,6 +15,9 @@ export type DetectionGroup = {
 };
 
 export type DetectionItem = DetectionGroup;
+export type DetectionTraceGroup = DetectionGroup & {
+  members: DetectionItem[];
+};
 
 export function polygonToBounds(polygon: DetectionPolygon): BoundingBox {
   const xs = polygon.map(([x]) => x);
@@ -70,6 +73,17 @@ export function groupDetectionsWithBounds(
   xGap: number,
   yGap: number,
 ): DetectionGroup[] {
+  return groupDetectionsTraceWithBounds(detections, source, xGap, yGap).map(
+    ({ members: _members, ...group }) => group,
+  );
+}
+
+export function groupDetectionsTraceWithBounds(
+  detections: RawDetection[],
+  source: string,
+  xGap: number,
+  yGap: number,
+): DetectionTraceGroup[] {
   // 1. OCR 통과 결과는 언어 기준으로 다시 버리지 않고 모두 그룹핑한다.
   // source는 joinText의 공백 규칙에만 사용한다.
   const items = rawDetectionsWithBounds(detections);
@@ -80,7 +94,7 @@ export function groupDetectionsWithBounds(
   );
 
   // 3. 그리디 병합
-  const groups: DetectionGroup[] = [];
+  const groups: DetectionTraceGroup[] = [];
   for (const item of items) {
     const idx = groups.findIndex((g) =>
       canMerge(g.bounds, item.bounds, xGap, yGap)
@@ -90,9 +104,10 @@ export function groupDetectionsWithBounds(
       groups[idx] = {
         text: joinText(g.text, item.text, source),
         bounds: mergeBounds(g.bounds, item.bounds),
+        members: [...g.members, item],
       };
     } else {
-      groups.push({ text: item.text, bounds: item.bounds });
+      groups.push({ text: item.text, bounds: item.bounds, members: [item] });
     }
   }
 

@@ -3,10 +3,12 @@ use crate::ocr::OcrEngine;
 use serde::{Deserialize, Serialize};
 
 pub(crate) type OcrDetection = (Vec<[f64; 2]>, String);
+pub(crate) type OcrDebugDetection = (Vec<[f64; 2]>, String, f32, bool);
 
 #[derive(Serialize, Clone)]
 pub(crate) struct OcrResultPayload {
     pub(crate) detections: Vec<OcrDetection>,
+    pub(crate) debug_detections: Vec<OcrDebugDetection>,
     pub(crate) orig_width: u32,
     pub(crate) orig_height: u32,
     pub(crate) source: String,
@@ -90,10 +92,12 @@ pub(crate) fn run_ocr(
         OCR_DET_RESIZE_LONG
     );
 
-    let detections = engine.recognize_boxes(&dyn_img, &boxes, cfg.score_thresh, cfg.ocr_debug_trace)?;
+    let (detections, debug_detections) =
+        engine.recognize_boxes(&dyn_img, &boxes, cfg.score_thresh, cfg.ocr_debug_trace)?;
 
     Ok(OcrResultPayload {
         detections,
+        debug_detections,
         orig_width,
         orig_height,
         source: cfg.source.clone(),

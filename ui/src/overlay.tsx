@@ -3,15 +3,15 @@ import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  groupDetectionsWithBounds,
-  rawDetectionsWithBounds,
-  type DetectionGroup,
+  groupDetectionsTraceWithBounds,
+  type DetectionTraceGroup,
   type RawDetection,
 } from "./detection";
 import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type OcrResultPayload = {
   detections: RawDetection[];
+  debug_detections: [RawDetection[0], string, number, boolean][];
   orig_width: number;
   orig_height: number;
   source: string;
@@ -55,7 +55,7 @@ function OverlayApp() {
 
   const groups =
     state.kind === "ready"
-      ? groupDetectionsWithBounds(
+      ? groupDetectionsTraceWithBounds(
           state.ocr.detections,
           state.ocr.source,
           state.ocr.word_gap,
@@ -64,7 +64,15 @@ function OverlayApp() {
       : [];
   const rawItems =
     state.kind === "ready"
-      ? rawDetectionsWithBounds(state.ocr.detections)
+      ? state.ocr.debug_detections.map(([polygon, text, score, accepted]) => ({
+          text: `${accepted ? "ok" : "ng"} ${score.toFixed(3)} ${text}`,
+          bounds: {
+            x: Math.min(...polygon.map(([x]) => x)),
+            y: Math.min(...polygon.map(([, y]) => y)),
+            width: Math.max(...polygon.map(([x]) => x)) - Math.min(...polygon.map(([x]) => x)),
+            height: Math.max(...polygon.map(([, y]) => y)) - Math.min(...polygon.map(([, y]) => y)),
+          },
+        }))
       : [];
 
   useEffect(() => {
@@ -188,57 +196,109 @@ function OverlayApp() {
           return (
             <div
               key={`raw-${i}`}
-              title={`raw: ${item.text}`}
-              style={{
-                position: "absolute",
-                left: `${cssX}px`,
-                top: `${cssY}px`,
-                width: `${cssW}px`,
-                height: `${cssH}px`,
-                border: "1px dashed rgba(255, 64, 128, 0.95)",
-                background: "rgba(255, 64, 128, 0.08)",
-                pointerEvents: "none",
-                boxSizing: "border-box",
-              }}
-            />
+            >
+              <div
+                title={`raw: ${item.text}`}
+                style={{
+                  position: "absolute",
+                  left: `${cssX}px`,
+                  top: `${cssY}px`,
+                  width: `${cssW}px`,
+                  height: `${cssH}px`,
+                  border: "1px dashed rgba(255, 64, 128, 0.95)",
+                  background: "rgba(255, 64, 128, 0.08)",
+                  pointerEvents: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  left: `${cssX}px`,
+                  top: `${Math.max(cssY - 18, 0)}px`,
+                  maxWidth: "220px",
+                  padding: "1px 4px",
+                  fontSize: "11px",
+                  lineHeight: "1.2",
+                  color: "#ffffff",
+                  background: "rgba(160, 30, 90, 0.92)",
+                  border: "1px solid rgba(255, 64, 128, 0.95)",
+                  borderRadius: "3px",
+                  pointerEvents: "none",
+                  whiteSpace: "normal",
+                  wordBreak: "break-all",
+                  boxSizing: "border-box",
+                }}
+                title={item.text}
+              >
+                {item.text}
+              </div>
+            </div>
           );
         })}
-      {groups.map((group: DetectionGroup, i: number) => {
+      {groups.map((group: DetectionTraceGroup, i: number) => {
         const cssX = group.bounds.x * cssScaleX;
         const cssY = group.bounds.y * cssScaleY;
         const cssW = group.bounds.width * cssScaleX;
         const cssH = group.bounds.height * cssScaleY;
         const isHovered = hoveredIdx === i;
         return (
-          <div
-            key={i}
-            onClick={(e) => {
-              e.stopPropagation();
-              // 오버레이는 유지, Rust에서 팝업 위치 지정 + 번역 처리
-              invoke("select_text", {
-                text: group.text,
-                boxX: cssX,
-                boxY: cssY,
-                boxW: cssW,
-              });
-            }}
-            onMouseEnter={() => setHoveredIdx(i)}
-            onMouseLeave={() => setHoveredIdx(null)}
-            title={group.text}
-            style={{
-              position: "absolute",
-              left: `${cssX}px`,
-              top: `${cssY}px`,
-              width: `${cssW}px`,
-              height: `${cssH}px`,
-              border: `2px solid ${isHovered ? "#ffff00" : "#00e5ff"}`,
-              background: isHovered
-                ? "rgba(255, 255, 0, 0.25)"
-                : "rgba(0, 229, 255, 0.15)",
-              cursor: "pointer",
-              transition: "border-color 0.1s, background 0.1s",
-            }}
-          />
+          <div key={i}>
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                // 오버레이는 유지, Rust에서 팝업 위치 지정 + 번역 처리
+                invoke("select_text", {
+                  text: group.text,
+                  boxX: cssX,
+                  boxY: cssY,
+                  boxW: cssW,
+                });
+              }}
+              onMouseEnter={() => setHoveredIdx(i)}
+              onMouseLeave={() => setHoveredIdx(null)}
+              title={group.text}
+              style={{
+                position: "absolute",
+                left: `${cssX}px`,
+                top: `${cssY}px`,
+                width: `${cssW}px`,
+                height: `${cssH}px`,
+                border: `2px solid ${isHovered ? "#ffff00" : "#00e5ff"}`,
+                background: isHovered
+                  ? "rgba(255, 255, 0, 0.25)"
+                  : "rgba(0, 229, 255, 0.15)",
+                cursor: "pointer",
+                transition: "border-color 0.1s, background 0.1s",
+              }}
+            />
+            {state.kind === "ready" && state.ocr.debug_trace && (
+              <div
+                style={{
+                  position: "absolute",
+                  left: `${cssX}px`,
+                  top: `${Math.max(cssY - 18, 0)}px`,
+                  maxWidth: "360px",
+                  padding: "1px 4px",
+                  fontSize: "11px",
+                  lineHeight: "1.2",
+                  color: "#ffffff",
+                  background: "rgba(0, 120, 150, 0.9)",
+                  border: "1px solid rgba(0, 229, 255, 0.9)",
+                  borderRadius: "3px",
+                  pointerEvents: "none",
+                  whiteSpace: "normal",
+                  wordBreak: "break-all",
+                  boxSizing: "border-box",
+                }}
+                title={group.text}
+              >
+                {group.text}
+                {"\n"}
+                {group.members.map((member) => member.text).join(" | ")}
+              </div>
+            )}
+          </div>
         );
       })}
     </div>
