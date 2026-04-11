@@ -95,13 +95,12 @@ function deduplicateGroups(groups: DetectionTraceGroup[]): DetectionTraceGroup[]
   return result.sort((a, b) => a.bounds.y - b.bounds.y || a.bounds.x - b.bounds.x);
 }
 
-function buildGroupText(members: DetectionItem[], source: string): string {
-  const sorted = sortItemsByReadingOrder(members);
-  if (sorted.length === 0) return "";
+function buildGroupTextFromSortedMembers(members: DetectionItem[], source: string): string {
+  if (members.length === 0) return "";
 
-  let text = sorted[0]!.text;
-  for (let i = 1; i < sorted.length; i++) {
-    text = joinText(text, sorted[i]!.text, source);
+  let text = members[0]!.text;
+  for (let i = 1; i < members.length; i++) {
+    text = joinText(text, members[i]!.text, source);
   }
   return text;
 }
@@ -207,11 +206,14 @@ export function groupDetectionsTraceWithBounds(
     }
   }
 
-  return deduplicateGroups(groups).map((group) => ({
-    ...group,
-    members: sortItemsByReadingOrder(group.members),
-    text: buildGroupText(group.members, source),
-  }));
+  return deduplicateGroups(groups).map((group) => {
+    const members = sortItemsByReadingOrder(group.members);
+    return {
+      ...group,
+      members,
+      text: buildGroupTextFromSortedMembers(members, source),
+    };
+  });
 }
 
 export function rawDetectionsWithBounds(

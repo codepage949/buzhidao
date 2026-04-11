@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -53,27 +53,45 @@ function OverlayApp() {
     if (e.key === "Escape") close();
   }, [close]);
 
-  const groups =
-    state.kind === "ready"
-      ? groupDetectionsTraceWithBounds(
-          state.ocr.detections,
-          state.ocr.source,
-          state.ocr.word_gap,
-          state.ocr.line_gap,
-        )
-      : [];
-  const rawItems =
-    state.kind === "ready"
-      ? state.ocr.debug_detections.map(([polygon, text, score, accepted]) => ({
-          text: `${accepted ? "ok" : "ng"} ${score.toFixed(3)} ${text}`,
-          bounds: {
-            x: Math.min(...polygon.map(([x]) => x)),
-            y: Math.min(...polygon.map(([, y]) => y)),
-            width: Math.max(...polygon.map(([x]) => x)) - Math.min(...polygon.map(([x]) => x)),
-            height: Math.max(...polygon.map(([, y]) => y)) - Math.min(...polygon.map(([, y]) => y)),
-          },
-        }))
-      : [];
+  const groups = useMemo(
+    () =>
+      state.kind === "ready"
+        ? groupDetectionsTraceWithBounds(
+            state.ocr.detections,
+            state.ocr.source,
+            state.ocr.word_gap,
+            state.ocr.line_gap,
+          )
+        : [],
+    [state],
+  );
+  const rawItems = useMemo(
+    () =>
+      state.kind === "ready"
+        ? state.ocr.debug_detections.map(([polygon, text, score, accepted]) => {
+            let minX = Number.POSITIVE_INFINITY;
+            let minY = Number.POSITIVE_INFINITY;
+            let maxX = Number.NEGATIVE_INFINITY;
+            let maxY = Number.NEGATIVE_INFINITY;
+            for (const [x, y] of polygon) {
+              if (x < minX) minX = x;
+              if (y < minY) minY = y;
+              if (x > maxX) maxX = x;
+              if (y > maxY) maxY = y;
+            }
+            return {
+              text: `${accepted ? "ok" : "ng"} ${score.toFixed(3)} ${text}`,
+              bounds: {
+                x: minX,
+                y: minY,
+                width: maxX - minX,
+                height: maxY - minY,
+              },
+            };
+          })
+        : [],
+    [state],
+  );
 
   useEffect(() => {
     if (state.kind !== "ready" || !state.ocr.debug_trace) return;
