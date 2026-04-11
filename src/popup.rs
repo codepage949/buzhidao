@@ -12,7 +12,6 @@ pub(crate) fn calc_popup_pos_from_screen(
     box_x: f64,
     box_y: f64,
     box_w: f64,
-    box_h: f64,
 ) -> (f64, f64) {
     let x = if box_x + box_w + GAP + POPUP_W <= screen_w {
         box_x + box_w + GAP
@@ -26,7 +25,6 @@ pub(crate) fn calc_popup_pos_from_screen(
         (screen_h - POPUP_H).max(0.0)
     };
 
-    let _ = box_h;
     (x, y)
 }
 
@@ -35,7 +33,6 @@ pub(crate) fn calc_popup_pos(
     box_x: f64,
     box_y: f64,
     box_w: f64,
-    box_h: f64,
 ) -> (f64, f64) {
     let (screen_w, screen_h) = app
         .primary_monitor()
@@ -48,7 +45,7 @@ pub(crate) fn calc_popup_pos(
         })
         .unwrap_or((1920.0, 1080.0));
 
-    calc_popup_pos_from_screen(screen_w, screen_h, box_x, box_y, box_w, box_h)
+    calc_popup_pos_from_screen(screen_w, screen_h, box_x, box_y, box_w)
 }
 
 #[cfg(test)]
@@ -57,25 +54,25 @@ mod tests {
 
     #[test]
     fn 오른쪽_공간이_충분하면_박스_오른쪽에_팝업을_배치한다() {
-        let (x, y) = calc_popup_pos_from_screen(1920.0, 1080.0, 100.0, 200.0, 300.0, 40.0);
+        let (x, y) = calc_popup_pos_from_screen(1920.0, 1080.0, 100.0, 200.0, 300.0);
         assert_eq!((x, y), (412.0, 200.0));
     }
 
     #[test]
     fn 오른쪽_공간이_부족하면_박스_왼쪽으로_이동한다() {
-        let (x, y) = calc_popup_pos_from_screen(1280.0, 1080.0, 1000.0, 150.0, 200.0, 40.0);
+        let (x, y) = calc_popup_pos_from_screen(1280.0, 1080.0, 1000.0, 150.0, 200.0);
         assert_eq!((x, y), (568.0, 150.0));
     }
 
     #[test]
     fn 왼쪽도_부족하면_x_좌표를_0으로_고정한다() {
-        let (x, y) = calc_popup_pos_from_screen(500.0, 1080.0, 200.0, 120.0, 350.0, 40.0);
+        let (x, y) = calc_popup_pos_from_screen(500.0, 1080.0, 200.0, 120.0, 350.0);
         assert_eq!((x, y), (0.0, 120.0));
     }
 
     #[test]
     fn 화면_아래를_벗어나면_y_좌표를_화면_안으로_보정한다() {
-        let (x, y) = calc_popup_pos_from_screen(1920.0, 700.0, 100.0, 450.0, 200.0, 40.0);
+        let (x, y) = calc_popup_pos_from_screen(1920.0, 700.0, 100.0, 450.0, 200.0);
         assert_eq!((x, y), (312.0, 200.0));
     }
 }

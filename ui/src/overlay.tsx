@@ -11,7 +11,6 @@ import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type OcrResultPayload = {
   detections: RawDetection[];
-  scale: number;
   orig_width: number;
   orig_height: number;
   source: string;
@@ -68,7 +67,6 @@ function OverlayApp() {
     state.kind === "ready" ? window.innerWidth / state.ocr.orig_width : 1;
   const cssScaleY =
     state.kind === "ready" ? window.innerHeight / state.ocr.orig_height : 1;
-  const scale = state.kind === "ready" ? state.ocr.scale : 1;
 
   return (
     // rgba(0,0,0,0.01): 투명 WebView2에서 배경이 없으면 클릭이 창 아래로 통과함
@@ -170,10 +168,10 @@ function OverlayApp() {
 
       {/* OCR 감지 박스 */}
       {groups.map((group: DetectionGroup, i: number) => {
-        const cssX = group.bounds.x * scale * cssScaleX;
-        const cssY = group.bounds.y * scale * cssScaleY;
-        const cssW = group.bounds.width * scale * cssScaleX;
-        const cssH = group.bounds.height * scale * cssScaleY;
+        const cssX = group.bounds.x * cssScaleX;
+        const cssY = group.bounds.y * cssScaleY;
+        const cssW = group.bounds.width * cssScaleX;
+        const cssH = group.bounds.height * cssScaleY;
         const isHovered = hoveredIdx === i;
         return (
           <div
@@ -186,7 +184,6 @@ function OverlayApp() {
                 boxX: cssX,
                 boxY: cssY,
                 boxW: cssW,
-                boxH: cssH,
               });
             }}
             onMouseEnter={() => setHoveredIdx(i)}

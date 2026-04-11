@@ -15,11 +15,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
 use crate::ocr::OcrEngine;
-use crate::platform::{
-    capture_active_screen, install_capture_shortcut, prepare_overlay_for_capture,
-};
+use crate::platform::{install_capture_shortcut, prepare_overlay_for_capture};
 use crate::popup::calc_popup_pos;
-use crate::services::{call_ai, run_ocr};
+use crate::services::{call_ai, capture_screen, run_ocr};
 use crate::window::{focus_active_window, focus_window, hide_window};
 
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
@@ -33,13 +31,12 @@ async fn select_text(
     box_x: f64,
     box_y: f64,
     box_w: f64,
-    box_h: f64,
 ) -> Result<(), String> {
     let popup = app
         .get_webview_window("popup")
         .ok_or("팝업 창을 찾을 수 없음")?;
 
-    let (px, py) = calc_popup_pos(&app, box_x, box_y, box_w, box_h);
+    let (px, py) = calc_popup_pos(&app, box_x, box_y, box_w);
     let _ = popup.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
         px, py,
     )));
@@ -48,7 +45,8 @@ async fn select_text(
     let _ = popup.set_focus();
 
     let cfg = app.state::<Config>().inner().clone();
-    match call_ai(&cfg, &text).await {
+    let client = app.state::<reqwest::Client>().inner().clone();
+    match call_ai(&client, &cfg, &text).await {
         Ok(result) => {
             popup
                 .emit("translation_result", &result)
@@ -90,7 +88,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     let cfg = app.state::<Config>().inner().clone();
 
     // 1. 스크린샷 캡처 (블로킹 작업 → spawn_blocking)
-    let capture_result = tauri::async_runtime::spawn_blocking(capture_active_screen).await;
+    let capture_result = tauri::async_runtime::spawn_blocking(capture_screen).await;
     let info = match capture_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
@@ -110,7 +108,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     // 2. 오버레이 즉시 표시 (로딩 상태)
     prepare_overlay_for_capture(&app, &info);
 
-    // 4. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
+    // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
     let engine = app.state::<Arc<OcrEngine>>().inner().clone();
     let ocr_result = {
         let img = info.image;
@@ -199,6 +197,7 @@ pub fn run() {
             focus_active_window(app);
         }))
         .manage(config)
+        .manage(reqwest::Client::new())
         .setup(move |app| {
             // OCR 엔진 초기화
             let models_dir = app

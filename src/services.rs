@@ -1,6 +1,5 @@
 use crate::config::{Config, OCR_DET_RESIZE_LONG};
 use crate::ocr::OcrEngine;
-use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
 pub(crate) type OcrDetection = (Vec<[f64; 2]>, String);
@@ -8,7 +7,6 @@ pub(crate) type OcrDetection = (Vec<[f64; 2]>, String);
 #[derive(Serialize, Clone)]
 pub(crate) struct OcrResultPayload {
     pub(crate) detections: Vec<OcrDetection>,
-    pub(crate) scale: f64,
     pub(crate) orig_width: u32,
     pub(crate) orig_height: u32,
     pub(crate) source: String,
@@ -80,13 +78,21 @@ pub(crate) fn run_ocr(
     orig_width: u32,
     orig_height: u32,
 ) -> Result<OcrResultPayload, String> {
-    // det 단계가 자체적으로 resize_long=960 전처리를 수행하므로
-    // 전체 화면을 여기서 한 번 더 축소하면 rec 단계 crop 해상도만 불필요하게 낮아진다.
-    let detections = predict_with_tiles(engine, &dyn_img, cfg.score_thresh, OCR_DET_RESIZE_LONG)?;
+    let t0 = std::time::Instant::now();
+    let boxes = engine.detect(&dyn_img, OCR_DET_RESIZE_LONG)?;
+    eprintln!(
+        "[OCR] det: {:.0}ms ({} 박스, {}×{}, resize_long {})",
+        t0.elapsed().as_millis(),
+        boxes.len(),
+        dyn_img.width(),
+        dyn_img.height(),
+        OCR_DET_RESIZE_LONG
+    );
+
+    let detections = engine.recognize_boxes(&dyn_img, &boxes, cfg.score_thresh)?;
 
     Ok(OcrResultPayload {
         detections,
-        scale: 1.0,
         orig_width,
         orig_height,
         source: cfg.source.clone(),
@@ -95,29 +101,11 @@ pub(crate) fn run_ocr(
     })
 }
 
-fn predict_with_tiles(
-    engine: &OcrEngine,
-    img: &DynamicImage,
-    score_thresh: f32,
-    det_resize_long: u32,
-) -> Result<Vec<OcrDetection>, String> {
-    let t_det_full = std::time::Instant::now();
-    let full_boxes = engine.detect(img, det_resize_long)?;
-    eprintln!("[OCR] det 단일 모드: full det only");
-    eprintln!(
-        "[OCR] det 전체: {:.0}ms ({} 박스, {}×{}, resize_long {})",
-        t_det_full.elapsed().as_millis(),
-        full_boxes.len(),
-        img.width(),
-        img.height(),
-        det_resize_long
-    );
-
-    engine.recognize_boxes(img, &full_boxes, score_thresh)
-}
-
-pub(crate) async fn call_ai(cfg: &Config, text: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
+pub(crate) async fn call_ai(
+    client: &reqwest::Client,
+    cfg: &Config,
+    text: &str,
+) -> Result<String, String> {
     let body = ChatRequest {
         model: &cfg.ai_gateway_model,
         messages: vec![

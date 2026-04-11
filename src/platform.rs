@@ -1,4 +1,4 @@
-use crate::services::{capture_screen, CaptureInfo};
+use crate::services::CaptureInfo;
 use crate::window::{focus_window, hide_window, place_overlay_window};
 use rdev::{grab, Event, EventType, Key};
 use std::sync::{
@@ -6,10 +6,6 @@ use std::sync::{
     Arc,
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
-
-pub(crate) fn capture_active_screen() -> Result<CaptureInfo, String> {
-    capture_screen()
-}
 
 pub(crate) fn prepare_overlay_for_capture(app: &AppHandle, capture: &CaptureInfo) {
     hide_window(app, "popup");
