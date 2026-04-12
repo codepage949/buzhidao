@@ -25,8 +25,7 @@ pub(crate) fn install_capture_shortcut(
     let callback = Arc::new(on_trigger);
 
     std::thread::spawn(move || {
-        let callback = callback.clone();
-        let _ = grab(move |event: Event| {
+        if let Err(e) = grab(move |event: Event| {
             if is_capture_shortcut_pressed(&event) {
                 if should_trigger_capture(&handle, &busy) {
                     callback(handle.clone(), busy.clone());
@@ -34,7 +33,9 @@ pub(crate) fn install_capture_shortcut(
                 return None;
             }
             Some(event)
-        });
+        }) {
+            eprintln!("[단축키] 전역 키 훅 설치 실패: {e:?}");
+        }
     });
 }
 
