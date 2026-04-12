@@ -7,7 +7,7 @@ mod window;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::{
     env,
@@ -18,11 +18,15 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
-use crate::ocr::OcrEngine;
+use crate::ocr::OcrBackend;
 use crate::platform::{install_capture_shortcut, prepare_overlay_for_capture};
 use crate::popup::calc_popup_pos;
-use crate::services::{call_ai, capture_screen, run_ocr};
+use crate::services::{
+    call_ai, capture_screen, crop_capture_to_region, offset_ocr_result, run_ocr, CaptureInfo,
+};
 use crate::window::{focus_active_window, focus_window, hide_window};
+
+struct PendingCapture(Mutex<Option<CaptureInfo>>);
 
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
@@ -71,6 +75,7 @@ async fn select_text(
 async fn close_overlay(app: AppHandle) -> Result<(), String> {
     hide_window(&app, "overlay");
     hide_window(&app, "popup");
+    clear_pending_capture(&app);
     Ok(())
 }
 
@@ -82,14 +87,60 @@ async fn close_popup(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn run_region_ocr(
+    app: AppHandle,
+    rect_x: f64,
+    rect_y: f64,
+    rect_w: f64,
+    rect_h: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> Result<(), String> {
+    let (cropped, offset_x, offset_y, orig_width, orig_height) = {
+        let pending = app.state::<PendingCapture>();
+        let mut guard = pending.0.lock().map_err(|_| "캡처 상태 잠금 실패".to_string())?;
+        let capture = guard
+            .take()
+            .ok_or("선택할 캡처 이미지가 없음".to_string())?;
+        crop_capture_to_region(
+            capture,
+            rect_x,
+            rect_y,
+            rect_w,
+            rect_h,
+            viewport_w,
+            viewport_h,
+        )?
+    };
+
+    let cfg = app.state::<Config>().inner().clone();
+    let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut ocr = run_ocr(&cfg, &engine, cropped, orig_width, orig_height)?;
+        offset_ocr_result(&mut ocr, offset_x, offset_y);
+        Ok::<_, String>(ocr)
+    })
+    .await
+    .map_err(|e| format!("OCR 스레드 오류: {e}"))?;
+
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or("오버레이 창을 찾을 수 없음".to_string())?;
+    match result {
+        Ok(ocr) => overlay.emit("ocr_result", &ocr).map_err(|e| e.to_string())?,
+        Err(err) => overlay.emit("ocr_error", &err).map_err(|e| e.to_string())?,
+    }
+
+    Ok(())
+}
+
 // ── PrtSc 처리 ────────────────────────────────────────────────────────────────
 
 async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     if busy.swap(true, Ordering::SeqCst) {
         return;
     }
-
-    let cfg = app.state::<Config>().inner().clone();
 
     // 1. 스크린샷 캡처
     let info = match capture_screen(&app).await {
@@ -101,13 +152,22 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         }
     };
 
-    let (orig_width, orig_height) = (info.orig_width, info.orig_height);
-
     // 2. 오버레이 즉시 표시 (로딩 상태)
     prepare_overlay_for_capture(&app, &info);
 
+    let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+    if engine.is_cpu_mode() {
+        store_pending_capture(&app, info);
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            let _ = overlay.emit("overlay_select_region", ());
+        }
+        busy.store(false, Ordering::SeqCst);
+        return;
+    }
+
     // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
-    let engine = app.state::<Arc<OcrEngine>>().inner().clone();
+    let cfg = app.state::<Config>().inner().clone();
+    let (orig_width, orig_height) = (info.orig_width, info.orig_height);
     let ocr_result = {
         let img = info.image;
         tauri::async_runtime::spawn_blocking(move || {
@@ -132,6 +192,22 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     }
 
     busy.store(false, Ordering::SeqCst);
+}
+
+fn store_pending_capture(app: &AppHandle, capture: CaptureInfo) {
+    if let Some(state) = app.try_state::<PendingCapture>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = Some(capture);
+        }
+    }
+}
+
+fn clear_pending_capture(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PendingCapture>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = None;
+        }
+    }
 }
 
 // ── CUDA DLL 선탐색 ───────────────────────────────────────────────────────────
@@ -278,6 +354,7 @@ pub fn run() {
         }))
         .manage(config)
         .manage(reqwest::Client::new())
+        .manage(PendingCapture(Mutex::new(None)))
         .setup(move |app| {
             #[cfg(target_os = "linux")]
             let _ = register_linux_portal_host_app();
@@ -290,9 +367,12 @@ pub fn run() {
                 let cfg = app.state::<Config>();
                 (cfg.det_thresh, cfg.box_thresh)
             };
-            let engine =
-                OcrEngine::new(&models_dir, det_thresh, box_thresh).expect("OCR 엔진 초기화 실패");
-            app.manage(Arc::new(engine));
+            let backend = {
+                let cfg = app.state::<Config>();
+                OcrBackend::new(&models_dir, det_thresh, box_thresh, cfg.ocr_backend)
+                    .expect("OCR 엔진 초기화 실패")
+            };
+            app.manage(Arc::new(backend));
             // 시스템 트레이: 종료 메뉴
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&quit_item]).build()?;
@@ -321,7 +401,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             select_text,
             close_overlay,
-            close_popup
+            close_popup,
+            run_region_ocr
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -23,23 +23,49 @@ type OcrResultPayload = {
 type State =
   | { kind: "hidden" }
   | { kind: "loading" }
+  | { kind: "selecting" }
   | { kind: "ready"; ocr: OcrResultPayload }
   | { kind: "error"; message: string };
+
+type SelectionRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 function OverlayApp() {
   const [state, setState] = useState<State>({ kind: "hidden" });
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [selectionStart, setSelectionStart] = useState<[number, number] | null>(null);
+  const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
+  const suppressNextCloseRef = useRef(false);
 
   useListenerCleanup(() => [
       listen("overlay_show", () => {
         setState({ kind: "loading" });
         setHoveredIdx(null);
+        setSelectionStart(null);
+        setSelectionRect(null);
+        suppressNextCloseRef.current = false;
+      }),
+      listen("overlay_select_region", () => {
+        setState({ kind: "selecting" });
+        setHoveredIdx(null);
+        setSelectionStart(null);
+        setSelectionRect(null);
+        suppressNextCloseRef.current = false;
       }),
       listen<OcrResultPayload>("ocr_result", (e) => {
         setState({ kind: "ready", ocr: e.payload });
+        setSelectionStart(null);
+        setSelectionRect(null);
+        suppressNextCloseRef.current = true;
       }),
       listen<string>("ocr_error", (e) => {
         setState({ kind: "error", message: e.payload });
+        setSelectionStart(null);
+        suppressNextCloseRef.current = true;
       }),
     ], []);
 
@@ -49,9 +75,68 @@ function OverlayApp() {
     await invoke("close_overlay");
   }, []);
 
+  const handleRootClick = useCallback(async () => {
+    if (suppressNextCloseRef.current) {
+      suppressNextCloseRef.current = false;
+      return;
+    }
+    if (state.kind === "selecting") return;
+    await close();
+  }, [close, state.kind]);
+
   useWindowKeydown((e) => {
     if (e.key === "Escape") close();
   }, [close]);
+
+  const beginSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (state.kind !== "selecting") return;
+    e.stopPropagation();
+    const x = e.clientX;
+    const y = e.clientY;
+    setSelectionStart([x, y]);
+    setSelectionRect({ x, y, width: 0, height: 0 });
+  }, [state.kind]);
+
+  const updateSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (state.kind !== "selecting" || !selectionStart) return;
+    const [startX, startY] = selectionStart;
+    const x1 = Math.min(startX, e.clientX);
+    const y1 = Math.min(startY, e.clientY);
+    const x2 = Math.max(startX, e.clientX);
+    const y2 = Math.max(startY, e.clientY);
+    setSelectionRect({
+      x: x1,
+      y: y1,
+      width: x2 - x1,
+      height: y2 - y1,
+    });
+  }, [selectionStart, state.kind]);
+
+  const finishSelection = useCallback(async (e: React.MouseEvent<HTMLDivElement>) => {
+    if (state.kind !== "selecting") return;
+    e.stopPropagation();
+    const rect = selectionRect;
+    setSelectionStart(null);
+    if (!rect || rect.width < 8 || rect.height < 8) {
+      setSelectionRect(null);
+      return;
+    }
+
+    suppressNextCloseRef.current = true;
+    setState({ kind: "loading" });
+    try {
+      await invoke("run_region_ocr", {
+        rectX: rect.x,
+        rectY: rect.y,
+        rectW: rect.width,
+        rectH: rect.height,
+        viewportW: window.innerWidth,
+        viewportH: window.innerHeight,
+      });
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [selectionRect, state.kind]);
 
   const groups = useMemo(
     () =>
@@ -109,7 +194,10 @@ function OverlayApp() {
   return (
     // rgba(0,0,0,0.01): 투명 WebView2에서 배경이 없으면 클릭이 창 아래로 통과함
     <div
-      onClick={close}
+      onClick={handleRootClick}
+      onMouseDown={beginSelection}
+      onMouseMove={updateSelection}
+      onMouseUp={finishSelection}
       style={{
         position: "fixed",
         inset: 0,
@@ -130,6 +218,7 @@ function OverlayApp() {
 
       {/* 닫기 버튼 */}
       <button
+        onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           close();
@@ -175,6 +264,48 @@ function OverlayApp() {
           >
             텍스트 인식 중…
           </div>
+        </div>
+      )}
+
+      {state.kind === "selecting" && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: "24px",
+              left: "50%",
+              transform: "translateX(-50%)",
+              color: "#ffffff",
+              fontSize: "18px",
+              background: "rgba(0, 0, 0, 0.68)",
+              padding: "12px 18px",
+              borderRadius: "8px",
+              border: "1px solid rgba(255,255,255,0.18)",
+            }}
+          >
+            OCR할 영역을 드래그해서 선택하세요
+          </div>
+          {selectionRect && (
+            <div
+              style={{
+                position: "absolute",
+                left: `${selectionRect.x}px`,
+                top: `${selectionRect.y}px`,
+                width: `${selectionRect.width}px`,
+                height: `${selectionRect.height}px`,
+                border: "2px solid #00e5ff",
+                background: "rgba(0, 229, 255, 0.12)",
+                boxShadow: "0 0 0 99999px rgba(0, 0, 0, 0.35)",
+                boxSizing: "border-box",
+              }}
+            />
+          )}
         </div>
       )}
 

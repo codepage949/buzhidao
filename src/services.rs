@@ -1,5 +1,5 @@
 use crate::config::{Config, OCR_DET_RESIZE_LONG};
-use crate::ocr::OcrEngine;
+use crate::ocr::OcrBackend;
 #[cfg(target_os = "linux")]
 use ashpd::desktop::{
     PersistMode,
@@ -32,6 +32,86 @@ pub(crate) struct CaptureInfo {
     pub(crate) y: i32,
     pub(crate) orig_width: u32,
     pub(crate) orig_height: u32,
+}
+
+pub(crate) fn crop_capture_to_region(
+    capture: CaptureInfo,
+    rect_x: f64,
+    rect_y: f64,
+    rect_w: f64,
+    rect_h: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> Result<(image::DynamicImage, f64, f64, u32, u32), String> {
+    let (crop_x, crop_y, crop_w, crop_h) = selection_rect_to_image_rect(
+        capture.orig_width,
+        capture.orig_height,
+        rect_x,
+        rect_y,
+        rect_w,
+        rect_h,
+        viewport_w,
+        viewport_h,
+    )?;
+
+    let cropped = capture.image.crop_imm(crop_x, crop_y, crop_w, crop_h);
+    Ok((
+        cropped,
+        crop_x as f64,
+        crop_y as f64,
+        capture.orig_width,
+        capture.orig_height,
+    ))
+}
+
+pub(crate) fn offset_ocr_result(payload: &mut OcrResultPayload, offset_x: f64, offset_y: f64) {
+    for (polygon, _) in &mut payload.detections {
+        for point in polygon {
+            point[0] += offset_x;
+            point[1] += offset_y;
+        }
+    }
+    for (polygon, _, _, _) in &mut payload.debug_detections {
+        for point in polygon {
+            point[0] += offset_x;
+            point[1] += offset_y;
+        }
+    }
+}
+
+fn selection_rect_to_image_rect(
+    image_width: u32,
+    image_height: u32,
+    rect_x: f64,
+    rect_y: f64,
+    rect_w: f64,
+    rect_h: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> Result<(u32, u32, u32, u32), String> {
+    if image_width == 0 || image_height == 0 {
+        return Err("캡처 이미지 크기가 0입니다".to_string());
+    }
+    if viewport_w <= 0.0 || viewport_h <= 0.0 {
+        return Err("뷰포트 크기가 유효하지 않습니다".to_string());
+    }
+
+    let x1 = rect_x.min(rect_x + rect_w).max(0.0).min(viewport_w);
+    let y1 = rect_y.min(rect_y + rect_h).max(0.0).min(viewport_h);
+    let x2 = rect_x.max(rect_x + rect_w).max(0.0).min(viewport_w);
+    let y2 = rect_y.max(rect_y + rect_h).max(0.0).min(viewport_h);
+
+    let scale_x = image_width as f64 / viewport_w;
+    let scale_y = image_height as f64 / viewport_h;
+    let crop_x = (x1 * scale_x).floor() as u32;
+    let crop_y = (y1 * scale_y).floor() as u32;
+    let mut crop_w = ((x2 - x1) * scale_x).ceil() as u32;
+    let mut crop_h = ((y2 - y1) * scale_y).ceil() as u32;
+
+    crop_w = crop_w.max(1).min(image_width.saturating_sub(crop_x));
+    crop_h = crop_h.max(1).min(image_height.saturating_sub(crop_y));
+
+    Ok((crop_x, crop_y, crop_w, crop_h))
 }
 
 #[derive(Serialize)]
@@ -479,24 +559,29 @@ fn should_use_wayland_portal_for(session_type: Option<&str>) -> bool {
 
 pub(crate) fn run_ocr(
     cfg: &Config,
-    engine: &OcrEngine,
+    engine: &OcrBackend,
     dyn_img: image::DynamicImage,
     orig_width: u32,
     orig_height: u32,
 ) -> Result<OcrResultPayload, String> {
+    let det_resize_long =
+        effective_det_resize_long(engine.is_cpu_mode(), dyn_img.width(), dyn_img.height());
     let t0 = std::time::Instant::now();
-    let boxes = engine.detect(&dyn_img, OCR_DET_RESIZE_LONG)?;
+    let (detections, debug_detections) =
+        engine.run_image(
+            &dyn_img,
+            det_resize_long,
+            &cfg.source,
+            cfg.score_thresh,
+            cfg.ocr_debug_trace,
+        )?;
     eprintln!(
-        "[OCR] det: {:.0}ms ({} 박스, {}×{}, resize_long {})",
+        "[OCR] backend 전체 처리: {:.0}ms ({}×{}, resize_long {})",
         t0.elapsed().as_millis(),
-        boxes.len(),
         dyn_img.width(),
         dyn_img.height(),
-        OCR_DET_RESIZE_LONG
+        det_resize_long
     );
-
-    let (detections, debug_detections) =
-        engine.recognize_boxes(&dyn_img, &boxes, cfg.score_thresh, cfg.ocr_debug_trace)?;
 
     Ok(OcrResultPayload {
         detections,
@@ -508,6 +593,14 @@ pub(crate) fn run_ocr(
         line_gap: cfg.line_gap,
         debug_trace: cfg.ocr_debug_trace,
     })
+}
+
+fn effective_det_resize_long(cpu_mode: bool, width: u32, height: u32) -> u32 {
+    if !cpu_mode {
+        return OCR_DET_RESIZE_LONG;
+    }
+
+    OCR_DET_RESIZE_LONG.min(width.max(height).max(128))
 }
 
 pub(crate) async fn call_ai(
@@ -553,6 +646,10 @@ pub(crate) async fn call_ai(
 #[cfg(test)]
 mod tests {
     use super::OCR_DET_RESIZE_LONG;
+    use super::{
+        effective_det_resize_long, offset_ocr_result, selection_rect_to_image_rect,
+        OcrResultPayload,
+    };
     #[cfg(target_os = "linux")]
     use super::{rgba_image_from_raw_frame, should_use_wayland_portal_for, wayland_restore_token_path};
     #[cfg(target_os = "linux")]
@@ -561,6 +658,43 @@ mod tests {
     #[test]
     fn 단일_ocr_모드는_det_resize_long_1024를_사용한다() {
         assert_eq!(OCR_DET_RESIZE_LONG, 1024);
+    }
+
+    #[test]
+    fn cpu_모드에서는_작은_영역_det를_불필요하게_확대하지_않는다() {
+        assert_eq!(effective_det_resize_long(true, 367, 366), 367);
+        assert_eq!(
+            effective_det_resize_long(false, 367, 366),
+            OCR_DET_RESIZE_LONG
+        );
+    }
+
+    #[test]
+    fn 선택_영역을_원본_이미지_좌표로_변환한다() {
+        let rect =
+            selection_rect_to_image_rect(2560, 1440, 100.0, 50.0, 300.0, 200.0, 1280.0, 720.0)
+                .expect("좌표 변환 실패");
+
+        assert_eq!(rect, (200, 100, 600, 400));
+    }
+
+    #[test]
+    fn OCR_결과에_crop_오프셋을_더한다() {
+        let mut payload = OcrResultPayload {
+            detections: vec![(vec![[10.0, 20.0], [30.0, 40.0]], "text".to_string())],
+            debug_detections: vec![(vec![[1.0, 2.0], [3.0, 4.0]], "dbg".to_string(), 0.9, true)],
+            orig_width: 100,
+            orig_height: 100,
+            source: "en".to_string(),
+            word_gap: 20,
+            line_gap: 15,
+            debug_trace: false,
+        };
+
+        offset_ocr_result(&mut payload, 5.0, 7.0);
+
+        assert_eq!(payload.detections[0].0[0], [15.0, 27.0]);
+        assert_eq!(payload.debug_detections[0].0[1], [8.0, 11.0]);
     }
 
     #[cfg(target_os = "linux")]

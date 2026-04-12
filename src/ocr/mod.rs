@@ -1,16 +1,91 @@
 mod cls;
 pub(crate) mod det;
+#[cfg(feature = "paddle-ffi")]
+pub(crate) mod paddle_ffi;
+pub(crate) mod python_sidecar;
 mod rec;
 
+use crate::config::OcrBackendKind;
 use image::{DynamicImage, Rgb, RgbImage};
 #[cfg(feature = "gpu")]
 use ort::ep;
 use ort::session::Session;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
 use crate::config::OCR_DET_RESIZE_LONG;
 use crate::services::{OcrDebugDetection, OcrDetection};
+
+pub(crate) enum OcrBackend {
+    Onnx(OcrEngine),
+    PythonSidecar(python_sidecar::PythonSidecarEngine),
+    #[cfg(feature = "paddle-ffi")]
+    PaddleFfi(paddle_ffi::PaddleFfiEngine),
+}
+
+impl OcrBackend {
+    pub(crate) fn new(
+        models_dir: &Path,
+        det_thresh: f32,
+        box_thresh: f32,
+        kind: OcrBackendKind,
+    ) -> Result<Self, String> {
+        match kind {
+            OcrBackendKind::Onnx => Ok(Self::Onnx(OcrEngine::new(
+                models_dir,
+                det_thresh,
+                box_thresh,
+            )?)),
+            OcrBackendKind::PythonSidecar => {
+                Ok(Self::PythonSidecar(python_sidecar::PythonSidecarEngine::new()?))
+            }
+            #[cfg(feature = "paddle-ffi")]
+            OcrBackendKind::PaddleFfi => {
+                let model_dir = std::env::var_os("PADDLE_MODEL_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| models_dir.to_path_buf());
+                Ok(Self::PaddleFfi(paddle_ffi::PaddleFfiEngine::new(&model_dir, false)?))
+            }
+        }
+    }
+
+    pub(crate) fn is_cpu_mode(&self) -> bool {
+        match self {
+            Self::Onnx(engine) => engine.is_cpu_mode(),
+            Self::PythonSidecar(_) => true,
+            #[cfg(feature = "paddle-ffi")]
+            Self::PaddleFfi(_) => true,
+        }
+    }
+
+    pub(crate) fn run_image(
+        &self,
+        img: &DynamicImage,
+        det_resize_long: u32,
+        source: &str,
+        score_thresh: f32,
+        debug_trace: bool,
+    ) -> Result<(Vec<OcrDetection>, Vec<OcrDebugDetection>), String> {
+        match self {
+            Self::Onnx(engine) => {
+                let boxes = engine.detect(img, det_resize_long)?;
+                engine.recognize_boxes(img, &boxes, score_thresh, debug_trace)
+            }
+            Self::PythonSidecar(engine) => {
+                let temp_path = save_temp_ocr_image(img)?;
+                let result = engine.run_image_file(&temp_path, source, score_thresh, debug_trace);
+                let _ = std::fs::remove_file(&temp_path);
+                result
+            }
+            #[cfg(feature = "paddle-ffi")]
+            Self::PaddleFfi(engine) => {
+                let temp_path = save_temp_ocr_image(img)?;
+                let result = engine.run_image_file(&temp_path, det_resize_long, score_thresh, debug_trace);
+                let _ = std::fs::remove_file(&temp_path);
+                result
+            }
+        }
+    }
+}
 
 /// ONNX Runtime 기반 OCR 엔진.
 /// det(검출) → cls(방향분류) → rec(인식) 파이프라인.
@@ -21,14 +96,15 @@ pub(crate) struct OcrEngine {
     dict: Vec<String>,
     det_thresh: f32,
     box_thresh: f32,
+    uses_gpu: bool,
 }
 
 impl OcrEngine {
     pub(crate) fn new(models_dir: &Path, det_thresh: f32, box_thresh: f32) -> Result<Self, String> {
-        let det_session = load_session(models_dir, "det")?;
+        let (det_session, det_gpu) = load_session(models_dir, "det")?;
 
-        let cls_session = load_session(models_dir, "cls")?;
-        let rec_session = load_session(models_dir, "rec")?;
+        let (cls_session, cls_gpu) = load_session(models_dir, "cls")?;
+        let (rec_session, rec_gpu) = load_session(models_dir, "rec")?;
 
         let dict_path = models_dir.join("rec_dict.txt");
         let dict_content =
@@ -42,11 +118,16 @@ impl OcrEngine {
             dict,
             det_thresh,
             box_thresh,
+            uses_gpu: det_gpu && cls_gpu && rec_gpu,
         };
 
         engine.warmup();
 
         Ok(engine)
+    }
+
+    pub(crate) fn is_cpu_mode(&self) -> bool {
+        !self.uses_gpu
     }
 
     /// 더미 이미지로 각 세션을 한 번 실행해 GPU 커널을 워밍업한다.
@@ -116,8 +197,17 @@ impl OcrEngine {
             return Ok((vec![], vec![]));
         }
 
+        let merged_boxes = merge_boxes_for_cpu_rec(boxes, self.is_cpu_mode());
+        if self.is_cpu_mode() && merged_boxes.len() != boxes.len() {
+            eprintln!(
+                "[OCR] rec 전 박스 병합: {} -> {}",
+                boxes.len(),
+                merged_boxes.len()
+            );
+        }
+
         // 모든 박스를 크롭한 뒤 cls를 배치로 처리한다.
-        let crops: Vec<DynamicImage> = boxes.iter().map(|b| crop_box(img, b)).collect();
+        let crops: Vec<DynamicImage> = merged_boxes.iter().map(|b| crop_box(img, b)).collect();
 
         let t_cls = std::time::Instant::now();
         let labels = {
@@ -140,7 +230,7 @@ impl OcrEngine {
         let t_rec = std::time::Instant::now();
         let rec_results = {
             let mut session = self.rec_session.lock().unwrap();
-            rec::recognize_batch(&mut session, &oriented_crops, &self.dict)?
+            rec::recognize_batch(&mut session, &oriented_crops, &self.dict, self.is_cpu_mode())?
         };
         eprintln!(
             "[OCR] rec ({} 박스, rotate180 {}): {:.0}ms",
@@ -151,7 +241,7 @@ impl OcrEngine {
 
         let mut detections = Vec::new();
         let mut debug_detections = Vec::new();
-        for (idx, ((box_pts, (text, score)), crop)) in boxes
+        for (idx, ((box_pts, (text, score)), crop)) in merged_boxes
             .iter()
             .zip(rec_results)
             .zip(oriented_crops.iter())
@@ -178,6 +268,96 @@ impl OcrEngine {
 
         Ok((detections, debug_detections))
     }
+}
+
+fn merge_boxes_for_cpu_rec(boxes: &[det::DetBox], cpu_mode: bool) -> Vec<det::DetBox> {
+    if !cpu_mode {
+        return boxes.to_vec();
+    }
+
+    let mut sorted = boxes.to_vec();
+    sorted.sort_by(|a, b| {
+        let (ax0, ay0, _, _) = box_bounds(a);
+        let (bx0, by0, _, _) = box_bounds(b);
+        ay0.partial_cmp(&by0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| ax0.partial_cmp(&bx0).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut merged: Vec<det::DetBox> = Vec::new();
+    for item in sorted {
+        if let Some(last) = merged.last_mut() {
+            if should_merge_boxes_for_cpu_rec(last, &item) {
+                *last = merge_box_rect(last, &item);
+            } else {
+                merged.push(item);
+            }
+        } else {
+            merged.push(item);
+        }
+    }
+
+    merged
+}
+
+fn should_merge_boxes_for_cpu_rec(a: &det::DetBox, b: &det::DetBox) -> bool {
+    let (ax0, ay0, ax1, ay1) = box_bounds(a);
+    let (bx0, by0, bx1, by1) = box_bounds(b);
+    let aw = ax1 - ax0;
+    let bw = bx1 - bx0;
+    let ah = ay1 - ay0;
+    let bh = by1 - by0;
+    let a_center = ay0 + ah / 2.0;
+    let b_center = by0 + bh / 2.0;
+    let center_gap = (a_center - b_center).abs();
+    let max_h = ah.max(bh);
+    let min_h = ah.min(bh);
+    let height_ratio = if max_h > 0.0 { min_h / max_h } else { 0.0 };
+    let horizontal_gap = if bx0 > ax1 { bx0 - ax1 } else { 0.0 };
+
+    height_ratio >= 0.6
+        && center_gap <= max_h * 0.45
+        && horizontal_gap <= (min_h * 0.9).max(18.0)
+        && bx0 >= ax0
+        && bx1 > ax1
+        && (aw + bw + horizontal_gap) <= 360.0
+}
+
+fn merge_box_rect(a: &det::DetBox, b: &det::DetBox) -> det::DetBox {
+    let (ax0, ay0, ax1, ay1) = box_bounds(a);
+    let (bx0, by0, bx1, by1) = box_bounds(b);
+    let x0 = ax0.min(bx0);
+    let y0 = ay0.min(by0);
+    let x1 = ax1.max(bx1);
+    let y1 = ay1.max(by1);
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+}
+
+fn box_bounds(box_pts: &det::DetBox) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+
+    for &[x, y] in box_pts {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    (min_x, min_y, max_x, max_y)
+}
+
+fn save_temp_ocr_image(img: &DynamicImage) -> Result<PathBuf, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("시계 오류: {e}"))?
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("buzhidao-ocr-{nanos}.png"));
+    img.save(&path)
+        .map_err(|e| format!("임시 OCR 이미지 저장 실패 ({}): {e}", path.display()))?;
+    Ok(path)
 }
 
 fn should_accept_recognition(text: &str, score: f32, score_thresh: f32) -> bool {
@@ -277,19 +457,20 @@ fn is_cjk_char(c: char) -> bool {
     )
 }
 
-fn load_session(models_dir: &Path, model_name: &str) -> Result<Session, String> {
+fn load_session(models_dir: &Path, model_name: &str) -> Result<(Session, bool), String> {
     let model_path = models_dir.join(format!("{model_name}.onnx"));
 
     // GPU 빌드: GPU 세션 시도 → 실패 시 CPU로 폴백
     #[cfg(feature = "gpu")]
     if let Some(session) = try_load_gpu_session(&model_path, model_name) {
-        return Ok(session);
+        return Ok((session, true));
     }
 
-    Session::builder()
+    let session = Session::builder()
         .map_err(|e| format!("{model_name} 세션 빌더 실패: {e}"))?
         .commit_from_file(&model_path)
-        .map_err(|e| format!("{model_name} 모델 로드 실패: {e}"))
+        .map_err(|e| format!("{model_name} 모델 로드 실패: {e}"))?;
+    Ok((session, false))
 }
 
 /// CUDA EP로 GPU 세션 생성을 시도한다. 실패 시 원인을 출력하고 None을 반환한다.
@@ -690,6 +871,27 @@ mod tests {
     fn 기울어진_박스는_warp_crop을_사용한다() {
         let pts = [[2.0, 2.0], [8.0, 4.0], [7.0, 8.0], [1.0, 6.0]];
         assert!(should_use_warp_crop(&pts));
+    }
+
+    #[test]
+    fn cpu_rec_박스_병합은_같은_줄_인접_박스를_합친다() {
+        let a = [[0.0, 0.0], [40.0, 0.0], [40.0, 18.0], [0.0, 18.0]];
+        let b = [[46.0, 1.0], [88.0, 1.0], [88.0, 19.0], [46.0, 19.0]];
+
+        let merged = merge_boxes_for_cpu_rec(&[a, b], true);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0], [[0.0, 0.0], [88.0, 0.0], [88.0, 19.0], [0.0, 19.0]]);
+    }
+
+    #[test]
+    fn cpu_rec_박스_병합은_멀리_떨어진_박스를_합치지_않는다() {
+        let a = [[0.0, 0.0], [40.0, 0.0], [40.0, 18.0], [0.0, 18.0]];
+        let b = [[90.0, 0.0], [130.0, 0.0], [130.0, 18.0], [90.0, 18.0]];
+
+        let merged = merge_boxes_for_cpu_rec(&[a, b], true);
+
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]

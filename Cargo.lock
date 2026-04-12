@@ -494,6 +494,7 @@ name = "buzhidao"
 version = "0.1.0"
 dependencies = [
  "ashpd",
+ "cc",
  "dirs",
  "dotenvy",
  "evdev-rs",

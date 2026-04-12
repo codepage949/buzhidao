@@ -7,6 +7,7 @@ const REC_H: u32 = 48;
 /// PaddleOCR 참조 구현과 맞추기 위해 폭 상한을 충분히 크게 둔다.
 /// 긴 문장을 768로 강하게 압축하면 수평 정보가 뭉개져 오인식이 늘어난다.
 const MAX_W: u32 = 3200;
+const CPU_MAX_W: u32 = 960;
 
 /// CTC 디코딩: 모델 출력에서 텍스트를 추출한다.
 fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
@@ -43,9 +44,14 @@ fn ctc_decode(logits: &ArrayView2<f32>, dict: &[String]) -> (String, f32) {
     (text, avg_score)
 }
 
-fn target_width(img: &DynamicImage) -> u32 {
+fn target_width_with_cap(img: &DynamicImage, max_w: u32) -> u32 {
     let ratio = img.width() as f32 / img.height() as f32;
-    ((REC_H as f32 * ratio + 0.5) as u32).min(MAX_W)
+    ((REC_H as f32 * ratio + 0.5) as u32).min(max_w)
+}
+
+#[cfg(test)]
+fn target_width(img: &DynamicImage) -> u32 {
+    target_width_with_cap(img, MAX_W)
 }
 
 // rec 정규화: pixel / 255.0 / 0.5 - 1.0 = pixel * (2.0/255.0) - 1.0
@@ -54,7 +60,11 @@ const REC_SCALE: f32 = 2.0 / 255.0;
 /// 이미지를 rec 입력 텐서로 전처리한다.
 /// 반환값: shape=(3, REC_H, target_w) Array3
 fn preprocess_to_array(img: &DynamicImage) -> Array3<f32> {
-    let tw = target_width(img);
+    preprocess_to_array_with_cap(img, MAX_W)
+}
+
+fn preprocess_to_array_with_cap(img: &DynamicImage, max_w: u32) -> Array3<f32> {
+    let tw = target_width_with_cap(img, max_w);
     let resized = img.resize_exact(tw, REC_H, image::imageops::FilterType::Triangle);
     let rgb = resized.to_rgb8();
 
@@ -85,6 +95,8 @@ const REC_BATCH_SIZE_LARGE: usize = 12;
 const REC_BATCH_SIZE_XL: usize = 8;
 const REC_BATCH_SIZE_XXL: usize = 6;
 const REC_BATCH_SIZE_XXXL: usize = 4;
+const REC_CHUNK_MAX_WIDTH_RATIO: f32 = 1.35;
+const REC_CHUNK_MAX_WIDTH_DELTA: usize = 256;
 const REC_SINGLE_RETRY_SCORE: f32 = 0.7;
 const REC_SINGLE_RETRY_SUSPICIOUS_WIDTH: usize = 120;
 const REC_SINGLE_RETRY_SHORT_TEXT_LEN: usize = 4;
@@ -107,6 +119,39 @@ fn rec_batch_size_for_start_width(width: usize) -> usize {
     } else {
         REC_BATCH_SIZE
     }
+}
+
+fn cpu_rec_batch_size_for_start_width(width: usize) -> usize {
+    if width >= 768 {
+        1
+    } else if width >= 400 {
+        2
+    } else if width >= 240 {
+        4
+    } else {
+        8
+    }
+}
+
+fn rec_chunk_end(tensors: &[Array3<f32>], order: &[usize], cursor: usize, chunk_size: usize) -> usize {
+    let start_w = tensors[order[cursor]].dim().2;
+    let limit = (cursor + chunk_size).min(order.len());
+    let mut end = cursor + 1;
+    let mut max_w = start_w;
+
+    while end < limit {
+        let candidate_w = tensors[order[end]].dim().2;
+        let candidate_max = max_w.max(candidate_w);
+        let spread_too_large = candidate_max > start_w + REC_CHUNK_MAX_WIDTH_DELTA
+            && (candidate_max as f32) > (start_w as f32 * REC_CHUNK_MAX_WIDTH_RATIO);
+        if spread_too_large {
+            break;
+        }
+        max_w = candidate_max;
+        end += 1;
+    }
+
+    end
 }
 
 fn non_whitespace_char_count(text: &str) -> usize {
@@ -187,6 +232,7 @@ pub(crate) fn recognize_batch(
     session: &mut Session,
     imgs: &[DynamicImage],
     dict: &[String],
+    cpu_mode: bool,
 ) -> Result<Vec<(String, f32)>, String> {
     if imgs.is_empty() {
         return Ok(vec![]);
@@ -195,10 +241,12 @@ pub(crate) fn recognize_batch(
         return Ok(vec![recognize(session, &imgs[0], dict)?]);
     }
 
+    let max_w = if cpu_mode { CPU_MAX_W } else { MAX_W };
+
     // 병렬 CPU 전처리: 모든 이미지를 동시에 리사이즈/정규화
     let tensors: Vec<Array3<f32>> = imgs
         .par_iter()
-        .map(|img| preprocess_to_array(img))
+        .map(|img| preprocess_to_array_with_cap(img, max_w))
         .collect();
 
     // 너비 오름차순으로 인덱스를 정렬 — 청크 내 너비 편차를 최소화한다
@@ -226,8 +274,12 @@ pub(crate) fn recognize_batch(
     let mut cursor = 0usize;
     while cursor < order.len() {
         let start_w = tensors[order[cursor]].dim().2;
-        let chunk_size = rec_batch_size_for_start_width(start_w);
-        let end = (cursor + chunk_size).min(order.len());
+        let chunk_size = if cpu_mode {
+            cpu_rec_batch_size_for_start_width(start_w)
+        } else {
+            rec_batch_size_for_start_width(start_w)
+        };
+        let end = rec_chunk_end(&tensors, &order, cursor, chunk_size);
         let chunk_idx = &order[cursor..end];
         let max_w = chunk_idx
             .iter()
@@ -281,20 +333,24 @@ pub(crate) fn recognize_batch(
     }
 
     let mut retried = 0usize;
-    for &orig_i in &order {
-        let current = &results[orig_i];
-        let width = tensors[orig_i].dim().2;
-        if !should_retry_single_result(&current.0, current.1, width) {
-            continue;
+    if !cpu_mode {
+        for &orig_i in &order {
+            let current = &results[orig_i];
+            let width = tensors[orig_i].dim().2;
+            if !should_retry_single_result(&current.0, current.1, width) {
+                continue;
+            }
+            let retried_result = recognize_from_array(session, &tensors[orig_i], dict);
+            if should_prefer_retry_result(current, &retried_result) {
+                results[orig_i] = retried_result;
+            }
+            retried += 1;
         }
-        let retried_result = recognize_from_array(session, &tensors[orig_i], dict);
-        if should_prefer_retry_result(current, &retried_result) {
-            results[orig_i] = retried_result;
-        }
-        retried += 1;
     }
     if retried > 0 {
         eprintln!("[OCR] rec low-score single retry 수: {}", retried);
+    } else if cpu_mode {
+        eprintln!("[OCR] rec low-score single retry 생략: cpu mode");
     }
 
     Ok(results)
@@ -370,6 +426,12 @@ mod tests {
     }
 
     #[test]
+    fn cpu_target_width는_CPU_MAX_W로_상한된다() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4000, 48));
+        assert_eq!(target_width_with_cap(&img, CPU_MAX_W), CPU_MAX_W);
+    }
+
+    #[test]
     fn target_width는_참조구현처럼_round_half_up을_쓴다() {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(101, 48));
         assert_eq!(target_width(&img), 101);
@@ -386,6 +448,29 @@ mod tests {
         assert_eq!(rec_batch_size_for_start_width(500), REC_BATCH_SIZE_XL);
         assert_eq!(rec_batch_size_for_start_width(640), REC_BATCH_SIZE_XXL);
         assert_eq!(rec_batch_size_for_start_width(768), REC_BATCH_SIZE_XXXL);
+    }
+
+    #[test]
+    fn cpu_rec_배치_크기는_cpu에서_더_보수적이다() {
+        assert_eq!(cpu_rec_batch_size_for_start_width(120), 8);
+        assert_eq!(cpu_rec_batch_size_for_start_width(260), 4);
+        assert_eq!(cpu_rec_batch_size_for_start_width(500), 2);
+        assert_eq!(cpu_rec_batch_size_for_start_width(900), 1);
+    }
+
+    #[test]
+    fn rec_청크는_너비_편차가_너무_크면_분리한다() {
+        let tensors = vec![
+            Array3::<f32>::zeros((3, REC_H as usize, 446)),
+            Array3::<f32>::zeros((3, REC_H as usize, 520)),
+            Array3::<f32>::zeros((3, REC_H as usize, 1180)),
+            Array3::<f32>::zeros((3, REC_H as usize, 1342)),
+        ];
+        let order = vec![0, 1, 2, 3];
+
+        let end = rec_chunk_end(&tensors, &order, 0, 8);
+
+        assert_eq!(end, 2);
     }
 
     #[test]

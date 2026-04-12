@@ -2,6 +2,14 @@ const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
 const DEFAULT_SCORE_THRESH: f32 = 0.5;
 pub(crate) const OCR_DET_RESIZE_LONG: u32 = 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OcrBackendKind {
+    Onnx,
+    PythonSidecar,
+    #[cfg(feature = "paddle-ffi")]
+    PaddleFfi,
+}
+
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) source: String,
@@ -16,6 +24,7 @@ pub(crate) struct Config {
     pub(crate) det_thresh: f32,
     /// det 박스 채택 임계값 (낮을수록 더 많은 박스 채택)
     pub(crate) box_thresh: f32,
+    pub(crate) ocr_backend: OcrBackendKind,
 }
 
 impl Config {
@@ -36,7 +45,22 @@ impl Config {
             line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(15),
             det_thresh: env_or("DET_THRESH", "0.2").parse().unwrap_or(0.2),
             box_thresh: env_or("BOX_THRESH", "0.4").parse().unwrap_or(0.4),
+            ocr_backend: parse_ocr_backend(&env_or("OCR_BACKEND", "onnx"))?,
         })
+    }
+}
+
+fn parse_ocr_backend(value: &str) -> Result<OcrBackendKind, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "onnx" => Ok(OcrBackendKind::Onnx),
+        "python_sidecar" | "python-sidecar" | "python" => Ok(OcrBackendKind::PythonSidecar),
+        #[cfg(feature = "paddle-ffi")]
+        "paddle_ffi" | "paddle-ffi" => Ok(OcrBackendKind::PaddleFfi),
+        #[cfg(not(feature = "paddle-ffi"))]
+        "paddle_ffi" | "paddle-ffi" => {
+            Err("OCR_BACKEND=paddle_ffi 는 paddle-ffi feature 빌드에서만 사용할 수 있습니다".to_string())
+        }
+        other => Err(format!("지원하지 않는 OCR_BACKEND 값: {other}")),
     }
 }
 
@@ -62,7 +86,8 @@ fn load_system_prompt() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        env_or, load_system_prompt, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT, OCR_DET_RESIZE_LONG,
+        env_or, load_system_prompt, parse_ocr_backend, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT,
+        OCR_DET_RESIZE_LONG, OcrBackendKind,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -126,5 +151,10 @@ mod tests {
     #[test]
     fn ocr_det_resize_long_기본값은_1024다() {
         assert_eq!(OCR_DET_RESIZE_LONG, 1024);
+    }
+
+    #[test]
+    fn ocr_backend_기본값은_onnx다() {
+        assert_eq!(parse_ocr_backend("onnx").unwrap(), OcrBackendKind::Onnx);
     }
 }
