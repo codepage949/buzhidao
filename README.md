@@ -145,3 +145,14 @@ cargo tauri build --features gpu
 ```
 
 GPU 빌드는 CUDA/cuDNN이 준비된 배포 환경을 대상으로 별도 아티팩트로 관리하는 것이 안전합니다.
+
+GitHub Actions 릴리즈:
+
+- `.github/workflows/release.yml`의 수동 실행(`workflow_dispatch`)로 Windows 릴리즈를 생성합니다.
+- 입력 버전 태그는 `v1.2.3` 형식을 사용하고, 내부 `Cargo.toml`/`tauri.conf.json` 버전은 `1.2.3`으로 동기화됩니다.
+- 산출물은 두 개로 분리됩니다.
+  - `windows-x64-cpu`: 기본 배포용, `models/` 포함
+  - `windows-x64-gpu`: GPU 대상 배포용, `models/` + `cuda/` 포함
+- 모델은 릴리스 workflow 내부의 Ubuntu job에서 Docker 기반으로 직접 ONNX 변환해 생성합니다.
+- GPU 릴리즈 job은 CI에서 NVIDIA PyPI wheel을 내려받아 필요한 CUDA/cuDNN DLL만 추출해 포함합니다.
+- 기본 배포는 CPU only를 권장하고, GPU ZIP은 NVIDIA 드라이버가 준비된 환경에서만 배포합니다.

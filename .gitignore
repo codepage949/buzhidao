@@ -1,15 +1,17 @@
 .*
 target/
 gen/
-models/*.onnx
-models/rec_dict.txt
+models/
 __pycache__/
 *.py[cod]
 scripts/_export_tmp/
 benchmarks/
 cuda/
+dist/
+wheelhouse/
 
 !.gitignore
 !.dockerignore
 !.env.example
+!.github/
 *.exe

@@ -9,6 +9,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
@@ -153,17 +157,16 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
 #[cfg(feature = "gpu")]
 fn preload_cuda_dylibs_early() {
     use ort::ep::cuda;
-    use std::path::PathBuf;
 
     // 1. 실행파일 옆 cuda/ 폴더 (Tauri 번들 / 개발 시 target/debug/cuda/)
-    let exe_cuda = std::env::current_exe()
+    let exe_cuda = env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("cuda")))
         .filter(|p| p.exists());
 
     // 2. CUDA_PATH 환경변수 (Windows CUDA 툴킷 기본 설치 경로)
-    let env_cuda = std::env::var_os("CUDA_PATH")
-        .or_else(|| std::env::var_os("CUDA_HOME"))
+    let env_cuda = env::var_os("CUDA_PATH")
+        .or_else(|| env::var_os("CUDA_HOME"))
         .map(|v| PathBuf::from(v).join("bin"))
         .filter(|p| p.exists());
 
@@ -177,6 +180,37 @@ fn preload_cuda_dylibs_early() {
         }
     }
     // cuda_dir == None이면 아무것도 하지 않는다 — ORT가 PATH에서 자동 탐색한다
+}
+
+fn has_required_models(models_dir: &Path) -> bool {
+    ["det.onnx", "cls.onnx", "rec.onnx", "rec_dict.txt"]
+        .iter()
+        .all(|name| models_dir.join(name).exists())
+}
+
+fn resolve_models_dir(
+    resource_dir: Option<PathBuf>,
+    current_exe: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+
+    if let Some(dir) = resource_dir {
+        candidates.push(dir.join("models"));
+    }
+    if let Some(exe_dir) = current_exe.and_then(|path| path.parent().map(Path::to_path_buf)) {
+        let exe_models = exe_dir.join("models");
+        if !candidates.iter().any(|candidate| candidate == &exe_models) {
+            candidates.push(exe_models);
+        }
+    }
+
+    for candidate in candidates {
+        if has_required_models(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    Err("OCR 모델 디렉토리를 찾을 수 없음".to_string())
 }
 
 // ── 앱 진입점 ─────────────────────────────────────────────────────────────────
@@ -200,11 +234,9 @@ pub fn run() {
         .manage(reqwest::Client::new())
         .setup(move |app| {
             // OCR 엔진 초기화
-            let models_dir = app
-                .path()
-                .resource_dir()
-                .expect("리소스 디렉토리를 찾을 수 없음")
-                .join("models");
+            let models_dir =
+                resolve_models_dir(app.path().resource_dir().ok(), env::current_exe().ok())
+                    .expect("OCR 모델 디렉토리를 찾을 수 없음");
             let (det_thresh, box_thresh) = {
                 let cfg = app.state::<Config>();
                 (cfg.det_thresh, cfg.box_thresh)
@@ -246,4 +278,65 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_models_dir;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("시계가 UNIX_EPOCH 이전입니다")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+    }
+
+    fn create_required_models(dir: &Path) {
+        fs::create_dir_all(dir).expect("모델 디렉토리 생성 실패");
+        for name in ["det.onnx", "cls.onnx", "rec.onnx", "rec_dict.txt"] {
+            fs::write(dir.join(name), b"x").expect("모델 파일 생성 실패");
+        }
+    }
+
+    #[test]
+    fn 번들_리소스_모델을_우선_사용한다() {
+        let resource_dir = temp_path("buzhidao-resource");
+        let exe_dir = temp_path("buzhidao-exe");
+        create_required_models(&resource_dir.join("models"));
+        create_required_models(&exe_dir.join("models"));
+        fs::create_dir_all(&exe_dir).expect("실행 파일 디렉토리 생성 실패");
+        let exe_path = exe_dir.join("buzhidao.exe");
+        fs::write(&exe_path, b"exe").expect("실행 파일 생성 실패");
+
+        let resolved = resolve_models_dir(Some(resource_dir.clone()), Some(exe_path))
+            .expect("리소스 디렉토리의 모델을 찾아야 한다");
+
+        assert_eq!(resolved, resource_dir.join("models"));
+
+        let _ = fs::remove_dir_all(resource_dir);
+        let _ = fs::remove_dir_all(exe_dir);
+    }
+
+    #[test]
+    fn 실행파일_옆_models를_fallback으로_사용한다() {
+        let resource_dir = temp_path("buzhidao-empty-resource");
+        let exe_dir = temp_path("buzhidao-exe-fallback");
+        fs::create_dir_all(&resource_dir).expect("빈 리소스 디렉토리 생성 실패");
+        create_required_models(&exe_dir.join("models"));
+        fs::create_dir_all(&exe_dir).expect("실행 파일 디렉토리 생성 실패");
+        let exe_path = exe_dir.join("buzhidao.exe");
+        fs::write(&exe_path, b"exe").expect("실행 파일 생성 실패");
+
+        let resolved = resolve_models_dir(Some(resource_dir.clone()), Some(exe_path))
+            .expect("실행 파일 옆 models를 찾아야 한다");
+
+        assert_eq!(resolved, exe_dir.join("models"));
+
+        let _ = fs::remove_dir_all(resource_dir);
+        let _ = fs::remove_dir_all(exe_dir);
+    }
 }

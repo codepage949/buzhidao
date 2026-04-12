@@ -1,0 +1,253 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "릴리즈 버전 태그 (예: v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare release version
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release_sha.outputs.value }}
+      cargo_version: ${{ steps.cargo_version.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure tag does not already exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if git rev-parse "refs/tags/$version" >/dev/null 2>&1; then
+            echo "Tag already exists: $version" >&2
+            exit 1
+          fi
+
+      - name: Update release version
+        id: cargo_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python scripts/release_helper.py set-version "${{ inputs.version }}")"
+          cargo generate-lockfile
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit release version update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- Cargo.toml Cargo.lock tauri.conf.json; then
+            echo "Release version is already up to date"
+            exit 0
+          fi
+          git add Cargo.toml Cargo.lock tauri.conf.json
+          git commit -m "chore: 릴리즈 버전 ${{ steps.cargo_version.outputs.value }} 반영"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: Capture release SHA
+        id: release_sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs:
+      - prepare
+      - models
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64-cpu
+            mode: cpu
+            cargo_features: ""
+          - label: windows-x64-gpu
+            mode: gpu
+            cargo_features: "--features gpu"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build frontend
+        working-directory: ui
+        shell: pwsh
+        run: deno task build
+
+      - name: Download generated models
+        uses: actions/download-artifact@v4
+        with:
+          name: models
+          path: models
+
+      - name: Compile release binary
+        shell: pwsh
+        run: cargo build --release --locked ${{ matrix.cargo_features }}
+
+      - name: Download CUDA/cuDNN redistributables
+        if: matrix.mode == 'gpu'
+        shell: pwsh
+        run: |
+          python -m pip download --dest wheelhouse `
+            nvidia-cuda-runtime-cu12==12.9.79 `
+            nvidia-cublas-cu12==12.9.1.4 `
+            nvidia-cufft-cu12==11.4.1.4 `
+            nvidia-cudnn-cu12==9.20.0.48
+          python scripts/release_helper.py extract-cuda `
+            --wheel-dir "wheelhouse" `
+            --output-dir "cuda"
+
+      - name: Create release archive
+        id: archive
+        shell: pwsh
+        run: |
+          $archive = python scripts/release_helper.py make-archive `
+            --version "${{ inputs.version }}" `
+            --mode "${{ matrix.mode }}" `
+            --exe "target/release/buzhidao.exe" `
+            --output-dir "dist"
+          "path=$archive" >> $env:GITHUB_OUTPUT
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+
+  models:
+    name: Build OCR models
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build ONNX models with Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/export_onnx.py
+
+      - name: Upload generated models
+        uses: actions/upload-artifact@v4
+        with:
+          name: models
+          path: |
+            models/det.onnx
+            models/cls.onnx
+            models/rec.onnx
+            models/rec_dict.txt
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - models
+      - build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          previous_tag="$(git tag --sort=-creatordate | head -n 1 || true)"
+          {
+            echo "# ${version}"
+            echo
+            echo "## Assets"
+            echo "- Windows CPU only zip"
+            echo "- Windows GPU zip (CUDA/cuDNN 포함)"
+            echo
+            if [ -n "$previous_tag" ]; then
+              echo "## Changes since ${previous_tag}"
+              echo
+              git log --oneline "${previous_tag}..HEAD"
+            else
+              echo "## Changes"
+              echo
+              git log --oneline
+            fi
+          } > RELEASE_NOTES.md
+
+      - name: Create tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          git tag "$version" "${{ needs.prepare.outputs.release_sha }}"
+          git push origin "$version"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(release-assets/*/*.zip)
+          gh release create "${{ inputs.version }}" \
+            "${assets[@]}" \
+            --title "${{ inputs.version }}" \
+            --notes-file RELEASE_NOTES.md
