@@ -54,21 +54,17 @@ struct ChatMessageContent {
 }
 
 pub(crate) fn capture_screen() -> Result<CaptureInfo, String> {
-    let screens = screenshots::Screen::all().map_err(|e| e.to_string())?;
-    let screen = screens.first().ok_or("디스플레이를 찾을 수 없음")?;
-    let capture = screen.capture().map_err(|e| e.to_string())?;
+    let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
+    let monitor = monitors.first().ok_or("디스플레이를 찾을 수 없음")?;
+    let rgba_image = monitor.capture_image().map_err(|e| e.to_string())?;
 
-    let orig_width = capture.width();
-    let orig_height = capture.height();
-
-    let raw_bytes: Vec<u8> = capture.to_vec();
-    let rgba_image = image::RgbaImage::from_raw(orig_width, orig_height, raw_bytes)
-        .ok_or("이미지 버퍼 변환 실패")?;
+    let orig_width = rgba_image.width();
+    let orig_height = rgba_image.height();
 
     Ok(CaptureInfo {
         image: image::DynamicImage::ImageRgba8(rgba_image),
-        x: screen.display_info.x,
-        y: screen.display_info.y,
+        x: monitor.x().map_err(|e| e.to_string())?,
+        y: monitor.y().map_err(|e| e.to_string())?,
         orig_width,
         orig_height,
     })
