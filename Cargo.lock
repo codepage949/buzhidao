@@ -114,6 +114,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ashpd"
+version = "0.13.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13bdf0fd848239dcd5e64eeeee35dbc00378ebcc6f3aa4ead0a305eec83d0cfb"
+dependencies = [
+ "enumflags2",
+ "futures-util",
+ "getrandom 0.4.2",
+ "serde",
+ "serde_repr",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -478,10 +493,14 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 name = "buzhidao"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
+ "dirs",
  "dotenvy",
+ "evdev-rs",
  "image",
  "ndarray",
  "ort",
+ "pipewire",
  "rayon",
  "rdev",
  "reqwest 0.12.28",
@@ -5762,6 +5781,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -7417,6 +7437,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

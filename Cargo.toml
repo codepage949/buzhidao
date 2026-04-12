@@ -18,6 +18,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 rdev = { version = "0.5.3", features = ["unstable_grab"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -25,6 +26,9 @@ reqwest = { version = "0.12", features = ["json"] }
 xcap = "0.9"
 image = "0.25"
 dotenvy = "0.15"
+dirs = "6"
 ort = "2.0.0-rc.12"
 ndarray = "0.17"
 rayon = "1"
+evdev-rs = "0.4"
+pipewire = "0.9"

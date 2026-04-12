@@ -91,17 +91,11 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
 
     let cfg = app.state::<Config>().inner().clone();
 
-    // 1. 스크린샷 캡처 (블로킹 작업 → spawn_blocking)
-    let capture_result = tauri::async_runtime::spawn_blocking(capture_screen).await;
-    let info = match capture_result {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            eprintln!("캡처 오류: {e}");
-            busy.store(false, Ordering::SeqCst);
-            return;
-        }
+    // 1. 스크린샷 캡처
+    let info = match capture_screen(&app).await {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("캡처 스레드 오류: {e}");
+            eprintln!("캡처 오류: {e}");
             busy.store(false, Ordering::SeqCst);
             return;
         }
@@ -213,6 +207,58 @@ fn resolve_models_dir(
     Err("OCR 모델 디렉토리를 찾을 수 없음".to_string())
 }
 
+#[cfg(target_os = "linux")]
+const PORTAL_APP_ID: &str = "com.buzhidao.desktop";
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_desktop_entry() -> Result<PathBuf, String> {
+    use std::fs;
+
+    let apps_dir = dirs::home_dir()
+        .ok_or("HOME 디렉토리를 찾을 수 없음".to_string())?
+        .join(".local/share/applications");
+    fs::create_dir_all(&apps_dir).map_err(|e| format!("desktop 디렉토리 생성 실패: {e}"))?;
+
+    let desktop_path = apps_dir.join(format!("{PORTAL_APP_ID}.desktop"));
+    if desktop_path.exists() {
+        return Ok(desktop_path);
+    }
+
+    let exe = env::current_exe().map_err(|e| format!("실행 파일 경로 확인 실패: {e}"))?;
+    let content = format!(
+        "[Desktop Entry]\nType=Application\nName=buzhidao\nExec={}\nTerminal=false\nCategories=Utility;\nStartupNotify=false\n",
+        exe.display()
+    );
+    fs::write(&desktop_path, content)
+        .map_err(|e| format!("desktop 파일 생성 실패 ({}): {e}", desktop_path.display()))?;
+
+    Ok(desktop_path)
+}
+
+#[cfg(target_os = "linux")]
+fn register_linux_portal_host_app() -> Result<(), String> {
+    use ashpd::zbus::blocking::{Connection, Proxy};
+    use ashpd::zvariant::Value;
+    use std::collections::HashMap;
+
+    let _desktop_path = ensure_linux_desktop_entry()?;
+    let connection = Connection::session().map_err(|e| format!("D-Bus 세션 연결 실패: {e}"))?;
+    let proxy = Proxy::new(
+        &connection,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.host.portal.Registry",
+    )
+    .map_err(|e| format!("포털 registry 프록시 생성 실패: {e}"))?;
+    let options = HashMap::<&str, Value<'_>>::new();
+
+    proxy
+        .call_method("Register", &(PORTAL_APP_ID, options))
+        .map_err(|e| format!("포털 host app 등록 실패: {e}"))?;
+
+    Ok(())
+}
+
 // ── 앱 진입점 ─────────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -233,6 +279,9 @@ pub fn run() {
         .manage(config)
         .manage(reqwest::Client::new())
         .setup(move |app| {
+            #[cfg(target_os = "linux")]
+            let _ = register_linux_portal_host_app();
+
             // OCR 엔진 초기화
             let models_dir =
                 resolve_models_dir(app.path().resource_dir().ok(), env::current_exe().ok())
@@ -263,9 +312,7 @@ pub fn run() {
                 .build(app)?;
 
             install_capture_shortcut(app.handle().clone(), busy.clone(), |app, busy| {
-                tauri::async_runtime::spawn(async move {
-                    handle_prtsc(app, busy).await;
-                });
+                tauri::async_runtime::block_on(handle_prtsc(app, busy));
             });
 
             Ok(())
