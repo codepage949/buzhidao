@@ -47,6 +47,8 @@ pub(crate) struct OcrEngine {
     uses_gpu: bool,
 }
 
+const CPU_CLS_SAMPLE_COUNT: usize = 8;
+
 impl OcrEngine {
     pub(crate) fn new(models_dir: &Path, det_thresh: f32, box_thresh: f32) -> Result<Self, String> {
         let (det_session, det_gpu) = load_session(models_dir, "det")?;
@@ -163,17 +165,58 @@ impl OcrEngine {
         // 모든 박스를 크롭한 뒤 cls를 배치로 처리한다.
         let crops: Vec<DynamicImage> = merged_boxes.iter().map(|b| crop_box(img, b)).collect();
 
-        let t_cls = std::time::Instant::now();
-        let labels = {
-            let mut session = self.cls_session.lock().unwrap();
-            cls::classify_batch(&mut session, &crops)?
+        let labels = if self.is_cpu_mode() {
+            let sample_indices = cpu_cls_sample_indices(crops.len());
+            let sample_crops: Vec<DynamicImage> = sample_indices
+                .iter()
+                .map(|&idx| crops[idx].clone())
+                .collect();
+            let t_cls_sample = std::time::Instant::now();
+            let sample_labels = {
+                let mut session = self.cls_session.lock().unwrap();
+                cls::classify_batch(&mut session, &sample_crops)?
+            };
+            if should_run_full_cls_from_sample(&sample_labels) {
+                eprintln!(
+                    "[OCR] cls 샘플 ({} / {} 박스): {:.0}ms -> 전수 실행",
+                    sample_crops.len(),
+                    crops.len(),
+                    t_cls_sample.elapsed().as_millis()
+                );
+                let t_cls_full = std::time::Instant::now();
+                let labels = {
+                    let mut session = self.cls_session.lock().unwrap();
+                    cls::classify_batch(&mut session, &crops)?
+                };
+                eprintln!(
+                    "[OCR] cls 전수 ({} 박스): {:.0}ms",
+                    crops.len(),
+                    t_cls_full.elapsed().as_millis()
+                );
+                labels
+            } else {
+                eprintln!(
+                    "[OCR] cls 샘플 ({} / {} 박스): {:.0}ms -> 전수 생략",
+                    sample_crops.len(),
+                    crops.len(),
+                    t_cls_sample.elapsed().as_millis()
+                );
+                vec![0; crops.len()]
+            }
+        } else {
+            let t_cls = std::time::Instant::now();
+            let labels = {
+                let mut session = self.cls_session.lock().unwrap();
+                cls::classify_batch(&mut session, &crops)?
+            };
+            eprintln!(
+                "[OCR] cls 전수 ({} 박스): {:.0}ms",
+                crops.len(),
+                t_cls.elapsed().as_millis()
+            );
+            labels
         };
         let rotated = labels.iter().filter(|&&label| label == 1).count();
-        eprintln!(
-            "[OCR] cls ({} 박스): {:.0}ms",
-            crops.len(),
-            t_cls.elapsed().as_millis()
-        );
 
         let oriented_crops: Vec<DynamicImage> = crops
             .into_iter()
@@ -257,6 +300,26 @@ fn merge_boxes_for_cpu_rec(boxes: &[det::DetBox], cpu_mode: bool) -> Vec<det::De
     }
 
     merged
+}
+
+fn cpu_cls_sample_indices(total: usize) -> Vec<usize> {
+    if total <= CPU_CLS_SAMPLE_COUNT {
+        return (0..total).collect();
+    }
+
+    let last = total - 1;
+    let mut indices = Vec::with_capacity(CPU_CLS_SAMPLE_COUNT);
+    for i in 0..CPU_CLS_SAMPLE_COUNT {
+        let idx = i * last / (CPU_CLS_SAMPLE_COUNT - 1);
+        if indices.last().copied() != Some(idx) {
+            indices.push(idx);
+        }
+    }
+    indices
+}
+
+fn should_run_full_cls_from_sample(sample_labels: &[cls::ClsLabel]) -> bool {
+    sample_labels.iter().any(|&label| label == 1)
 }
 
 fn should_merge_boxes_for_cpu_rec(a: &det::DetBox, b: &det::DetBox) -> bool {
@@ -843,6 +906,26 @@ mod tests {
         let merged = merge_boxes_for_cpu_rec(&[a, b], true);
 
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn cpu_cls_샘플_인덱스는_입력을_고르게_대표한다() {
+        let indices = cpu_cls_sample_indices(20);
+
+        assert_eq!(indices.len(), CPU_CLS_SAMPLE_COUNT);
+        assert_eq!(indices.first().copied(), Some(0));
+        assert_eq!(indices.last().copied(), Some(19));
+        assert!(indices.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn cpu_cls_샘플에_회전이_없으면_전수_cls를_생략한다() {
+        assert!(!should_run_full_cls_from_sample(&[0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn cpu_cls_샘플에_회전이_있으면_전수_cls를_실행한다() {
+        assert!(should_run_full_cls_from_sample(&[0, 0, 1, 0]));
     }
 
     #[test]
