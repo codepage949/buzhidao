@@ -3,7 +3,7 @@ use crate::window::{focus_window, hide_window, place_overlay_window};
 #[cfg(target_os = "linux")]
 use evdev_rs::{enums::EventCode, enums::EV_KEY, Device, ReadFlag};
 #[cfg(not(target_os = "linux"))]
-use rdev::{grab, Event, EventType, GrabError, Key};
+use rdev::{grab, Event, EventType, Key};
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -213,7 +213,7 @@ fn is_linux_capture_shortcut_event(code: &EventCode, value: i32) -> bool {
         )
 }
 
-fn show_overlay(app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo) {
+fn show_overlay(_app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo) {
     let _ = overlay.emit("overlay_show", ());
     let _ = overlay.set_ignore_cursor_events(false);
     #[cfg(target_os = "linux")]
@@ -289,7 +289,7 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn 캡처_단축키는_PrintScreen_누름만_감지한다() {
+    fn 캡처_단축키는_print_screen_누름만_감지한다() {
         let key_down = Event {
             time: std::time::SystemTime::now(),
             name: None,

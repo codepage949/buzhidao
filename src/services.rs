@@ -8,7 +8,6 @@ use ashpd::desktop::{
 #[cfg(target_os = "linux")]
 use pipewire as pw;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "linux")]
 use tauri::AppHandle;
 
 pub(crate) type OcrDetection = (Vec<[f64; 2]>, String);
@@ -547,11 +546,6 @@ fn should_use_wayland_portal() -> bool {
     should_use_wayland_portal_for(std::env::var("XDG_SESSION_TYPE").ok().as_deref())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn should_use_wayland_portal() -> bool {
-    false
-}
-
 #[cfg(target_os = "linux")]
 fn should_use_wayland_portal_for(session_type: Option<&str>) -> bool {
     session_type.is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
@@ -679,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn OCR_결과에_crop_오프셋을_더한다() {
+    fn ocr_결과에_crop_오프셋을_더한다() {
         let mut payload = OcrResultPayload {
             detections: vec![(vec![[10.0, 20.0], [30.0, 40.0]], "text".to_string())],
             debug_detections: vec![(vec![[1.0, 2.0], [3.0, 4.0]], "dbg".to_string(), 0.9, true)],

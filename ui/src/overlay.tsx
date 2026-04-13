@@ -7,6 +7,7 @@ import {
   type DetectionTraceGroup,
   type RawDetection,
 } from "./detection";
+import { nextCloseSuppressed } from "./overlay_close";
 import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type OcrResultPayload = {
@@ -47,25 +48,37 @@ function OverlayApp() {
         setHoveredIdx(null);
         setSelectionStart(null);
         setSelectionRect(null);
-        suppressNextCloseRef.current = false;
+        suppressNextCloseRef.current = nextCloseSuppressed(
+          suppressNextCloseRef.current,
+          "overlay_show",
+        );
       }),
       listen("overlay_select_region", () => {
         setState({ kind: "selecting" });
         setHoveredIdx(null);
         setSelectionStart(null);
         setSelectionRect(null);
-        suppressNextCloseRef.current = false;
+        suppressNextCloseRef.current = nextCloseSuppressed(
+          suppressNextCloseRef.current,
+          "overlay_select_region",
+        );
       }),
       listen<OcrResultPayload>("ocr_result", (e) => {
         setState({ kind: "ready", ocr: e.payload });
         setSelectionStart(null);
         setSelectionRect(null);
-        suppressNextCloseRef.current = true;
+        suppressNextCloseRef.current = nextCloseSuppressed(
+          suppressNextCloseRef.current,
+          "ocr_result",
+        );
       }),
       listen<string>("ocr_error", (e) => {
         setState({ kind: "error", message: e.payload });
         setSelectionStart(null);
-        suppressNextCloseRef.current = true;
+        suppressNextCloseRef.current = nextCloseSuppressed(
+          suppressNextCloseRef.current,
+          "ocr_error",
+        );
       }),
     ], []);
 
@@ -77,7 +90,10 @@ function OverlayApp() {
 
   const handleRootClick = useCallback(async () => {
     if (suppressNextCloseRef.current) {
-      suppressNextCloseRef.current = false;
+      suppressNextCloseRef.current = nextCloseSuppressed(
+        suppressNextCloseRef.current,
+        "root_click_consumed",
+      );
       return;
     }
     if (state.kind === "selecting") return;
@@ -122,7 +138,10 @@ function OverlayApp() {
       return;
     }
 
-    suppressNextCloseRef.current = true;
+    suppressNextCloseRef.current = nextCloseSuppressed(
+      suppressNextCloseRef.current,
+      "selection_submitted",
+    );
     setState({ kind: "loading" });
     try {
       await invoke("run_region_ocr", {

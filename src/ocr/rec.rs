@@ -391,7 +391,7 @@ mod tests {
     use ndarray::Array2;
 
     #[test]
-    fn BGR_정규화가_채널_위치_순서로_적용된다() {
+    fn bgr_정규화가_채널_위치_순서로_적용된다() {
         // R=200, G=100, B=50인 1x1 이미지
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
             1,
@@ -420,13 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn target_width는_MAX_W로_상한된다() {
+    fn target_width는_max_w로_상한된다() {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4000, 48));
         assert_eq!(target_width(&img), MAX_W);
     }
 
     #[test]
-    fn cpu_target_width는_CPU_MAX_W로_상한된다() {
+    fn cpu_target_width는_cpu_max_w로_상한된다() {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(4000, 48));
         assert_eq!(target_width_with_cap(&img, CPU_MAX_W), CPU_MAX_W);
     }
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn CTC_디코딩_기본_동작() {
+    fn ctc_디코딩_기본_동작() {
         let dict = sample_dict();
         // 6 classes: 0=blank, 1=a, 2=b, 3=c, 4=d, 5=e
         // 시퀀스: blank, a, a, b, blank, c → "abc"
@@ -526,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn CTC_디코딩_빈_입력() {
+    fn ctc_디코딩_빈_입력() {
         let dict = sample_dict();
         // 모든 스텝이 blank
         let mut logits = Array2::<f32>::zeros((3, 6));
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn CTC_디코딩_중복_제거_후_blank_사이_같은_문자() {
+    fn ctc_디코딩_중복_제거_후_blank_사이_같은_문자() {
         let dict = sample_dict();
         // a, blank, a → "aa" (blank으로 구분된 같은 문자는 두 번)
         let mut logits = Array2::<f32>::zeros((3, 6));

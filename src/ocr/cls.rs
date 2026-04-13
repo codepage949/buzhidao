@@ -140,7 +140,7 @@ mod tests {
     use image::{DynamicImage, Rgb, RgbImage};
 
     #[test]
-    fn BGR_정규화가_채널_위치_순서로_적용된다() {
+    fn bgr_정규화가_채널_위치_순서로_적용된다() {
         let mut img = RgbImage::new(1, 1);
         img.put_pixel(0, 0, Rgb([10, 20, 30]));
 

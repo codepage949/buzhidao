@@ -699,7 +699,7 @@ mod tests {
     use image::{DynamicImage, Rgb, RgbImage};
 
     #[test]
-    fn BGR_정규화가_채널_위치_순서로_적용된다() {
+    fn bgr_정규화가_채널_위치_순서로_적용된다() {
         let mut img = RgbImage::new(1, 1);
         img.put_pixel(0, 0, Rgb([10, 20, 30]));
 
@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn DB_후처리_텍스트_영역_검출() {
+    fn db_후처리_텍스트_영역_검출() {
         // 10x10 히트맵에서 (2,2)~(6,6) 영역에 텍스트가 있다고 가정
         let (h, w) = (10, 10);
         let mut pred = vec![0.0f32; h * w];
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn DB_후처리_빈_히트맵() {
+    fn db_후처리_빈_히트맵() {
         let (h, w) = (10, 10);
         let pred = vec![0.0f32; h * w];
         let boxes =
