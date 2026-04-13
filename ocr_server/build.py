@@ -6,14 +6,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-ENTRY = ROOT / "ocr_server.py"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
-SPEC = ROOT / "ocr_server.spec"
 OCR_CORE_METADATA_PACKAGES = [
     "paddlex",
     "paddleocr",
-    "paddlepaddle",
     "imagesize",
     "opencv-contrib-python",
     "pyclipper",
@@ -21,6 +18,37 @@ OCR_CORE_METADATA_PACKAGES = [
     "python-bidi",
     "shapely",
 ]
+GPU_RUNTIME_PACKAGES = [
+    "nvidia.cublas",
+    "nvidia.cuda_nvrtc",
+    "nvidia.cuda_runtime",
+    "nvidia.cudnn",
+    "nvidia.cufft",
+    "nvidia.curand",
+    "nvidia.cusolver",
+    "nvidia.cusparse",
+]
+BUILD_TARGETS = {
+    "ocr-server": {
+        "entry": ROOT / "ocr_server.py",
+        "name": {
+            False: "ocr_server",
+            True: "ocr_server_gpu",
+        },
+        "collect_data": ["paddlex", "paddleocr"],
+        "collect_binaries": ["paddle"],
+        "metadata_packages": [],
+        "recursive_metadata_packages": OCR_CORE_METADATA_PACKAGES,
+    },
+    "gpu-import-check": {
+        "entry": ROOT / "gpu_import_check.py",
+        "name": "gpu_import_check",
+        "collect_data": ["paddleocr", "paddlex"],
+        "collect_binaries": ["paddle"],
+        "metadata_packages": ["paddlepaddle-gpu", "paddleocr", "paddlex"],
+        "recursive_metadata_packages": [],
+    },
+}
 
 
 def parse_args():
@@ -34,6 +62,12 @@ def parse_args():
         "--onefile",
         action="store_true",
         help="Build a onefile executable instead of the default onedir layout.",
+    )
+    parser.add_argument(
+        "--target",
+        choices=sorted(BUILD_TARGETS.keys()),
+        default="ocr-server",
+        help="Select which executable entrypoint to build.",
     )
     return parser.parse_args()
 
@@ -53,29 +87,42 @@ def ensure_runtime_dependency(use_gpu: bool) -> None:
 def main() -> int:
     args = parse_args()
     ensure_runtime_dependency(args.gpu)
+    target = BUILD_TARGETS[args.target]
+    target_name = target["name"][args.gpu] if isinstance(target["name"], dict) else target["name"]
+    spec = ROOT / f"{target_name}.spec"
+    runtime_package = "paddlepaddle-gpu" if args.gpu else "paddlepaddle"
 
     for path in (DIST, BUILD):
         if path.exists():
             shutil.rmtree(path)
-    if SPEC.exists():
-        SPEC.unlink()
+    if spec.exists():
+        spec.unlink()
 
     cmd = [
         "pyinstaller",
         "--noconfirm",
         "--clean",
         "--onefile" if args.onefile else "--onedir",
-        "--collect-data",
-        "paddlex",
-        "--collect-data",
-        "paddleocr",
-        "--collect-binaries",
-        "paddle",
         "--name",
-        "ocr_server",
-        str(ENTRY),
+        str(target_name),
+        str(target["entry"]),
     ]
-    for package_name in OCR_CORE_METADATA_PACKAGES:
+    for package_name in target["collect_data"]:
+        cmd.extend(["--collect-data", package_name])
+    binary_packages = [*target["collect_binaries"]]
+    if args.gpu:
+        binary_packages.extend(GPU_RUNTIME_PACKAGES)
+
+    for package_name in binary_packages:
+        cmd.extend(["--collect-binaries", package_name])
+    metadata_packages = [*target["metadata_packages"]]
+    recursive_metadata_packages = [*target["recursive_metadata_packages"]]
+    if args.target == "ocr-server":
+        metadata_packages.append(runtime_package)
+
+    for package_name in metadata_packages:
+        cmd.extend(["--copy-metadata", package_name])
+    for package_name in recursive_metadata_packages:
         cmd.extend(["--recursive-copy-metadata", package_name])
     return subprocess.call(cmd, cwd=ROOT)
 

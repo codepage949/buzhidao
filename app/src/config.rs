@@ -7,6 +7,7 @@ pub(crate) struct Config {
     pub(crate) source: String,
     pub(crate) score_thresh: f32,
     pub(crate) ocr_debug_trace: bool,
+    pub(crate) ocr_server_device: String,
     pub(crate) ai_gateway_api_key: String,
     pub(crate) ai_gateway_model: String,
     pub(crate) system_prompt: String,
@@ -26,6 +27,7 @@ impl Config {
                 .parse()
                 .unwrap_or(DEFAULT_SCORE_THRESH),
             ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false").parse().unwrap_or(false),
+            ocr_server_device: parse_ocr_server_device(optional_env("OCR_SERVER_DEVICE"))?,
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
@@ -73,6 +75,19 @@ fn optional_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn parse_ocr_server_device(value: Option<String>) -> Result<String, String> {
+    let normalized = value
+        .unwrap_or_else(|| "cpu".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "cpu" | "gpu" => Ok(normalized),
+        _ => Err(format!(
+            "지원하지 않는 OCR_SERVER_DEVICE 값: {normalized} (허용값: cpu, gpu)"
+        )),
+    }
+}
+
 fn load_system_prompt() -> Result<String, String> {
     match std::env::var("SYSTEM_PROMPT_PATH") {
         Ok(path) => std::fs::read_to_string(&path)
@@ -87,8 +102,8 @@ fn load_system_prompt() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        env_or, load_system_prompt, optional_env, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT,
-        OCR_SERVER_RESIZE_WIDTH,
+        env_or, load_system_prompt, optional_env, parse_ocr_server_device, DEFAULT_SCORE_THRESH,
+        DEFAULT_SYSTEM_PROMPT, OCR_SERVER_RESIZE_WIDTH,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -162,4 +177,22 @@ mod tests {
         std::env::remove_var("TEST_OPTIONAL_ENV");
     }
 
+    #[test]
+    fn ocr_server_device_기본값은_cpu다() {
+        let device = parse_ocr_server_device(None).expect("기본 장치 파싱 실패");
+        assert_eq!(device, "cpu");
+    }
+
+    #[test]
+    fn ocr_server_device는_공백과_대소문자를_정규화한다() {
+        let device = parse_ocr_server_device(Some("  GpU ".to_string())).expect("장치 정규화 실패");
+        assert_eq!(device, "gpu");
+    }
+
+    #[test]
+    fn ocr_server_device가_잘못되면_실패한다() {
+        let err = parse_ocr_server_device(Some("cuda".to_string()))
+            .expect_err("잘못된 장치는 실패해야 한다");
+        assert!(err.contains("OCR_SERVER_DEVICE"));
+    }
 }

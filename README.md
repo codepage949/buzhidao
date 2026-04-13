@@ -60,6 +60,7 @@
 - `WORD_GAP`
 - `LINE_GAP`
 - `OCR_DEBUG_TRACE` (선택, 기본 `false`) : 터미널에 `rec` accept/reject 로그 출력, 오버레이에 raw 박스 표시
+- `OCR_SERVER_DEVICE` (선택, 기본 `cpu`) : `cpu` 또는 `gpu`
 - `OCR_SERVER_EXECUTABLE`
 
 예시는 [app/.env.example](app/.env.example)에 있습니다.
@@ -70,7 +71,7 @@
 
 ```bash
 cd ocr_server
-uv sync --group build --group cpu
+uv sync -p 3.13 --group build --group cpu
 uv run --group build --group cpu python build.py
 ```
 
@@ -80,12 +81,16 @@ GPU 빌드는 `paddlepaddle-gpu` 그룹을 사용합니다.
 
 ```bash
 cd ocr_server
-uv sync --group build --group gpu
+uv sync -p 3.13 --group build --group gpu
 uv run --group build --group gpu python build.py --gpu
 ```
 
 `gpu` 그룹은 `ocr_server/pyproject.toml`에 설정된
 `https://www.paddlepaddle.org.cn/packages/stable/cu118/` 인덱스를 사용합니다.
+앱에서는 `app/.env`에 `OCR_SERVER_DEVICE=gpu`를 함께 설정해야 합니다.
+Windows GPU 빌드에서는 같은 인덱스의 `nvidia-* cu11` wheel을 함께 설치해
+`cudnn64_8.dll` 등 CUDA/cuDNN DLL을 PyInstaller 산출물에 포함합니다.
+GPU 산출물은 `ocr_server/dist/ocr_server_gpu/ocr_server_gpu.exe`에 생성됩니다.
 
 기본 빌드는 `onedir`입니다. `onefile`이 필요하면 `python build.py --onefile`을 사용합니다.
 

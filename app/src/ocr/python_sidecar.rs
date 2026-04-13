@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) struct PythonSidecarEngine {
     executable: PathBuf,
+    device: String,
     startup_timeout: Duration,
     request_timeout: Duration,
     state: Mutex<SidecarState>,
@@ -84,6 +85,7 @@ impl PythonSidecarEngine {
 
         Ok(Self {
             executable,
+            device: cfg.ocr_server_device.clone(),
             startup_timeout: Duration::from_secs(cfg.ocr_server_startup_timeout_secs.max(1)),
             request_timeout: Duration::from_secs(cfg.ocr_server_request_timeout_secs.max(1)),
             state: Mutex::new(SidecarState {
@@ -127,6 +129,7 @@ impl PythonSidecarEngine {
             let running = ensure_running(
                 &mut state.running,
                 &self.executable,
+                &self.device,
                 self.startup_timeout,
                 source,
             )?;
@@ -152,16 +155,17 @@ impl PythonSidecarEngine {
 fn ensure_running<'a>(
     running: &'a mut Option<RunningSidecar>,
     executable: &Path,
+    device: &str,
     startup_timeout: Duration,
     source: &str,
 ) -> Result<&'a mut RunningSidecar, String> {
     if running.is_none() {
-        *running = Some(spawn_sidecar(executable, startup_timeout)?);
+        *running = Some(spawn_sidecar(executable, device, startup_timeout)?);
     }
     let running = running
         .as_mut()
         .ok_or("OCR server 프로세스 생성 실패".to_string())?;
-    eprintln!("[OCR] OCR server 사용 ({source})");
+    eprintln!("[OCR] OCR server 사용 ({source}, device={device})");
     Ok(running)
 }
 
@@ -205,7 +209,9 @@ fn perform_request(
                         .collect(),
                 ));
             }
-            Ok(SidecarEvent::Message(SidecarMessage::Error { id, message })) if id == request_id => {
+            Ok(SidecarEvent::Message(SidecarMessage::Error { id, message }))
+                if id == request_id =>
+            {
                 return Err(format!("OCR server 처리 실패: {message}"));
             }
             Ok(SidecarEvent::Message(SidecarMessage::Ready { .. })) => {}
@@ -228,18 +234,23 @@ fn perform_request(
     }
 }
 
-fn spawn_sidecar(executable: &Path, startup_timeout: Duration) -> Result<RunningSidecar, String> {
+fn spawn_sidecar(
+    executable: &Path,
+    device: &str,
+    startup_timeout: Duration,
+) -> Result<RunningSidecar, String> {
     let mut cmd = Command::new(executable);
     cmd.arg("--server")
+        .env("PYTHON_OCR_DEVICE", device)
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        format!("OCR server 실행 실패 ({}): {e}", executable.display())
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("OCR server 실행 실패 ({}): {e}", executable.display()))?;
     let stdin = child
         .stdin
         .take()
@@ -370,6 +381,7 @@ mod tests {
             source: "en".to_string(),
             score_thresh: 0.5,
             ocr_debug_trace: false,
+            ocr_server_device: "cpu".to_string(),
             ai_gateway_api_key: "x".to_string(),
             ai_gateway_model: "y".to_string(),
             system_prompt: "z".to_string(),

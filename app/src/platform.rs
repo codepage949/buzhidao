@@ -166,7 +166,10 @@ fn watch_linux_input_device(
 
     if debug {
         let device_name = device.name().unwrap_or("<unknown>");
-        eprintln!("[단축키][debug] 감시 시작: {} ({device_name})", path.display());
+        eprintln!(
+            "[단축키][debug] 감시 시작: {} ({device_name})",
+            path.display()
+        );
     }
 
     loop {

@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -109,6 +110,13 @@ def configure_frozen_dll_search_path() -> None:
         os.path.join(base_dir, "paddle", "libs"),
         os.path.join(base_dir, "paddle", "base"),
     ]
+    nvidia_root = Path(base_dir) / "nvidia"
+    if nvidia_root.is_dir():
+        candidates.extend(
+            str(path)
+            for path in nvidia_root.glob("*/bin")
+            if path.is_dir()
+        )
 
     added = []
     for path in candidates:
@@ -122,12 +130,21 @@ def configure_frozen_dll_search_path() -> None:
         os.environ["PATH"] = os.pathsep.join(added + [os.environ.get("PATH", "")])
 
 
+def resolve_ocr_device() -> str:
+    device = os.environ.get("PYTHON_OCR_DEVICE", "cpu").strip().lower()
+    if device not in ("cpu", "gpu"):
+        raise ValueError(
+            f"unsupported PYTHON_OCR_DEVICE: {device} (expected: cpu or gpu)"
+        )
+    return device
+
+
 def build_ocr(lang: str) -> PaddleOCR:
     return PaddleOCR(
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=True,
-        device=os.environ.get("PYTHON_OCR_DEVICE", "cpu"),
+        device=resolve_ocr_device(),
         lang=lang,
     )
 

@@ -28,12 +28,7 @@ pub(crate) fn calc_popup_pos_from_screen(
     (x, y)
 }
 
-pub(crate) fn calc_popup_pos(
-    app: &AppHandle,
-    box_x: f64,
-    box_y: f64,
-    box_w: f64,
-) -> (f64, f64) {
+pub(crate) fn calc_popup_pos(app: &AppHandle, box_x: f64, box_y: f64, box_w: f64) -> (f64, f64) {
     let (screen_w, screen_h) = app
         .primary_monitor()
         .ok()

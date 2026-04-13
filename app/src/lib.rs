@@ -5,12 +5,12 @@ mod popup;
 mod services;
 mod window;
 
+use std::env;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::env;
-use std::path::PathBuf;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
@@ -218,9 +218,18 @@ fn resolve_ocr_server_executable(resource_dir: Option<PathBuf>, configured: &str
         return configured.to_string();
     };
 
-    let resource_path = resource_dir.join(file_name);
-    if resource_path.exists() {
-        return resource_path.to_string_lossy().into_owned();
+    let mut candidates = vec![resource_dir.join(file_name)];
+    if let Some(parent_name) = configured_path
+        .parent()
+        .and_then(|parent| parent.file_name())
+    {
+        candidates.push(resource_dir.join(parent_name).join(file_name));
+    }
+
+    for resource_path in candidates {
+        if resource_path.exists() {
+            return resource_path.to_string_lossy().into_owned();
+        }
     }
 
     configured.to_string()
@@ -398,6 +407,24 @@ mod tests {
 
         let resolved =
             resolve_ocr_server_executable(Some(resource_dir.clone()), "missing/ocr_server.exe");
+
+        assert_eq!(PathBuf::from(resolved), exe_path);
+
+        let _ = fs::remove_dir_all(resource_dir);
+    }
+
+    #[test]
+    fn 번들_리소스에_onedir_폴더가_있으면_그_안의_ocr_server를_사용한다() {
+        let resource_dir = temp_path("buzhidao-ocr-server-onedir-resource");
+        let onedir_dir = resource_dir.join("ocr_server");
+        fs::create_dir_all(&onedir_dir).expect("onedir 리소스 디렉토리 생성 실패");
+        let exe_path = onedir_dir.join("ocr_server.exe");
+        fs::write(&exe_path, b"exe").expect("ocr server 생성 실패");
+
+        let resolved = resolve_ocr_server_executable(
+            Some(resource_dir.clone()),
+            "../ocr_server/dist/ocr_server/ocr_server.exe",
+        );
 
         assert_eq!(PathBuf::from(resolved), exe_path);
 
