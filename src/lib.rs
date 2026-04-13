@@ -99,18 +99,15 @@ async fn run_region_ocr(
 ) -> Result<(), String> {
     let (cropped, offset_x, offset_y, orig_width, orig_height) = {
         let pending = app.state::<PendingCapture>();
-        let mut guard = pending.0.lock().map_err(|_| "캡처 상태 잠금 실패".to_string())?;
+        let mut guard = pending
+            .0
+            .lock()
+            .map_err(|_| "캡처 상태 잠금 실패".to_string())?;
         let capture = guard
             .take()
             .ok_or("선택할 캡처 이미지가 없음".to_string())?;
         crop_capture_to_region(
-            capture,
-            rect_x,
-            rect_y,
-            rect_w,
-            rect_h,
-            viewport_w,
-            viewport_h,
+            capture, rect_x, rect_y, rect_w, rect_h, viewport_w, viewport_h,
         )?
     };
 
@@ -128,7 +125,9 @@ async fn run_region_ocr(
         .get_webview_window("overlay")
         .ok_or("오버레이 창을 찾을 수 없음".to_string())?;
     match result {
-        Ok(ocr) => overlay.emit("ocr_result", &ocr).map_err(|e| e.to_string())?,
+        Ok(ocr) => overlay
+            .emit("ocr_result", &ocr)
+            .map_err(|e| e.to_string())?,
         Err(err) => overlay.emit("ocr_error", &err).map_err(|e| e.to_string())?,
     }
 
@@ -367,11 +366,8 @@ pub fn run() {
                 let cfg = app.state::<Config>();
                 (cfg.det_thresh, cfg.box_thresh)
             };
-            let backend = {
-                let cfg = app.state::<Config>();
-                OcrBackend::new(&models_dir, det_thresh, box_thresh, cfg.ocr_backend)
-                    .expect("OCR 엔진 초기화 실패")
-            };
+            let backend =
+                OcrBackend::new(&models_dir, det_thresh, box_thresh).expect("OCR 엔진 초기화 실패");
             app.manage(Arc::new(backend));
             // 시스템 트레이: 종료 메뉴
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;
@@ -392,7 +388,9 @@ pub fn run() {
                 .build(app)?;
 
             install_capture_shortcut(app.handle().clone(), busy.clone(), |app, busy| {
-                tauri::async_runtime::block_on(handle_prtsc(app, busy));
+                tauri::async_runtime::spawn(async move {
+                    handle_prtsc(app, busy).await;
+                });
             });
 
             Ok(())

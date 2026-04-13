@@ -1,60 +1,23 @@
 mod cls;
 pub(crate) mod det;
-#[cfg(feature = "paddle-ffi")]
-pub(crate) mod paddle_ffi;
-pub(crate) mod python_sidecar;
 mod rec;
 
-use crate::config::OcrBackendKind;
+use crate::config::OCR_DET_RESIZE_LONG;
+use crate::services::{OcrDebugDetection, OcrDetection};
 use image::{DynamicImage, Rgb, RgbImage};
-#[cfg(feature = "gpu")]
-use ort::ep;
 use ort::session::Session;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use crate::config::OCR_DET_RESIZE_LONG;
-use crate::services::{OcrDebugDetection, OcrDetection};
 
-pub(crate) enum OcrBackend {
-    Onnx(OcrEngine),
-    PythonSidecar(python_sidecar::PythonSidecarEngine),
-    #[cfg(feature = "paddle-ffi")]
-    PaddleFfi(paddle_ffi::PaddleFfiEngine),
-}
+pub(crate) struct OcrBackend(OcrEngine);
 
 impl OcrBackend {
-    pub(crate) fn new(
-        models_dir: &Path,
-        det_thresh: f32,
-        box_thresh: f32,
-        kind: OcrBackendKind,
-    ) -> Result<Self, String> {
-        match kind {
-            OcrBackendKind::Onnx => Ok(Self::Onnx(OcrEngine::new(
-                models_dir,
-                det_thresh,
-                box_thresh,
-            )?)),
-            OcrBackendKind::PythonSidecar => {
-                Ok(Self::PythonSidecar(python_sidecar::PythonSidecarEngine::new()?))
-            }
-            #[cfg(feature = "paddle-ffi")]
-            OcrBackendKind::PaddleFfi => {
-                let model_dir = std::env::var_os("PADDLE_MODEL_DIR")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| models_dir.to_path_buf());
-                Ok(Self::PaddleFfi(paddle_ffi::PaddleFfiEngine::new(&model_dir, false)?))
-            }
-        }
+    pub(crate) fn new(models_dir: &Path, det_thresh: f32, box_thresh: f32) -> Result<Self, String> {
+        Ok(Self(OcrEngine::new(models_dir, det_thresh, box_thresh)?))
     }
 
     pub(crate) fn is_cpu_mode(&self) -> bool {
-        match self {
-            Self::Onnx(engine) => engine.is_cpu_mode(),
-            Self::PythonSidecar(_) => true,
-            #[cfg(feature = "paddle-ffi")]
-            Self::PaddleFfi(_) => true,
-        }
+        self.0.is_cpu_mode()
     }
 
     pub(crate) fn run_image(
@@ -65,25 +28,10 @@ impl OcrBackend {
         score_thresh: f32,
         debug_trace: bool,
     ) -> Result<(Vec<OcrDetection>, Vec<OcrDebugDetection>), String> {
-        match self {
-            Self::Onnx(engine) => {
-                let boxes = engine.detect(img, det_resize_long)?;
-                engine.recognize_boxes(img, &boxes, score_thresh, debug_trace)
-            }
-            Self::PythonSidecar(engine) => {
-                let temp_path = save_temp_ocr_image(img)?;
-                let result = engine.run_image_file(&temp_path, source, score_thresh, debug_trace);
-                let _ = std::fs::remove_file(&temp_path);
-                result
-            }
-            #[cfg(feature = "paddle-ffi")]
-            Self::PaddleFfi(engine) => {
-                let temp_path = save_temp_ocr_image(img)?;
-                let result = engine.run_image_file(&temp_path, det_resize_long, score_thresh, debug_trace);
-                let _ = std::fs::remove_file(&temp_path);
-                result
-            }
-        }
+        let _ = source;
+        let boxes = self.0.detect(img, det_resize_long)?;
+        self.0
+            .recognize_boxes(img, &boxes, score_thresh, debug_trace)
     }
 }
 
@@ -182,7 +130,13 @@ impl OcrEngine {
         resize_long: u32,
     ) -> Result<Vec<det::DetBox>, String> {
         let mut session = self.det_session.lock().unwrap();
-        det::detect_with_resize_long(&mut session, img, resize_long, self.det_thresh, self.box_thresh)
+        det::detect_with_resize_long(
+            &mut session,
+            img,
+            resize_long,
+            self.det_thresh,
+            self.box_thresh,
+        )
     }
 
     /// 주어진 박스들에 대해 cls+rec를 실행하여 인식 결과를 반환한다.
@@ -230,7 +184,12 @@ impl OcrEngine {
         let t_rec = std::time::Instant::now();
         let rec_results = {
             let mut session = self.rec_session.lock().unwrap();
-            rec::recognize_batch(&mut session, &oriented_crops, &self.dict, self.is_cpu_mode())?
+            rec::recognize_batch(
+                &mut session,
+                &oriented_crops,
+                &self.dict,
+                self.is_cpu_mode(),
+            )?
         };
         eprintln!(
             "[OCR] rec ({} 박스, rotate180 {}): {:.0}ms",
@@ -347,17 +306,6 @@ fn box_bounds(box_pts: &det::DetBox) -> (f64, f64, f64, f64) {
     }
 
     (min_x, min_y, max_x, max_y)
-}
-
-fn save_temp_ocr_image(img: &DynamicImage) -> Result<PathBuf, String> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("시계 오류: {e}"))?
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("buzhidao-ocr-{nanos}.png"));
-    img.save(&path)
-        .map_err(|e| format!("임시 OCR 이미지 저장 실패 ({}): {e}", path.display()))?;
-    Ok(path)
 }
 
 fn should_accept_recognition(text: &str, score: f32, score_thresh: f32) -> bool {
@@ -881,7 +829,10 @@ mod tests {
         let merged = merge_boxes_for_cpu_rec(&[a, b], true);
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0], [[0.0, 0.0], [88.0, 0.0], [88.0, 19.0], [0.0, 19.0]]);
+        assert_eq!(
+            merged[0],
+            [[0.0, 0.0], [88.0, 0.0], [88.0, 19.0], [0.0, 19.0]]
+        );
     }
 
     #[test]

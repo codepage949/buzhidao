@@ -104,7 +104,13 @@ def extract_cuda_dlls(wheel_dir: Path, output_dir: Path) -> None:
         raise FileNotFoundError(f"필수 CUDA/cuDNN DLL 추출 실패: {joined}")
 
 
-def make_archive(repo_root: Path, version_tag: str, mode: str, exe_path: Path, output_dir: Path) -> Path:
+def make_archive(
+    repo_root: Path,
+    version_tag: str,
+    mode: str,
+    exe_path: Path,
+    output_dir: Path,
+) -> Path:
     if mode not in {"cpu", "gpu"}:
         raise ValueError(f"지원하지 않는 빌드 모드: {mode}")
     if not exe_path.exists():
@@ -166,7 +172,6 @@ def main() -> int:
         help="저장소 루트 경로",
     )
     archive_parser.add_argument("--output-dir", required=True, type=Path)
-
     extract_cuda_parser = subparsers.add_parser("extract-cuda", help="wheel에서 CUDA DLL 추출")
     extract_cuda_parser.add_argument("--wheel-dir", required=True, type=Path)
     extract_cuda_parser.add_argument("--output-dir", required=True, type=Path)

@@ -2,14 +2,6 @@ const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
 const DEFAULT_SCORE_THRESH: f32 = 0.5;
 pub(crate) const OCR_DET_RESIZE_LONG: u32 = 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OcrBackendKind {
-    Onnx,
-    PythonSidecar,
-    #[cfg(feature = "paddle-ffi")]
-    PaddleFfi,
-}
-
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) source: String,
@@ -24,7 +16,6 @@ pub(crate) struct Config {
     pub(crate) det_thresh: f32,
     /// det 박스 채택 임계값 (낮을수록 더 많은 박스 채택)
     pub(crate) box_thresh: f32,
-    pub(crate) ocr_backend: OcrBackendKind,
 }
 
 impl Config {
@@ -35,9 +26,7 @@ impl Config {
             score_thresh: env_or("SCORE_THRESH", "0.5")
                 .parse()
                 .unwrap_or(DEFAULT_SCORE_THRESH),
-            ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false")
-                .parse()
-                .unwrap_or(false),
+            ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false").parse().unwrap_or(false),
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
@@ -45,22 +34,7 @@ impl Config {
             line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(15),
             det_thresh: env_or("DET_THRESH", "0.2").parse().unwrap_or(0.2),
             box_thresh: env_or("BOX_THRESH", "0.4").parse().unwrap_or(0.4),
-            ocr_backend: parse_ocr_backend(&env_or("OCR_BACKEND", "onnx"))?,
         })
-    }
-}
-
-fn parse_ocr_backend(value: &str) -> Result<OcrBackendKind, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "onnx" => Ok(OcrBackendKind::Onnx),
-        "python_sidecar" | "python-sidecar" | "python" => Ok(OcrBackendKind::PythonSidecar),
-        #[cfg(feature = "paddle-ffi")]
-        "paddle_ffi" | "paddle-ffi" => Ok(OcrBackendKind::PaddleFfi),
-        #[cfg(not(feature = "paddle-ffi"))]
-        "paddle_ffi" | "paddle-ffi" => {
-            Err("OCR_BACKEND=paddle_ffi 는 paddle-ffi feature 빌드에서만 사용할 수 있습니다".to_string())
-        }
-        other => Err(format!("지원하지 않는 OCR_BACKEND 값: {other}")),
     }
 }
 
@@ -69,7 +43,14 @@ fn require_env(name: &str) -> Result<String, String> {
 }
 
 fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_string())
+    optional_env(name).unwrap_or_else(|| default.to_string())
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn load_system_prompt() -> Result<String, String> {
@@ -86,8 +67,8 @@ fn load_system_prompt() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        env_or, load_system_prompt, parse_ocr_backend, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT,
-        OCR_DET_RESIZE_LONG, OcrBackendKind,
+        env_or, load_system_prompt, optional_env, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT,
+        OCR_DET_RESIZE_LONG,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -154,7 +135,10 @@ mod tests {
     }
 
     #[test]
-    fn ocr_backend_기본값은_onnx다() {
-        assert_eq!(parse_ocr_backend("onnx").unwrap(), OcrBackendKind::Onnx);
+    fn optional_env는_앞뒤_공백을_제거한다() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("TEST_OPTIONAL_ENV", "  value  ");
+        assert_eq!(optional_env("TEST_OPTIONAL_ENV").as_deref(), Some("value"));
+        std::env::remove_var("TEST_OPTIONAL_ENV");
     }
 }
