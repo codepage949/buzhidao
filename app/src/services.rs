@@ -1,9 +1,9 @@
-use crate::config::{Config, OCR_DET_RESIZE_LONG};
+use crate::config::Config;
 use crate::ocr::OcrBackend;
 #[cfg(target_os = "linux")]
 use ashpd::desktop::{
-    PersistMode,
     screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType, Stream as CastStream},
+    PersistMode,
 };
 #[cfg(target_os = "linux")]
 use pipewire as pw;
@@ -77,6 +77,41 @@ pub(crate) fn offset_ocr_result(payload: &mut OcrResultPayload, offset_x: f64, o
             point[1] += offset_y;
         }
     }
+}
+
+pub(crate) fn scale_ocr_result(payload: &mut OcrResultPayload, scale_x: f64, scale_y: f64) {
+    for (polygon, _) in &mut payload.detections {
+        for point in polygon {
+            point[0] *= scale_x;
+            point[1] *= scale_y;
+        }
+    }
+    for (polygon, _, _, _) in &mut payload.debug_detections {
+        for point in polygon {
+            point[0] *= scale_x;
+            point[1] *= scale_y;
+        }
+    }
+}
+
+fn resize_image_to_max_width(
+    dyn_img: image::DynamicImage,
+    max_width: u32,
+) -> (image::DynamicImage, f64, f64) {
+    if dyn_img.width() <= max_width || max_width == 0 {
+        return (dyn_img, 1.0, 1.0);
+    }
+
+    let ratio = max_width as f64 / dyn_img.width() as f64;
+    let target_height = ((dyn_img.height() as f64) * ratio).round().max(1.0) as u32;
+    let resized = dyn_img.resize_exact(
+        max_width,
+        target_height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let scale_x = dyn_img.width() as f64 / resized.width() as f64;
+    let scale_y = dyn_img.height() as f64 / resized.height() as f64;
+    (resized, scale_x, scale_y)
 }
 
 fn selection_rect_to_image_rect(
@@ -239,11 +274,10 @@ async fn capture_screen_via_screencast_with_restore_token(
         .await
         .map_err(|e| format!("PipeWire remote 열기 실패: {e}"))?;
 
-    let capture = tauri::async_runtime::spawn_blocking(move || {
-        capture_first_screencast_frame(stream, fd)
-    })
-    .await
-    .map_err(|e| format!("ScreenCast 캡처 스레드 오류: {e}"))??;
+    let capture =
+        tauri::async_runtime::spawn_blocking(move || capture_first_screencast_frame(stream, fd))
+            .await
+            .map_err(|e| format!("ScreenCast 캡처 스레드 오류: {e}"))??;
 
     let _ = session.close().await;
     Ok(capture)
@@ -427,8 +461,7 @@ fn capture_first_screencast_frame(
     .map_err(|e| format!("PipeWire 포맷 직렬화 실패: {e}"))?
     .0
     .into_inner();
-    let mut params = [spa::pod::Pod::from_bytes(&values)
-        .ok_or("PipeWire 포맷 pod 변환 실패")?];
+    let mut params = [spa::pod::Pod::from_bytes(&values).ok_or("PipeWire 포맷 pod 변환 실패")?];
 
     pw_stream
         .connect(
@@ -495,9 +528,7 @@ fn rgba_image_from_raw_frame(
 ) -> Result<image::RgbaImage, String> {
     let width_usize = width as usize;
     let height_usize = height as usize;
-    let row_bytes = width_usize
-        .checked_mul(4)
-        .ok_or("프레임 너비가 너무 큼")?;
+    let row_bytes = width_usize.checked_mul(4).ok_or("프레임 너비가 너무 큼")?;
     let required = stride
         .checked_mul(height_usize)
         .ok_or("프레임 stride가 너무 큼")?;
@@ -559,26 +590,24 @@ pub(crate) fn run_ocr(
     orig_width: u32,
     orig_height: u32,
 ) -> Result<OcrResultPayload, String> {
-    let det_resize_long =
-        effective_det_resize_long(engine.is_cpu_mode(), dyn_img.width(), dyn_img.height());
+    let (prepared_img, scale_x, scale_y) =
+        resize_image_to_max_width(dyn_img, engine.resize_width_before_ocr());
     let t0 = std::time::Instant::now();
-    let (detections, debug_detections) =
-        engine.run_image(
-            &dyn_img,
-            det_resize_long,
-            &cfg.source,
-            cfg.score_thresh,
-            cfg.ocr_debug_trace,
-        )?;
+    let (detections, debug_detections) = engine.run_image(
+        &prepared_img,
+        &cfg.source,
+        cfg.score_thresh,
+        cfg.ocr_debug_trace,
+    )?;
     eprintln!(
-        "[OCR] backend 전체 처리: {:.0}ms ({}×{}, resize_long {})",
+        "[OCR] backend 전체 처리: {:.0}ms ({}×{}, resize_width {})",
         t0.elapsed().as_millis(),
-        dyn_img.width(),
-        dyn_img.height(),
-        det_resize_long
+        prepared_img.width(),
+        prepared_img.height(),
+        engine.resize_width_before_ocr()
     );
 
-    Ok(OcrResultPayload {
+    let mut payload = OcrResultPayload {
         detections,
         debug_detections,
         orig_width,
@@ -587,17 +616,14 @@ pub(crate) fn run_ocr(
         word_gap: cfg.word_gap,
         line_gap: cfg.line_gap,
         debug_trace: cfg.ocr_debug_trace,
-    })
-}
+    };
 
-fn effective_det_resize_long(cpu_mode: bool, width: u32, height: u32) -> u32 {
-    if !cpu_mode {
-        return OCR_DET_RESIZE_LONG;
+    if (scale_x - 1.0).abs() > f64::EPSILON || (scale_y - 1.0).abs() > f64::EPSILON {
+        scale_ocr_result(&mut payload, scale_x, scale_y);
     }
 
-    OCR_DET_RESIZE_LONG.min(width.max(height).max(128))
+    Ok(payload)
 }
-
 pub(crate) async fn call_ai(
     client: &reqwest::Client,
     cfg: &Config,
@@ -640,29 +666,17 @@ pub(crate) async fn call_ai(
 
 #[cfg(test)]
 mod tests {
-    use super::OCR_DET_RESIZE_LONG;
     use super::{
-        effective_det_resize_long, offset_ocr_result, selection_rect_to_image_rect,
-        OcrResultPayload,
+        offset_ocr_result, resize_image_to_max_width, scale_ocr_result,
+        selection_rect_to_image_rect, OcrResultPayload,
     };
     #[cfg(target_os = "linux")]
-    use super::{rgba_image_from_raw_frame, should_use_wayland_portal_for, wayland_restore_token_path};
+    use super::{
+        rgba_image_from_raw_frame, should_use_wayland_portal_for, wayland_restore_token_path,
+    };
+    use image::{DynamicImage, Rgba, RgbaImage};
     #[cfg(target_os = "linux")]
     use pipewire as pw;
-
-    #[test]
-    fn 단일_ocr_모드는_det_resize_long_1024를_사용한다() {
-        assert_eq!(OCR_DET_RESIZE_LONG, 1024);
-    }
-
-    #[test]
-    fn cpu_모드에서는_작은_영역_det를_불필요하게_확대하지_않는다() {
-        assert_eq!(effective_det_resize_long(true, 367, 366), 367);
-        assert_eq!(
-            effective_det_resize_long(false, 367, 366),
-            OCR_DET_RESIZE_LONG
-        );
-    }
 
     #[test]
     fn 선택_영역을_원본_이미지_좌표로_변환한다() {
@@ -690,6 +704,37 @@ mod tests {
 
         assert_eq!(payload.detections[0].0[0], [15.0, 27.0]);
         assert_eq!(payload.debug_detections[0].0[1], [8.0, 11.0]);
+    }
+
+    #[test]
+    fn 넓은_이미지는_1024w로_축소하고_배율을_반환한다() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(2048, 1024, Rgba([1, 2, 3, 4])));
+
+        let (resized, scale_x, scale_y) = resize_image_to_max_width(img, 1024);
+
+        assert_eq!(resized.width(), 1024);
+        assert_eq!(resized.height(), 512);
+        assert!((scale_x - 2.0).abs() < f64::EPSILON);
+        assert!((scale_y - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn 축소된_ocr_좌표를_원본_배율로_복원한다() {
+        let mut payload = OcrResultPayload {
+            detections: vec![(vec![[10.0, 20.0], [30.0, 40.0]], "text".to_string())],
+            debug_detections: vec![(vec![[1.0, 2.0], [3.0, 4.0]], "dbg".to_string(), 0.9, true)],
+            orig_width: 100,
+            orig_height: 100,
+            source: "en".to_string(),
+            word_gap: 20,
+            line_gap: 15,
+            debug_trace: false,
+        };
+
+        scale_ocr_result(&mut payload, 2.0, 3.0);
+
+        assert_eq!(payload.detections[0].0[0], [20.0, 60.0]);
+        assert_eq!(payload.debug_detections[0].0[1], [6.0, 12.0]);
     }
 
     #[cfg(target_os = "linux")]

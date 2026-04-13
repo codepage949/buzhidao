@@ -105,21 +105,13 @@ function OverlayApp() {
   }, [close]);
 
   const beginSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (
-      state.kind !== "selecting" &&
-      state.kind !== "ready" &&
-      state.kind !== "error"
-    ) {
+    if (state.kind !== "selecting") {
       return;
     }
     e.stopPropagation();
     const x = e.clientX;
     const y = e.clientY;
-    selectionResumeStateRef.current =
-      state.kind === "ready" || state.kind === "error" ? state : null;
-    if (state.kind !== "selecting") {
-      setState({ kind: "selecting" });
-    }
+    selectionResumeStateRef.current = null;
     setSelectionStart([x, y]);
     setSelectionRect({ x, y, width: 0, height: 0 });
     suppressNextCloseRef.current = nextCloseSuppressed(

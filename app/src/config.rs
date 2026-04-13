@@ -1,6 +1,6 @@
 const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
 const DEFAULT_SCORE_THRESH: f32 = 0.5;
-pub(crate) const OCR_DET_RESIZE_LONG: u32 = 1024;
+pub(crate) const OCR_SERVER_RESIZE_WIDTH: u32 = 1024;
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -12,10 +12,9 @@ pub(crate) struct Config {
     pub(crate) system_prompt: String,
     pub(crate) word_gap: i32,
     pub(crate) line_gap: i32,
-    /// det 히트맵 이진화 임계값 (낮을수록 더 많은 텍스트 픽셀 포함)
-    pub(crate) det_thresh: f32,
-    /// det 박스 채택 임계값 (낮을수록 더 많은 박스 채택)
-    pub(crate) box_thresh: f32,
+    pub(crate) ocr_server_executable: String,
+    pub(crate) ocr_server_startup_timeout_secs: u64,
+    pub(crate) ocr_server_request_timeout_secs: u64,
 }
 
 impl Config {
@@ -32,10 +31,31 @@ impl Config {
             system_prompt: load_system_prompt()?,
             word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(20),
             line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(15),
-            det_thresh: env_or("DET_THRESH", "0.2").parse().unwrap_or(0.2),
-            box_thresh: env_or("BOX_THRESH", "0.4").parse().unwrap_or(0.4),
+            ocr_server_executable: optional_env("OCR_SERVER_EXECUTABLE")
+                .unwrap_or_else(default_ocr_server_executable),
+            ocr_server_startup_timeout_secs: env_or("OCR_SERVER_STARTUP_TIMEOUT_SECS", "30")
+                .parse()
+                .unwrap_or(30),
+            ocr_server_request_timeout_secs: env_or("OCR_SERVER_REQUEST_TIMEOUT_SECS", "20")
+                .parse()
+                .unwrap_or(20),
         })
     }
+}
+
+fn default_ocr_server_executable() -> String {
+    let file_name = if cfg!(target_os = "windows") {
+        "ocr_server.exe"
+    } else {
+        "ocr_server"
+    };
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("ocr_server")
+        .join("dist")
+        .join("ocr_server")
+        .join(file_name);
+    path.to_string_lossy().into_owned()
 }
 
 fn require_env(name: &str) -> Result<String, String> {
@@ -68,7 +88,7 @@ fn load_system_prompt() -> Result<String, String> {
 mod tests {
     use super::{
         env_or, load_system_prompt, optional_env, DEFAULT_SCORE_THRESH, DEFAULT_SYSTEM_PROMPT,
-        OCR_DET_RESIZE_LONG,
+        OCR_SERVER_RESIZE_WIDTH,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -130,8 +150,8 @@ mod tests {
     }
 
     #[test]
-    fn ocr_det_resize_long_기본값은_1024다() {
-        assert_eq!(OCR_DET_RESIZE_LONG, 1024);
+    fn ocr_server_resize_width_기본값은_1024다() {
+        assert_eq!(OCR_SERVER_RESIZE_WIDTH, 1024);
     }
 
     #[test]
@@ -141,4 +161,5 @@ mod tests {
         assert_eq!(optional_env("TEST_OPTIONAL_ENV").as_deref(), Some("value"));
         std::env::remove_var("TEST_OPTIONAL_ENV");
     }
+
 }

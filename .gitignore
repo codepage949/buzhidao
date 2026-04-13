@@ -9,6 +9,10 @@ benchmarks/
 cuda/
 dist/
 wheelhouse/
+app/target/
+ocr_server/build/
+ocr_server/dist/
+ocr_server/*.spec
 
 !.gitignore
 !.dockerignore
