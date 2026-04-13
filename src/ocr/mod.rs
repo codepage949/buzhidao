@@ -6,6 +6,7 @@ use crate::config::OCR_DET_RESIZE_LONG;
 use crate::services::{OcrDebugDetection, OcrDetection};
 use image::{DynamicImage, Rgb, RgbImage};
 use ort::session::Session;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -163,7 +164,7 @@ impl OcrEngine {
         }
 
         // 모든 박스를 크롭한 뒤 cls를 배치로 처리한다.
-        let crops: Vec<DynamicImage> = merged_boxes.iter().map(|b| crop_box(img, b)).collect();
+        let crops = build_crops(img, &merged_boxes);
 
         let labels = if self.is_cpu_mode() {
             let sample_indices = cpu_cls_sample_indices(crops.len());
@@ -218,11 +219,7 @@ impl OcrEngine {
         };
         let rotated = labels.iter().filter(|&&label| label == 1).count();
 
-        let oriented_crops: Vec<DynamicImage> = crops
-            .into_iter()
-            .zip(labels)
-            .map(|(crop, label)| if label == 1 { crop.rotate180() } else { crop })
-            .collect();
+        let oriented_crops = orient_crops(crops, &labels);
 
         let t_rec = std::time::Instant::now();
         let rec_results = {
@@ -300,6 +297,30 @@ fn merge_boxes_for_cpu_rec(boxes: &[det::DetBox], cpu_mode: bool) -> Vec<det::De
     }
 
     merged
+}
+
+fn build_crops(img: &DynamicImage, boxes: &[det::DetBox]) -> Vec<DynamicImage> {
+    if boxes.len() <= 1 {
+        return boxes.iter().map(|b| crop_box(img, b)).collect();
+    }
+
+    boxes.par_iter().map(|b| crop_box(img, b)).collect()
+}
+
+fn orient_crops(crops: Vec<DynamicImage>, labels: &[cls::ClsLabel]) -> Vec<DynamicImage> {
+    if crops.len() <= 1 {
+        return crops
+            .into_iter()
+            .zip(labels.iter().copied())
+            .map(|(crop, label)| if label == 1 { crop.rotate180() } else { crop })
+            .collect();
+    }
+
+    crops
+        .into_par_iter()
+        .zip(labels.par_iter().copied())
+        .map(|(crop, label)| if label == 1 { crop.rotate180() } else { crop })
+        .collect()
 }
 
 fn cpu_cls_sample_indices(total: usize) -> Vec<usize> {
@@ -926,6 +947,44 @@ mod tests {
     #[test]
     fn cpu_cls_샘플에_회전이_있으면_전수_cls를_실행한다() {
         assert!(should_run_full_cls_from_sample(&[0, 0, 1, 0]));
+    }
+
+    #[test]
+    fn build_crops는_입력_순서를_보존한다() {
+        let mut img = RgbImage::from_pixel(12, 8, Rgb([0, 0, 0]));
+        for x in 0..4 {
+            img.put_pixel(x, 0, Rgb([255, 0, 0]));
+        }
+        for x in 4..8 {
+            img.put_pixel(x, 0, Rgb([0, 255, 0]));
+        }
+
+        let crops = build_crops(
+            &DynamicImage::ImageRgb8(img),
+            &[
+                [[4.0, 0.0], [8.0, 0.0], [8.0, 4.0], [4.0, 4.0]],
+                [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+            ],
+        );
+
+        assert_eq!(crops.len(), 2);
+        assert_eq!(crops[0].to_rgb8().get_pixel(0, 0)[1], 255);
+        assert_eq!(crops[1].to_rgb8().get_pixel(0, 0)[0], 255);
+    }
+
+    #[test]
+    fn orient_crops는_레이블에_따라_회전한다() {
+        let top = Rgb([255, 0, 0]);
+        let bottom = Rgb([0, 0, 255]);
+        let crop = DynamicImage::ImageRgb8(RgbImage::from_fn(2, 2, |_, y| {
+            if y == 0 { top } else { bottom }
+        }));
+
+        let oriented = orient_crops(vec![crop], &[1]);
+        let rgb = oriented[0].to_rgb8();
+
+        assert_eq!(*rgb.get_pixel(0, 0), bottom);
+        assert_eq!(*rgb.get_pixel(0, 1), top);
     }
 
     #[test]
