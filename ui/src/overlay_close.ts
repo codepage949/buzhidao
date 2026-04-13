@@ -1,6 +1,7 @@
 export type OverlayCloseEvent =
   | "overlay_show"
   | "overlay_select_region"
+  | "selection_started"
   | "selection_submitted"
   | "ocr_result"
   | "ocr_error"
@@ -17,6 +18,7 @@ export function nextCloseSuppressed(
     case "ocr_error":
     case "root_click_consumed":
       return false;
+    case "selection_started":
     case "selection_submitted":
       return true;
     default:

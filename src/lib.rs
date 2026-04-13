@@ -99,13 +99,11 @@ async fn run_region_ocr(
 ) -> Result<(), String> {
     let (cropped, offset_x, offset_y, orig_width, orig_height) = {
         let pending = app.state::<PendingCapture>();
-        let mut guard = pending
+        let guard = pending
             .0
             .lock()
             .map_err(|_| "캡처 상태 잠금 실패".to_string())?;
-        let capture = guard
-            .take()
-            .ok_or("선택할 캡처 이미지가 없음".to_string())?;
+        let capture = clone_pending_capture(&guard)?;
         crop_capture_to_region(
             capture, rect_x, rect_y, rect_w, rect_h, viewport_w, viewport_h,
         )?
@@ -199,6 +197,12 @@ fn store_pending_capture(app: &AppHandle, capture: CaptureInfo) {
             *guard = Some(capture);
         }
     }
+}
+
+fn clone_pending_capture(capture: &Option<CaptureInfo>) -> Result<CaptureInfo, String> {
+    capture
+        .clone()
+        .ok_or("선택할 캡처 이미지가 없음".to_string())
 }
 
 fn clear_pending_capture(app: &AppHandle) {
@@ -408,7 +412,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_models_dir;
+    use super::{clone_pending_capture, resolve_models_dir};
+    use crate::services::CaptureInfo;
+    use image::{DynamicImage, Rgba, RgbaImage};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -426,6 +432,38 @@ mod tests {
         for name in ["det.onnx", "cls.onnx", "rec.onnx", "rec_dict.txt"] {
             fs::write(dir.join(name), b"x").expect("모델 파일 생성 실패");
         }
+    }
+
+    #[test]
+    fn pending_capture는_영역_ocr_후에도_재사용할_수_있다() {
+        let capture = CaptureInfo {
+            image: DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 4, Rgba([1, 2, 3, 4]))),
+            x: 10,
+            y: 20,
+            orig_width: 4,
+            orig_height: 4,
+        };
+        let pending = Some(capture);
+
+        let first = clone_pending_capture(&pending).expect("첫 번째 clone 실패");
+        let second = clone_pending_capture(&pending).expect("두 번째 clone 실패");
+
+        assert_eq!(first.orig_width, 4);
+        assert_eq!(second.orig_height, 4);
+        assert_eq!(pending.as_ref().map(|v| v.x), Some(10));
+        assert_eq!(pending.as_ref().map(|v| v.y), Some(20));
+    }
+
+    #[test]
+    fn pending_capture가_없으면_영역_ocr를_실행할_수_없다() {
+        let pending: Option<CaptureInfo> = None;
+
+        let err = match clone_pending_capture(&pending) {
+            Ok(_) => panic!("빈 캡처는 실패해야 한다"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("캡처 이미지가 없음"));
     }
 
     #[test]

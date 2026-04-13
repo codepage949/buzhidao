@@ -8,6 +8,7 @@ import {
   type RawDetection,
 } from "./detection";
 import { nextCloseSuppressed } from "./overlay_close";
+import { selectionOutcome, type SelectionRect } from "./overlay_selection";
 import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type OcrResultPayload = {
@@ -28,19 +29,13 @@ type State =
   | { kind: "ready"; ocr: OcrResultPayload }
   | { kind: "error"; message: string };
 
-type SelectionRect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
 function OverlayApp() {
   const [state, setState] = useState<State>({ kind: "hidden" });
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [selectionStart, setSelectionStart] = useState<[number, number] | null>(null);
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
   const suppressNextCloseRef = useRef(false);
+  const selectionResumeStateRef = useRef<State | null>(null);
 
   useListenerCleanup(() => [
       listen("overlay_show", () => {
@@ -48,6 +43,7 @@ function OverlayApp() {
         setHoveredIdx(null);
         setSelectionStart(null);
         setSelectionRect(null);
+        selectionResumeStateRef.current = null;
         suppressNextCloseRef.current = nextCloseSuppressed(
           suppressNextCloseRef.current,
           "overlay_show",
@@ -58,6 +54,7 @@ function OverlayApp() {
         setHoveredIdx(null);
         setSelectionStart(null);
         setSelectionRect(null);
+        selectionResumeStateRef.current = null;
         suppressNextCloseRef.current = nextCloseSuppressed(
           suppressNextCloseRef.current,
           "overlay_select_region",
@@ -67,6 +64,7 @@ function OverlayApp() {
         setState({ kind: "ready", ocr: e.payload });
         setSelectionStart(null);
         setSelectionRect(null);
+        selectionResumeStateRef.current = null;
         suppressNextCloseRef.current = nextCloseSuppressed(
           suppressNextCloseRef.current,
           "ocr_result",
@@ -75,6 +73,8 @@ function OverlayApp() {
       listen<string>("ocr_error", (e) => {
         setState({ kind: "error", message: e.payload });
         setSelectionStart(null);
+        setSelectionRect(null);
+        selectionResumeStateRef.current = null;
         suppressNextCloseRef.current = nextCloseSuppressed(
           suppressNextCloseRef.current,
           "ocr_error",
@@ -105,13 +105,28 @@ function OverlayApp() {
   }, [close]);
 
   const beginSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (state.kind !== "selecting") return;
+    if (
+      state.kind !== "selecting" &&
+      state.kind !== "ready" &&
+      state.kind !== "error"
+    ) {
+      return;
+    }
     e.stopPropagation();
     const x = e.clientX;
     const y = e.clientY;
+    selectionResumeStateRef.current =
+      state.kind === "ready" || state.kind === "error" ? state : null;
+    if (state.kind !== "selecting") {
+      setState({ kind: "selecting" });
+    }
     setSelectionStart([x, y]);
     setSelectionRect({ x, y, width: 0, height: 0 });
-  }, [state.kind]);
+    suppressNextCloseRef.current = nextCloseSuppressed(
+      suppressNextCloseRef.current,
+      "selection_started",
+    );
+  }, [state]);
 
   const updateSelection = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (state.kind !== "selecting" || !selectionStart) return;
@@ -133,11 +148,26 @@ function OverlayApp() {
     e.stopPropagation();
     const rect = selectionRect;
     setSelectionStart(null);
-    if (!rect || rect.width < 8 || rect.height < 8) {
-      setSelectionRect(null);
-      return;
+    switch (selectionOutcome(rect)) {
+      case "close":
+        selectionResumeStateRef.current = null;
+        setSelectionRect(null);
+        await close();
+        return;
+      case "resume": {
+        setSelectionRect(null);
+        const resumeState = selectionResumeStateRef.current;
+        if (resumeState) {
+          setState(resumeState);
+          selectionResumeStateRef.current = null;
+        }
+        return;
+      }
+      case "submit":
+        break;
     }
 
+    selectionResumeStateRef.current = null;
     suppressNextCloseRef.current = nextCloseSuppressed(
       suppressNextCloseRef.current,
       "selection_submitted",
@@ -155,7 +185,7 @@ function OverlayApp() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [selectionRect, state.kind]);
+  }, [close, selectionRect, state.kind]);
 
   const groups = useMemo(
     () =>

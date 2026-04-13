@@ -25,6 +25,7 @@ pub(crate) struct OcrResultPayload {
     pub(crate) debug_trace: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct CaptureInfo {
     pub(crate) image: image::DynamicImage,
     pub(crate) x: i32,
