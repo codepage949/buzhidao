@@ -102,4 +102,4 @@ macOS는 이번 범위에서 제외한다.
 ### Actions Node 런타임 경고 정리
 
 - GitHub Actions 경고에 맞춰 `astral-sh/setup-uv`를 Node 24 대응 메이저로 올린다.
-- 현재 공식 저장소 README 기준 최신 사용 예시는 `astral-sh/setup-uv@v8`이다.
+- 현재 공식 저장소 README 기준 최신 사용 예시는 `astral-sh/setup-uv@v8.0.0`이다.
