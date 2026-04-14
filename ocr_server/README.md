@@ -33,10 +33,10 @@ GPU PyInstaller 빌드:
 uv run --group build --group gpu python build.py --gpu
 ```
 
-GPU 기본 산출물은 CPU와 분리된 경로에 생성됩니다.
+GPU 기본 산출물도 CPU와 같은 경로/파일명에 생성됩니다.
 
 ```text
-ocr_server/dist/ocr_server_gpu/ocr_server_gpu.exe
+ocr_server/dist/ocr_server/ocr_server.exe
 ```
 
 GPU import 최소 검증 실행 파일 빌드:
@@ -63,6 +63,5 @@ uv run --group build --group cpu python build.py --onefile
 
 ```text
 ocr_server/dist/ocr_server/ocr_server.exe
-ocr_server/dist/ocr_server_gpu/ocr_server_gpu.exe
 ocr_server/dist/gpu_import_check/gpu_import_check.exe
 ```

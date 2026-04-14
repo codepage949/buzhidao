@@ -3,6 +3,10 @@ name = "buzhidao"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+gpu = []
+
 [lib]
 name = "buzhidao_lib"
 crate-type = ["lib", "cdylib", "staticlib"]

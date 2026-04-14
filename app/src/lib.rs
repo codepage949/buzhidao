@@ -56,9 +56,8 @@ fn config_snapshot(app: &AppHandle) -> Result<Config, String> {
 }
 
 fn show_ocr_device_setting(cfg: &Config) -> bool {
-    cfg.ocr_server_executable
-        .to_ascii_lowercase()
-        .contains("gpu")
+    let _ = cfg;
+    cfg!(feature = "gpu")
 }
 
 fn is_development_build() -> bool {
@@ -629,8 +628,8 @@ mod tests {
     }
 
     #[test]
-    fn gpu_실행파일일때만_장치_설정을_노출한다() {
-        let mut cfg = Config {
+    fn gpu_앱_빌드에서만_장치_설정을_노출한다() {
+        let cfg = Config {
             source: "en".to_string(),
             score_thresh: 0.5,
             ocr_debug_trace: false,
@@ -644,10 +643,6 @@ mod tests {
             ocr_server_startup_timeout_secs: 30,
             ocr_server_request_timeout_secs: 20,
         };
-        assert!(!show_ocr_device_setting(&cfg));
-
-        cfg.ocr_server_executable =
-            "../ocr_server/dist/ocr_server_gpu/ocr_server_gpu.exe".to_string();
-        assert!(show_ocr_device_setting(&cfg));
+        assert_eq!(show_ocr_device_setting(&cfg), cfg!(feature = "gpu"));
     }
 }

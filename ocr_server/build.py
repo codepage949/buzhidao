@@ -31,10 +31,7 @@ GPU_RUNTIME_PACKAGES = [
 BUILD_TARGETS = {
     "ocr-server": {
         "entry": ROOT / "ocr_server.py",
-        "name": {
-            False: "ocr_server",
-            True: "ocr_server_gpu",
-        },
+        "name": "ocr_server",
         "collect_data": ["paddlex", "paddleocr"],
         "collect_binaries": ["paddle"],
         "metadata_packages": [],
@@ -88,7 +85,7 @@ def main() -> int:
     args = parse_args()
     ensure_runtime_dependency(args.gpu)
     target = BUILD_TARGETS[args.target]
-    target_name = target["name"][args.gpu] if isinstance(target["name"], dict) else target["name"]
+    target_name = target["name"]
     spec = ROOT / f"{target_name}.spec"
     runtime_package = "paddlepaddle-gpu" if args.gpu else "paddlepaddle"
 
