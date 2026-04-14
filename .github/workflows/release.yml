@@ -240,6 +240,48 @@ jobs:
           {
             echo "# ${version}"
             echo
+            echo "## 설치 방법"
+            echo
+            echo "GitHub Release 자산은 파일 크기 제한 때문에 플랫폼별로 \`app\`과 \`ocr-server\` 두 개로 분리되어 있습니다."
+            echo
+            echo "- \`buzhidao-${version}-<os>-<arch>-<flavor>-app.zip\` 또는 \`.tar.gz\`"
+            echo "- \`buzhidao-${version}-<os>-<arch>-<flavor>-ocr-server.zip\` 또는 \`.tar.gz\`"
+            echo
+            echo "같은 OS, 같은 아키텍처, 같은 flavor(\`cpu\` 또는 \`gpu\`) 조합의 두 자산을 함께 내려받아 같은 디렉터리에 압축 해제하세요."
+            echo
+            echo "압축 해제 후 최종 구조는 아래와 같아야 합니다."
+            echo
+            echo "- Windows: \`buzhidao.exe\` 와 \`ocr_server/\` 가 같은 상위 디렉터리에 위치"
+            echo "- Linux: \`buzhidao\` 와 \`ocr_server/\` 가 같은 상위 디렉터리에 위치"
+            echo
+            echo "예시:"
+            echo
+            echo "- \`buzhidao-${version}-windows-amd64-gpu-app.zip\`"
+            echo "- \`buzhidao-${version}-windows-amd64-gpu-ocr-server.zip\`"
+            echo
+            echo "## 분할 파일(.part001 등)이 있는 경우"
+            echo
+            echo "일부 GPU 자산은 2 GiB 제한 때문에 \`.part001\`, \`.part002\`처럼 분할되어 업로드될 수 있습니다."
+            echo "이 경우 먼저 조각 파일을 원래 아카이브 하나로 합친 뒤 압축을 해제하세요."
+            echo
+            echo "### Windows (PowerShell)"
+            echo
+            echo '```powershell'
+            echo '$parts = Get-ChildItem .\buzhidao-...zip.part* | Sort-Object Name'
+            echo '$out = [System.IO.File]::Create(".\buzhidao-...zip")'
+            echo 'foreach ($part in $parts) {'
+            echo '  $bytes = [System.IO.File]::ReadAllBytes($part.FullName)'
+            echo '  $out.Write($bytes, 0, $bytes.Length)'
+            echo '}'
+            echo '$out.Close()'
+            echo '```'
+            echo
+            echo "### Linux"
+            echo
+            echo '```bash'
+            echo 'cat buzhidao-...tar.gz.part* > buzhidao-...tar.gz'
+            echo '```'
+            echo
             if [ -n "$previous_tag" ]; then
               echo "## Changes since ${previous_tag}"
               echo
