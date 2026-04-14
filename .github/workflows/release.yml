@@ -133,6 +133,10 @@ jobs:
             libxinerama-dev \
             libxcursor-dev \
             libxfixes-dev \
+            libevdev-dev \
+            libclang-dev \
+            libgbm-dev \
+            libssl-dev \
             libgl1 \
             libgeos-dev \
             libgomp1 \

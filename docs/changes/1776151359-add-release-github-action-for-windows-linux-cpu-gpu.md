@@ -98,6 +98,12 @@ macOS는 이번 범위에서 제외한다.
 - `available_monitors()` 결과는 `drain(..)` 대신 `into_iter().next()`로 첫 모니터를
   가져오도록 정리해 타입 추론 오류도 함께 제거한다.
 - 모니터를 찾지 못한 경우에는 기존 캡처 영역 기준 배치 로직으로 폴백한다.
+- Linux 링크 단계에서 `xcap` 경유로 `-lgbm`이 필요하므로
+  GitHub Actions apt 패키지 목록에 `libgbm-dev`를 추가한다.
+- `reqwest`/`openssl-sys` 링크를 위해 `libssl-dev`도 함께 설치한다.
+- `pipewire` 계열 바인딩 생성 시 `bindgen`이 `libclang.so`를 요구하므로
+  `libclang-dev`도 설치한다.
+- `evdev-sys`가 소스 빌드 폴백으로 빠지지 않도록 `libevdev-dev`도 설치한다.
 
 ### Actions Node 런타임 경고 정리
 
