@@ -32,67 +32,10 @@ except ModuleNotFoundError as exc:
 LANGS = ("en", "ch")
 
 
-WARMUP_IMAGE = bytes(
-    [
-        0x42,
-        0x4D,
-        0x3A,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x36,
-        0x00,
-        0x00,
-        0x00,
-        0x28,
-        0x00,
-        0x00,
-        0x00,
-        0x01,
-        0x00,
-        0x00,
-        0x00,
-        0x01,
-        0x00,
-        0x00,
-        0x00,
-        0x01,
-        0x00,
-        0x18,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x04,
-        0x00,
-        0x00,
-        0x00,
-        0x13,
-        0x0B,
-        0x00,
-        0x00,
-        0x13,
-        0x0B,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0xFF,
-        0xFF,
-        0xFF,
-        0x00,
-    ]
+# 1×1 24bpp BMP — PaddleOCR 모델 워밍업 전용 최소 입력
+WARMUP_IMAGE = bytes.fromhex(
+    "424d3a0000000000000036000000280000000100000001000000010018000000"
+    "000004000000130b0000130b00000000000000000000ffffff00"
 )
 
 
@@ -199,10 +142,24 @@ def predict_image(
     return detections, debug_detections
 
 
+def emit(obj: dict) -> None:
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
+def parse_request(line: str) -> tuple[int, str, str, float]:
+    request = json.loads(line)
+    return (
+        int(request["id"]),
+        request["source"],
+        request["image_path"],
+        float(request.get("score_thresh", 0.5)),
+    )
+
+
 def run_server() -> int:
     ocrs = {lang: build_ocr(lang) for lang in LANGS}
     warmup_models(ocrs)
-    print(json.dumps({"type": "ready", "langs": list(LANGS)}), flush=True)
+    emit({"type": "ready", "langs": list(LANGS)})
 
     for line in sys.stdin:
         line = line.strip()
@@ -210,44 +167,25 @@ def run_server() -> int:
             continue
 
         try:
-            request = json.loads(line)
-            request_id = int(request["id"])
-            source = request["source"]
-            image_path = request["image_path"]
-            score_thresh = float(request.get("score_thresh", 0.5))
+            request_id, source, image_path, score_thresh = parse_request(line)
         except Exception as exc:
-            print(
-                json.dumps(
-                    {"type": "error", "id": -1, "message": f"invalid request: {exc}"}
-                ),
-                flush=True,
-            )
+            emit({"type": "error", "id": -1, "message": f"invalid request: {exc}"})
             continue
 
         try:
             detections, debug_detections = predict_image(
                 ocrs[source], image_path, score_thresh
             )
-            print(
-                json.dumps(
-                    {
-                        "type": "result",
-                        "id": request_id,
-                        "detections": detections,
-                        "debug_detections": debug_detections,
-                    },
-                    ensure_ascii=False,
-                ),
-                flush=True,
+            emit(
+                {
+                    "type": "result",
+                    "id": request_id,
+                    "detections": detections,
+                    "debug_detections": debug_detections,
+                }
             )
         except Exception as exc:
-            print(
-                json.dumps(
-                    {"type": "error", "id": request_id, "message": str(exc)},
-                    ensure_ascii=False,
-                ),
-                flush=True,
-            )
+            emit({"type": "error", "id": request_id, "message": str(exc)})
 
     return 0
 
@@ -255,15 +193,7 @@ def run_server() -> int:
 def run_single(image_path: str, source: str, score_thresh: float) -> int:
     ocr = build_ocr(source)
     detections, debug_detections = predict_image(ocr, image_path, score_thresh)
-    print(
-        json.dumps(
-            {
-                "detections": detections,
-                "debug_detections": debug_detections,
-            },
-            ensure_ascii=False,
-        )
-    )
+    emit({"detections": detections, "debug_detections": debug_detections})
     return 0
 
 

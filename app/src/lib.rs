@@ -21,8 +21,27 @@ use crate::platform::{install_capture_shortcut, prepare_overlay_for_capture};
 use crate::popup::calc_popup_pos;
 use crate::services::{
     call_ai, capture_screen, crop_capture_to_region, offset_ocr_result, run_ocr, CaptureInfo,
+    OcrResultPayload,
 };
 use crate::window::{focus_active_window, focus_window, hide_window};
+
+fn emit_ocr_outcome(app: &AppHandle, result: Result<OcrResultPayload, String>) {
+    let Some(overlay) = app.get_webview_window("overlay") else {
+        if let Err(e) = &result {
+            eprintln!("OCR 오류 (오버레이 없음): {e}");
+        }
+        return;
+    };
+    match result {
+        Ok(ocr) => {
+            let _ = overlay.emit("ocr_result", &ocr);
+        }
+        Err(e) => {
+            eprintln!("OCR 오류: {e}");
+            let _ = overlay.emit("ocr_error", &e);
+        }
+    }
+}
 
 struct PendingCapture(Mutex<Option<CaptureInfo>>);
 
@@ -117,16 +136,7 @@ async fn run_region_ocr(
     .await
     .map_err(|e| format!("OCR 스레드 오류: {e}"))?;
 
-    let overlay = app
-        .get_webview_window("overlay")
-        .ok_or("오버레이 창을 찾을 수 없음".to_string())?;
-    match result {
-        Ok(ocr) => overlay
-            .emit("ocr_result", &ocr)
-            .map_err(|e| e.to_string())?,
-        Err(err) => overlay.emit("ocr_error", &err).map_err(|e| e.to_string())?,
-    }
-
+    emit_ocr_outcome(&app, result);
     Ok(())
 }
 
@@ -165,19 +175,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         .map_err(|e| format!("OCR 스레드 오류: {e}"))
         .and_then(|r| r)
     };
-    match ocr_result {
-        Ok(ocr) => {
-            if let Some(overlay) = app.get_webview_window("overlay") {
-                let _ = overlay.emit("ocr_result", &ocr);
-            }
-        }
-        Err(e) => {
-            eprintln!("OCR 오류: {e}");
-            if let Some(overlay) = app.get_webview_window("overlay") {
-                let _ = overlay.emit("ocr_error", &e);
-            }
-        }
-    }
+    emit_ocr_outcome(&app, ocr_result);
 
     busy.store(false, Ordering::SeqCst);
 }
