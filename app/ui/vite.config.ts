@@ -16,6 +16,7 @@ export default defineConfig({
         popup: resolve(__dirname, "src/popup.html"),
         overlay: resolve(__dirname, "src/overlay.html"),
         loading: resolve(__dirname, "src/loading.html"),
+        settings: resolve(__dirname, "src/settings.html"),
       },
     },
   },

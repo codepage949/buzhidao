@@ -62,6 +62,22 @@
         "width": 420,
         "height": 500,
         "resizable": false
+      },
+      {
+        "label": "settings",
+        "title": "설정",
+        "url": "settings.html",
+        "visible": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "center": true,
+        "width": 720,
+        "height": 760,
+        "minWidth": 640,
+        "minHeight": 680,
+        "resizable": true
       }
     ],
     "security": {

@@ -3,13 +3,14 @@ mod ocr;
 mod platform;
 mod popup;
 mod services;
+mod settings;
 mod window;
 
 use std::env;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, RwLock,
 };
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
@@ -24,6 +25,45 @@ use crate::services::{
     OcrResultPayload,
 };
 use crate::window::{focus_active_window, focus_window, hide_window};
+
+type SharedConfig = Arc<RwLock<Config>>;
+
+struct SettingsState {
+    store: SettingsStore,
+}
+
+enum SettingsStore {
+    Env(PathBuf),
+}
+
+#[derive(serde::Serialize)]
+struct SaveUserSettingsResult {
+    restart_required: bool,
+}
+
+#[derive(serde::Serialize)]
+struct GetUserSettingsResult {
+    settings: settings::UserSettings,
+    show_ocr_server_device: bool,
+}
+
+fn config_snapshot(app: &AppHandle) -> Result<Config, String> {
+    let shared = app.state::<SharedConfig>();
+    shared
+        .read()
+        .map_err(|_| "설정 상태 읽기 잠금 실패".to_string())
+        .map(|guard| guard.clone())
+}
+
+fn show_ocr_device_setting(cfg: &Config) -> bool {
+    cfg.ocr_server_executable
+        .to_ascii_lowercase()
+        .contains("gpu")
+}
+
+fn is_development_build() -> bool {
+    cfg!(debug_assertions)
+}
 
 fn emit_ocr_outcome(app: &AppHandle, result: Result<OcrResultPayload, String>) {
     let Some(overlay) = app.get_webview_window("overlay") else {
@@ -90,7 +130,7 @@ async fn select_text(
     let _ = popup.show();
     let _ = popup.set_focus();
 
-    let cfg = app.state::<Config>().inner().clone();
+    let cfg = config_snapshot(&app)?;
     let client = app.state::<reqwest::Client>().inner().clone();
     match call_ai(&client, &cfg, &text).await {
         Ok(result) => {
@@ -128,6 +168,39 @@ async fn close_popup(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_user_settings(app: AppHandle) -> Result<GetUserSettingsResult, String> {
+    let cfg = config_snapshot(&app)?;
+    Ok(GetUserSettingsResult {
+        settings: settings::UserSettings::from_config(&cfg),
+        show_ocr_server_device: show_ocr_device_setting(&cfg),
+    })
+}
+
+#[tauri::command]
+fn save_user_settings(
+    app: AppHandle,
+    settings: settings::UserSettings,
+) -> Result<SaveUserSettingsResult, String> {
+    let settings = settings.validate();
+    let state = app.state::<SettingsState>();
+    match &state.store {
+        SettingsStore::Env(path) => settings::save_to_env_file(path, &settings)?,
+    }
+
+    let shared = app.state::<SharedConfig>();
+    let restart_required = {
+        let mut guard = shared
+            .write()
+            .map_err(|_| "설정 상태 쓰기 잠금 실패".to_string())?;
+        let restart_required = guard.ocr_server_device != settings.ocr_server_device;
+        settings.apply_to(&mut guard);
+        restart_required
+    };
+
+    Ok(SaveUserSettingsResult { restart_required })
+}
+
+#[tauri::command]
 async fn run_region_ocr(
     app: AppHandle,
     rect_x: f64,
@@ -151,7 +224,7 @@ async fn run_region_ocr(
         )?
     };
 
-    let cfg = app.state::<Config>().inner().clone();
+    let cfg = config_snapshot(&app)?;
     let engine = app.state::<Arc<OcrBackend>>().inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut ocr = run_ocr(&cfg, &engine, cropped, orig_width, orig_height)?;
@@ -192,7 +265,14 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     let engine = app.state::<Arc<OcrBackend>>().inner().clone();
 
     // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
-    let cfg = app.state::<Config>().inner().clone();
+    let cfg = match config_snapshot(&app) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("설정 스냅샷 오류: {e}");
+            busy.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
     let (orig_width, orig_height) = (info.orig_width, info.orig_height);
     let ocr_result = {
         let img = info.image;
@@ -316,7 +396,8 @@ fn register_linux_portal_host_app() -> Result<(), String> {
 // ── 앱 진입점 ─────────────────────────────────────────────────────────────────
 
 pub fn run() {
-    let config = Config::from_env().expect("설정 로드 실패");
+    const ENV_EXAMPLE: &str = include_str!("../.env.example");
+    let development_build = is_development_build();
     // 시작 시 warmup이 끝날 때까지 핫키를 차단하기 위해 busy=true로 초기화.
     let busy = Arc::new(AtomicBool::new(true));
 
@@ -324,7 +405,6 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_active_window(app);
         }))
-        .manage(config)
         .manage(reqwest::Client::new())
         .manage(PendingCapture(Mutex::new(None)))
         .manage(OcrJobGen(AtomicU64::new(0)))
@@ -332,8 +412,30 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             let _ = register_linux_portal_host_app();
 
+            let env_path = if development_build {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env")
+            } else {
+                let path = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|e| format!("앱 데이터 경로 확인 실패: {e}"))?
+                    .join(".env");
+                settings::materialize_env_file(&path, ENV_EXAMPLE)?;
+                path
+            };
+            app.manage(SettingsState {
+                store: SettingsStore::Env(env_path.clone()),
+            });
+
+            let config = if development_build {
+                Config::from_env().map_err(|e| format!("개발 설정(.env) 로드 실패: {e}"))?
+            } else {
+                Config::from_env_file(&env_path)?
+            };
+            app.manage(Arc::new(RwLock::new(config.clone())));
+
             // OCR 엔진 초기화
-            let mut config = app.state::<Config>().inner().clone();
+            let mut config = config;
             config.ocr_server_executable = resolve_ocr_server_executable(
                 app.path().resource_dir().ok(),
                 &config.ocr_server_executable,
@@ -341,8 +443,11 @@ pub fn run() {
             let backend = OcrBackend::new(&config).expect("OCR 엔진 초기화 실패");
             app.manage(Arc::new(backend));
             // 시스템 트레이: 종료 메뉴
+            let settings_item = MenuItemBuilder::new("설정…").id("settings").build(app)?;
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&quit_item]).build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&settings_item, &quit_item])
+                .build()?;
             let tray_rgba = image::load_from_memory(include_bytes!("../icons/tray-icon.png"))
                 .expect("트레이 아이콘 로드 실패")
                 .into_rgba8();
@@ -352,8 +457,15 @@ pub fn run() {
                 .icon(tray_icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| {
-                    if event.id() == "quit" {
-                        app.exit(0);
+                    match event.id().as_ref() {
+                        "settings" => {
+                            if let Some(window) = app.get_webview_window("settings") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
                     }
                 })
                 .build(app)?;
@@ -390,7 +502,9 @@ pub fn run() {
             select_text,
             close_overlay,
             close_popup,
-            run_region_ocr
+            run_region_ocr,
+            get_user_settings,
+            save_user_settings
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");
@@ -398,7 +512,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_pending_capture, resolve_ocr_server_executable, should_emit_ocr};
+    use super::{
+        clone_pending_capture, resolve_ocr_server_executable, should_emit_ocr,
+        show_ocr_device_setting,
+    };
+    use crate::config::Config;
     use crate::services::CaptureInfo;
     use image::{DynamicImage, Rgba, RgbaImage};
     use std::fs;
@@ -508,5 +626,28 @@ mod tests {
         assert_eq!(PathBuf::from(resolved), exe_path);
 
         let _ = fs::remove_dir_all(resource_dir);
+    }
+
+    #[test]
+    fn gpu_실행파일일때만_장치_설정을_노출한다() {
+        let mut cfg = Config {
+            source: "en".to_string(),
+            score_thresh: 0.5,
+            ocr_debug_trace: false,
+            ocr_server_device: "cpu".to_string(),
+            ai_gateway_api_key: "k".to_string(),
+            ai_gateway_model: "m".to_string(),
+            system_prompt: "p".to_string(),
+            word_gap: 20,
+            line_gap: 15,
+            ocr_server_executable: "../ocr_server/dist/ocr_server/ocr_server.exe".to_string(),
+            ocr_server_startup_timeout_secs: 30,
+            ocr_server_request_timeout_secs: 20,
+        };
+        assert!(!show_ocr_device_setting(&cfg));
+
+        cfg.ocr_server_executable =
+            "../ocr_server/dist/ocr_server_gpu/ocr_server_gpu.exe".to_string();
+        assert!(show_ocr_device_setting(&cfg));
     }
 }

@@ -1,5 +1,13 @@
 const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
-const DEFAULT_SCORE_THRESH: f32 = 0.5;
+const DEFAULT_SOURCE: &str = "en";
+const DEFAULT_SCORE_THRESH: f32 = 0.8;
+const DEFAULT_OCR_DEBUG_TRACE: bool = false;
+const DEFAULT_OCR_SERVER_DEVICE: &str = "cpu";
+const DEFAULT_AI_GATEWAY_MODEL: &str = "alibaba/qwen-3-32b";
+const DEFAULT_WORD_GAP: i32 = 20;
+const DEFAULT_LINE_GAP: i32 = 15;
+const DEFAULT_OCR_SERVER_STARTUP_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS: u64 = 20;
 pub(crate) const OCR_SERVER_RESIZE_WIDTH: u32 = 1024;
 
 #[derive(Clone)]
@@ -21,27 +29,56 @@ pub(crate) struct Config {
 impl Config {
     pub(crate) fn from_env() -> Result<Self, String> {
         let _ = dotenvy::dotenv();
+        Self::from_loaded_env()
+    }
+
+    pub(crate) fn from_env_file(path: &std::path::Path) -> Result<Self, String> {
+        dotenvy::from_path_override(path)
+            .map_err(|e| format!("환경 파일 로드 실패 ({}): {e}", path.display()))?;
+        Self::from_loaded_env()
+    }
+
+    fn from_loaded_env() -> Result<Self, String> {
         Ok(Self {
-            source: env_or("SOURCE", "en"),
-            score_thresh: env_or("SCORE_THRESH", "0.5")
+            source: env_or("SOURCE", DEFAULT_SOURCE),
+            score_thresh: env_or("SCORE_THRESH", "0.8")
                 .parse()
                 .unwrap_or(DEFAULT_SCORE_THRESH),
-            ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false").parse().unwrap_or(false),
+            ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false")
+                .parse()
+                .unwrap_or(DEFAULT_OCR_DEBUG_TRACE),
             ocr_server_device: parse_ocr_server_device(optional_env("OCR_SERVER_DEVICE"))?,
             ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
             ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
             system_prompt: load_system_prompt()?,
-            word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(20),
-            line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(15),
+            word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(DEFAULT_WORD_GAP),
+            line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(DEFAULT_LINE_GAP),
             ocr_server_executable: optional_env("OCR_SERVER_EXECUTABLE")
                 .unwrap_or_else(default_ocr_server_executable),
             ocr_server_startup_timeout_secs: env_or("OCR_SERVER_STARTUP_TIMEOUT_SECS", "30")
                 .parse()
-                .unwrap_or(30),
+                .unwrap_or(DEFAULT_OCR_SERVER_STARTUP_TIMEOUT_SECS),
             ocr_server_request_timeout_secs: env_or("OCR_SERVER_REQUEST_TIMEOUT_SECS", "20")
                 .parse()
-                .unwrap_or(20),
+                .unwrap_or(DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS),
         })
+    }
+
+    pub(crate) fn default_runtime() -> Self {
+        Self {
+            source: DEFAULT_SOURCE.to_string(),
+            score_thresh: DEFAULT_SCORE_THRESH,
+            ocr_debug_trace: DEFAULT_OCR_DEBUG_TRACE,
+            ocr_server_device: DEFAULT_OCR_SERVER_DEVICE.to_string(),
+            ai_gateway_api_key: String::new(),
+            ai_gateway_model: DEFAULT_AI_GATEWAY_MODEL.to_string(),
+            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            word_gap: DEFAULT_WORD_GAP,
+            line_gap: DEFAULT_LINE_GAP,
+            ocr_server_executable: default_ocr_server_executable(),
+            ocr_server_startup_timeout_secs: DEFAULT_OCR_SERVER_STARTUP_TIMEOUT_SECS,
+            ocr_server_request_timeout_secs: DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS,
+        }
     }
 }
 
@@ -89,6 +126,9 @@ fn parse_ocr_server_device(value: Option<String>) -> Result<String, String> {
 }
 
 fn load_system_prompt() -> Result<String, String> {
+    if let Some(prompt) = optional_env("SYSTEM_PROMPT") {
+        return Ok(prompt.replace("\\n", "\n"));
+    }
     match std::env::var("SYSTEM_PROMPT_PATH") {
         Ok(path) => std::fs::read_to_string(&path)
             .map_err(|e| format!("시스템 프롬프트 로드 실패 ({path}): {e}")),
@@ -101,7 +141,10 @@ fn load_system_prompt() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_system_prompt, optional_env, parse_ocr_server_device, DEFAULT_SYSTEM_PROMPT};
+    use super::{
+        load_system_prompt, optional_env, parse_ocr_server_device, Config, DEFAULT_AI_GATEWAY_MODEL,
+        DEFAULT_SCORE_THRESH, DEFAULT_SOURCE, DEFAULT_SYSTEM_PROMPT,
+    };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,6 +188,23 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_환경변수가_있으면_파일보다_우선한다() {
+        let _guard = env_lock().lock().unwrap();
+        let path = temp_prompt_path();
+        std::fs::write(&path, "파일 프롬프트").expect("테스트 프롬프트 파일 작성 실패");
+        std::env::set_var("SYSTEM_PROMPT_PATH", &path);
+        std::env::set_var("SYSTEM_PROMPT", "첫 줄\\n둘째 줄");
+
+        let prompt = load_system_prompt().expect("인라인 프롬프트를 읽어야 한다");
+
+        assert_eq!(prompt, "첫 줄\n둘째 줄");
+
+        std::env::remove_var("SYSTEM_PROMPT");
+        std::env::remove_var("SYSTEM_PROMPT_PATH");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn optional_env는_앞뒤_공백을_제거한다() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var("TEST_OPTIONAL_ENV", "  value  ");
@@ -169,5 +229,16 @@ mod tests {
         let err = parse_ocr_server_device(Some("cuda".to_string()))
             .expect_err("잘못된 장치는 실패해야 한다");
         assert!(err.contains("OCR_SERVER_DEVICE"));
+    }
+
+    #[test]
+    fn runtime_기본값은_하드코딩된_설정을_사용한다() {
+        let cfg = Config::default_runtime();
+
+        assert_eq!(cfg.source, DEFAULT_SOURCE);
+        assert!((cfg.score_thresh - DEFAULT_SCORE_THRESH).abs() < f32::EPSILON);
+        assert_eq!(cfg.ai_gateway_api_key, "");
+        assert_eq!(cfg.ai_gateway_model, DEFAULT_AI_GATEWAY_MODEL);
+        assert_eq!(cfg.system_prompt, DEFAULT_SYSTEM_PROMPT);
     }
 }

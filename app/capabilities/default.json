@@ -1,8 +1,9 @@
 {
 "identifier": "default",
   "description": "Default capability for all windows",
-  "windows": ["overlay", "popup", "loading"],
+  "windows": ["overlay", "popup", "loading", "settings"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-hide"
   ]
 }
