@@ -6,6 +6,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+DEFAULT_MAX_PART_BYTES = 1_900 * 1024 * 1024
+
 
 def archive_basename(
     version: str, os_name: str, arch: str, flavor: str, component: str
@@ -45,6 +47,30 @@ def create_archive(source_dir: Path, archive_path: Path) -> None:
     raise ValueError(f"지원하지 않는 아카이브 형식: {archive_path}")
 
 
+def split_archive(archive_path: Path, max_part_bytes: int) -> list[Path]:
+    if max_part_bytes <= 0:
+        raise ValueError("max_part_bytes는 0보다 커야 합니다.")
+
+    if archive_path.stat().st_size <= max_part_bytes:
+        return [archive_path]
+
+    parts: list[Path] = []
+    with archive_path.open("rb") as source:
+        index = 1
+        while True:
+            chunk = source.read(max_part_bytes)
+            if not chunk:
+                break
+
+            part_path = archive_path.with_name(f"{archive_path.name}.part{index:03d}")
+            part_path.write_bytes(chunk)
+            parts.append(part_path)
+            index += 1
+
+    archive_path.unlink()
+    return parts
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -60,6 +86,9 @@ def parse_args() -> argparse.Namespace:
     make_archive.add_argument("--format", choices=["zip", "tar.gz"], required=True)
     make_archive.add_argument(
         "--component", choices=["app", "ocr-server"], required=True
+    )
+    make_archive.add_argument(
+        "--max-part-bytes", type=int, default=DEFAULT_MAX_PART_BYTES
     )
 
     return parser.parse_args()
@@ -86,7 +115,8 @@ def main() -> int:
     extension = ".zip" if args.format == "zip" else ".tar.gz"
     archive_path = dist_dir / f"{stem}{extension}"
     create_archive(layout_dir, archive_path)
-    print(archive_path)
+    for path in split_archive(archive_path, args.max_part_bytes):
+        print(path)
     return 0
 
 

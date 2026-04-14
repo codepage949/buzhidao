@@ -115,4 +115,7 @@ OCR 서버 아카이브에는 `ocr_server/` onedir 산출물 전체만 포함한
 
 - Windows/Linux GPU 빌드에서 단일 배포 아카이브가 GitHub Release 파일당 2 GiB 제한을 넘을 수 있다.
 - 이를 피하기 위해 릴리즈 패키징을 `app`/`ocr-server` 2개 자산으로 분리한다.
-- 워크플로우 artifact 업로드와 release 자산 게시도 분리 자산 이름 기준으로 갱신한다.
+- 워크플로우 artifact 업로드도 `matrix`당 하나가 아니라 `app`/`ocr-server`별 개별 artifact로 나눠
+  다운로드 단계에서 다시 합쳐지지 않도록 갱신한다.
+- 그래도 개별 아카이브가 2 GiB를 넘는 경우를 대비해 패키징 단계에서 자동 분할한다.
+- 분할 파일명은 원본 뒤에 `.part001`, `.part002`를 붙이며, 릴리즈 업로드는 이 조각 파일도 함께 포함한다.

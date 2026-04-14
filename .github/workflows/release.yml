@@ -195,15 +195,22 @@ jobs:
             --component ocr-server \
             --format "${{ matrix.archive_format }}"
 
-      - name: Upload release archives
+      - name: Upload app archive
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.label }}
+          name: ${{ matrix.label }}-app
           path: |
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.zip
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.zip
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.tar.gz
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.tar.gz
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.zip*
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.tar.gz*
+          if-no-files-found: error
+
+      - name: Upload OCR server archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.label }}-ocr-server
+          path: |
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.zip*
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.tar.gz*
           if-no-files-found: error
 
   release:
@@ -257,7 +264,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t assets < <(find release-assets -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
+          mapfile -t assets < <(find release-assets -type f \( -name '*.zip' -o -name '*.zip.part*' -o -name '*.tar.gz' -o -name '*.tar.gz.part*' \) | sort)
           gh release create "${{ inputs.version }}" \
             "${assets[@]}" \
             --title "${{ inputs.version }}" \

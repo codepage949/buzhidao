@@ -5,10 +5,12 @@ import zipfile
 from pathlib import Path
 
 from scripts.release_helper import (
+    DEFAULT_MAX_PART_BYTES,
     archive_basename,
     create_archive,
     prepare_app_layout,
     prepare_ocr_server_layout,
+    split_archive,
 )
 
 
@@ -65,6 +67,32 @@ class ReleaseHelperTest(unittest.TestCase):
             with tarfile.open(archive_path, "r:gz") as tf:
                 names = sorted(member.name for member in tf.getmembers())
                 self.assertIn("./dir/file.txt", names)
+
+    def test_작은_아카이브는_분할하지_않는다(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive_path = Path(td) / "out.zip"
+            archive_path.write_bytes(b"hello")
+
+            parts = split_archive(archive_path, DEFAULT_MAX_PART_BYTES)
+
+            self.assertEqual(parts, [archive_path])
+            self.assertTrue(archive_path.exists())
+
+    def test_큰_아카이브는_part_파일로_자동_분할한다(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive_path = Path(td) / "out.tar.gz"
+            original = b"abcdefghij"
+            archive_path.write_bytes(original)
+
+            parts = split_archive(archive_path, 4)
+
+            self.assertFalse(archive_path.exists())
+            self.assertEqual(
+                [part.name for part in parts],
+                ["out.tar.gz.part001", "out.tar.gz.part002", "out.tar.gz.part003"],
+            )
+            rebuilt = b"".join(part.read_bytes() for part in parts)
+            self.assertEqual(rebuilt, original)
 
 
 if __name__ == "__main__":
