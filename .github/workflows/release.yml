@@ -23,7 +23,7 @@ jobs:
       release_sha: ${{ steps.release_sha.outputs.value }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -90,7 +90,7 @@ jobs:
             cargo_features: "--features gpu"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
 
@@ -98,7 +98,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -108,7 +108,7 @@ jobs:
           version: "latest"
 
       - name: Setup Deno
-        uses: denoland/setup-deno@v1
+        uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
 
@@ -124,6 +124,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
+            libpipewire-0.3-dev \
             libxdo-dev \
             libx11-dev \
             libxtst-dev \
@@ -131,7 +132,11 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libxcursor-dev \
-            libxfixes-dev
+            libxfixes-dev \
+            libgl1 \
+            libgeos-dev \
+            libgomp1 \
+            libglib2.0-0
 
       - name: Build OCR server
         shell: bash
@@ -176,7 +181,7 @@ jobs:
             --format "${{ matrix.archive_format }}"
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.label }}
           path: |
@@ -192,13 +197,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_sha }}
 
       - name: Download archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: release-assets
 

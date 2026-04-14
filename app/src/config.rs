@@ -2,8 +2,6 @@ const DEFAULT_SYSTEM_PROMPT: &str = "다음을 한국어로 번역하세요.";
 const DEFAULT_SOURCE: &str = "en";
 const DEFAULT_SCORE_THRESH: f32 = 0.8;
 const DEFAULT_OCR_DEBUG_TRACE: bool = false;
-const DEFAULT_OCR_SERVER_DEVICE: &str = "cpu";
-const DEFAULT_AI_GATEWAY_MODEL: &str = "alibaba/qwen-3-32b";
 const DEFAULT_WORD_GAP: i32 = 20;
 const DEFAULT_LINE_GAP: i32 = 15;
 const DEFAULT_OCR_SERVER_STARTUP_TIMEOUT_SECS: u64 = 30;
@@ -62,23 +60,6 @@ impl Config {
                 .parse()
                 .unwrap_or(DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS),
         })
-    }
-
-    pub(crate) fn default_runtime() -> Self {
-        Self {
-            source: DEFAULT_SOURCE.to_string(),
-            score_thresh: DEFAULT_SCORE_THRESH,
-            ocr_debug_trace: DEFAULT_OCR_DEBUG_TRACE,
-            ocr_server_device: DEFAULT_OCR_SERVER_DEVICE.to_string(),
-            ai_gateway_api_key: String::new(),
-            ai_gateway_model: DEFAULT_AI_GATEWAY_MODEL.to_string(),
-            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
-            word_gap: DEFAULT_WORD_GAP,
-            line_gap: DEFAULT_LINE_GAP,
-            ocr_server_executable: default_ocr_server_executable(),
-            ocr_server_startup_timeout_secs: DEFAULT_OCR_SERVER_STARTUP_TIMEOUT_SECS,
-            ocr_server_request_timeout_secs: DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS,
-        }
     }
 }
 
@@ -142,8 +123,8 @@ fn load_system_prompt() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_system_prompt, optional_env, parse_ocr_server_device, Config, DEFAULT_AI_GATEWAY_MODEL,
-        DEFAULT_SCORE_THRESH, DEFAULT_SOURCE, DEFAULT_SYSTEM_PROMPT,
+        default_ocr_server_executable, load_system_prompt, optional_env, parse_ocr_server_device,
+        Config, DEFAULT_SCORE_THRESH, DEFAULT_SOURCE, DEFAULT_SYSTEM_PROMPT,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -232,13 +213,43 @@ mod tests {
     }
 
     #[test]
-    fn runtime_기본값은_하드코딩된_설정을_사용한다() {
-        let cfg = Config::default_runtime();
+    fn 기본_ocr_server_실행파일_경로는_플랫폼에_따라_결정된다() {
+        let path = default_ocr_server_executable();
+        if cfg!(target_os = "windows") {
+            assert!(path.ends_with("ocr_server.exe"));
+        } else {
+            assert!(path.ends_with("ocr_server"));
+        }
+    }
+
+    #[test]
+    fn from_env_file은_누락값에_기본값을_적용한다() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "buzhidao-config-env-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("시계가 UNIX_EPOCH 이전입니다")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("임시 디렉토리 생성 실패");
+        let env_path = dir.join(".env");
+        std::fs::write(
+            &env_path,
+            "AI_GATEWAY_API_KEY=key\nAI_GATEWAY_MODEL=model\n",
+        )
+        .expect(".env 작성 실패");
+
+        let cfg = Config::from_env_file(&env_path).expect("환경 파일 로드 실패");
 
         assert_eq!(cfg.source, DEFAULT_SOURCE);
         assert!((cfg.score_thresh - DEFAULT_SCORE_THRESH).abs() < f32::EPSILON);
-        assert_eq!(cfg.ai_gateway_api_key, "");
-        assert_eq!(cfg.ai_gateway_model, DEFAULT_AI_GATEWAY_MODEL);
+        assert_eq!(cfg.ocr_server_device, "cpu");
+        assert_eq!(cfg.ai_gateway_api_key, "key");
+        assert_eq!(cfg.ai_gateway_model, "model");
         assert_eq!(cfg.system_prompt, DEFAULT_SYSTEM_PROMPT);
+
+        let _ = std::fs::remove_file(&env_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

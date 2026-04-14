@@ -50,6 +50,12 @@ macOS는 이번 범위에서 제외한다.
 - GPU: 기존 `uv sync --group build --group gpu` 사용
 - `tool.uv.environments`를 Windows/Linux amd64로 확장해 하나의 `uv.lock`으로 두 플랫폼을 함께 잠근다.
 
+### Linux runner 의존성
+
+- Tauri/Linux 빌드를 위해 `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf` 설치
+- `pipewire` 크레이트 빌드를 위해 `libpipewire-0.3-dev` 설치
+- OCR/Paddle 런타임 보조 패키지로 `libgl1`, `libgeos-dev`, `libgomp1`, `libglib2.0-0` 설치
+
 ### 아카이브 구성
 
 - Windows: `.zip`
@@ -70,6 +76,12 @@ macOS는 이번 범위에서 제외한다.
 - 아카이브 파일명 생성
 - 배포 디렉토리 레이아웃 준비
 - `.zip` / `.tar.gz` 생성
+
+### Actions 런타임
+
+- Node 20 deprecation 경고를 피하기 위해 `actions/checkout`, `actions/setup-python`,
+  `actions/upload-artifact`, `actions/download-artifact`, `denoland/setup-deno`를
+  최신 major로 올린다.
 
 ## 검증 계획
 

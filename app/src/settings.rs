@@ -1,6 +1,6 @@
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct UserSettings {
@@ -40,10 +40,6 @@ impl UserSettings {
         self
     }
 
-    pub(crate) fn sanitized(self) -> Self {
-        self.validate()
-    }
-
     pub(crate) fn apply_to(&self, cfg: &mut Config) {
         cfg.source = self.source.clone();
         cfg.score_thresh = self.score_thresh;
@@ -53,12 +49,6 @@ impl UserSettings {
         cfg.system_prompt = self.system_prompt.clone();
         cfg.word_gap = self.word_gap;
         cfg.line_gap = self.line_gap;
-    }
-
-    pub(crate) fn bootstrap_defaults(cfg: &Config) -> Self {
-        let mut settings = Self::from_config(cfg);
-        settings.ai_gateway_api_key.clear();
-        settings
     }
 }
 
@@ -78,28 +68,6 @@ fn normalize_device(value: &str) -> String {
     } else {
         "cpu".to_string()
     }
-}
-
-pub(crate) fn settings_file_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("settings.json")
-}
-
-pub(crate) fn load_from_file(path: &Path) -> Option<UserSettings> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<UserSettings>(&text)
-        .ok()
-        .map(UserSettings::validate)
-}
-
-pub(crate) fn save_to_file(path: &Path, settings: &UserSettings) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("설정 디렉토리 생성 실패: {e}"))?;
-    }
-    let json = serde_json::to_string_pretty(settings)
-        .map_err(|e| format!("설정 직렬화 실패: {e}"))?;
-    std::fs::write(path, json).map_err(|e| format!("설정 저장 실패: {e}"))?;
-    Ok(())
 }
 
 pub(crate) fn save_to_env_file(path: &Path, settings: &UserSettings) -> Result<(), String> {
@@ -268,14 +236,14 @@ mod tests {
             score_thresh: 2.5,
             ..UserSettings::from_config(&base_config())
         }
-        .sanitized();
+        .validate();
         assert!((s.score_thresh - 1.0).abs() < f32::EPSILON);
 
         let s2 = UserSettings {
             score_thresh: -1.0,
             ..UserSettings::from_config(&base_config())
         }
-        .sanitized();
+        .validate();
         assert!((s2.score_thresh - 0.0).abs() < f32::EPSILON);
     }
 
@@ -286,14 +254,14 @@ mod tests {
             source: "  CH  ".to_string(),
             ..UserSettings::from_config(&cfg)
         }
-        .sanitized();
+        .validate();
         assert_eq!(a.source, "ch");
 
         let b = UserSettings {
             source: "japanese".to_string(),
             ..UserSettings::from_config(&cfg)
         }
-        .sanitized();
+        .validate();
         assert_eq!(b.source, "en");
     }
 
@@ -304,14 +272,14 @@ mod tests {
             ocr_server_device: " GpU ".to_string(),
             ..UserSettings::from_config(&cfg)
         }
-        .sanitized();
+        .validate();
         assert_eq!(a.ocr_server_device, "gpu");
 
         let b = UserSettings {
             ocr_server_device: "cuda".to_string(),
             ..UserSettings::from_config(&cfg)
         }
-        .sanitized();
+        .validate();
         assert_eq!(b.ocr_server_device, "cpu");
     }
 
@@ -322,7 +290,7 @@ mod tests {
             line_gap: -7,
             ..UserSettings::from_config(&base_config())
         }
-        .sanitized();
+        .validate();
         assert_eq!(s.word_gap, 0);
         assert_eq!(s.line_gap, 0);
     }
@@ -353,39 +321,6 @@ mod tests {
         // 인프라 필드는 건드리지 않음
         assert_eq!(cfg.ocr_server_executable, "x");
         assert_eq!(cfg.ocr_server_startup_timeout_secs, 30);
-    }
-
-    #[test]
-    fn save_후_load하면_같은_설정이_복원된다() {
-        let dir = std::env::temp_dir().join(format!(
-            "buzhidao-settings-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = settings_file_path(&dir);
-        let s = UserSettings::from_config(&base_config());
-        save_to_file(&path, &s).expect("저장 실패");
-        let loaded = load_from_file(&path).expect("로드 실패");
-        assert_eq!(loaded, s);
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn 파일이_없으면_load는_none을_반환한다() {
-        let path = std::env::temp_dir()
-            .join("buzhidao-settings-does-not-exist-xyz.json");
-        let _ = std::fs::remove_file(&path);
-        assert!(load_from_file(&path).is_none());
-    }
-
-    #[test]
-    fn bootstrap_defaults는_api_key를_비운다() {
-        let settings = UserSettings::bootstrap_defaults(&base_config());
-        assert_eq!(settings.ai_gateway_api_key, "");
-        assert_eq!(settings.ai_gateway_model, "m");
     }
 
     #[test]
