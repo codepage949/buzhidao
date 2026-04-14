@@ -95,6 +95,21 @@ impl PythonSidecarEngine {
         })
     }
 
+    pub(crate) fn warmup(&self) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "OCR server 상태 잠금 실패".to_string())?;
+        ensure_running(
+            &mut state.running,
+            &self.executable,
+            &self.device,
+            self.startup_timeout,
+            "warmup",
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn run_image(
         &self,
         img: &DynamicImage,

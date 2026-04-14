@@ -12,6 +12,10 @@ impl OcrBackend {
         Ok(Self(PythonSidecarEngine::new(cfg)?))
     }
 
+    pub(crate) fn warmup(&self) -> Result<(), String> {
+        self.0.warmup()
+    }
+
     pub(crate) fn resize_width_before_ocr(&self) -> u32 {
         OCR_SERVER_RESIZE_WIDTH
     }

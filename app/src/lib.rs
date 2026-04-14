@@ -289,7 +289,8 @@ fn register_linux_portal_host_app() -> Result<(), String> {
 
 pub fn run() {
     let config = Config::from_env().expect("설정 로드 실패");
-    let busy = Arc::new(AtomicBool::new(false));
+    // 시작 시 warmup이 끝날 때까지 핫키를 차단하기 위해 busy=true로 초기화.
+    let busy = Arc::new(AtomicBool::new(true));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -332,6 +333,25 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     handle_prtsc(app, busy).await;
                 });
+            });
+
+            // 백그라운드에서 OCR 사이드카를 선행 시작(Python 쪽 warmup_models 포함)한 뒤
+            // 로딩 창을 숨기고 핫키 busy 플래그를 해제한다.
+            let warmup_handle = app.handle().clone();
+            let warmup_busy = busy.clone();
+            tauri::async_runtime::spawn(async move {
+                let engine = warmup_handle.state::<Arc<OcrBackend>>().inner().clone();
+                let warmup_result = tauri::async_runtime::spawn_blocking(move || engine.warmup())
+                    .await
+                    .map_err(|e| format!("OCR warmup 스레드 오류: {e}"))
+                    .and_then(|r| r);
+                if let Err(e) = warmup_result {
+                    eprintln!("OCR warmup 실패: {e}");
+                }
+                if let Some(loading) = warmup_handle.get_webview_window("loading") {
+                    let _ = loading.close();
+                }
+                warmup_busy.store(false, Ordering::SeqCst);
             });
 
             Ok(())

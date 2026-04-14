@@ -37,6 +37,20 @@
         "y": 0
       },
       {
+        "label": "loading",
+        "title": "buzhidao",
+        "url": "loading.html",
+        "visible": true,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "width": 300,
+        "height": 90,
+        "resizable": false
+      },
+      {
         "label": "popup",
         "title": "번역",
         "url": "popup.html",
