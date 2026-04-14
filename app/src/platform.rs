@@ -216,15 +216,17 @@ fn is_linux_capture_shortcut_event(code: &EventCode, value: i32) -> bool {
         )
 }
 
-fn show_overlay(_app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo) {
+fn show_overlay(app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo) {
     let _ = overlay.emit("overlay_show", ());
     let _ = overlay.set_ignore_cursor_events(false);
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
     #[cfg(target_os = "linux")]
     {
         let monitor = app
             .available_monitors()
             .ok()
-            .and_then(|mut monitors| monitors.drain(..).next())
+            .and_then(|monitors| monitors.into_iter().next())
             .or_else(|| app.primary_monitor().ok().flatten());
 
         if let Some(monitor) = monitor {

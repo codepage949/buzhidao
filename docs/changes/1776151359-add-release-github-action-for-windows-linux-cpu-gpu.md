@@ -86,4 +86,20 @@ macOS는 이번 범위에서 제외한다.
 ## 검증 계획
 
 - `python -m unittest scripts.test_release_helper`
-- `python -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml', 'r', encoding='utf-8'))"`
+- `deno eval "import { parse } from 'jsr:@std/yaml'; parse(await Deno.readTextFile('.github/workflows/release.yml')); console.log('ok');"`
+- `cargo test --manifest-path app/Cargo.toml`
+
+## 후속 수정
+
+### Linux 앱 빌드 실패 수정
+
+- `app/src/platform.rs`의 `show_overlay` Linux 분기에서 `_app`으로 선언한 인자를
+  `app`으로 사용하고 있어 Linux 빌드가 실패했다.
+- `available_monitors()` 결과는 `drain(..)` 대신 `into_iter().next()`로 첫 모니터를
+  가져오도록 정리해 타입 추론 오류도 함께 제거한다.
+- 모니터를 찾지 못한 경우에는 기존 캡처 영역 기준 배치 로직으로 폴백한다.
+
+### Actions Node 런타임 경고 정리
+
+- GitHub Actions 경고에 맞춰 `astral-sh/setup-uv`를 Node 24 대응 메이저로 올린다.
+- 현재 공식 저장소 README 기준 최신 사용 예시는 `astral-sh/setup-uv@v8`이다.
