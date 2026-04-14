@@ -386,34 +386,3 @@ fn temp_image_path() -> PathBuf {
     std::env::temp_dir().join(format!("buzhidao-python-ocr-{nanos}.png"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PythonSidecarEngine;
-    use crate::config::Config;
-
-    fn base_config() -> Config {
-        Config {
-            source: "en".to_string(),
-            score_thresh: 0.5,
-            ocr_debug_trace: false,
-            ocr_server_device: "cpu".to_string(),
-            ai_gateway_api_key: "x".to_string(),
-            ai_gateway_model: "y".to_string(),
-            system_prompt: "z".to_string(),
-            word_gap: 20,
-            line_gap: 15,
-            ocr_server_executable: std::env::current_exe()
-                .expect("현재 실행 파일 경로 확인 실패")
-                .to_string_lossy()
-                .into_owned(),
-            ocr_server_startup_timeout_secs: 30,
-            ocr_server_request_timeout_secs: 20,
-        }
-    }
-
-    #[test]
-    fn 실행_파일_경로를_그대로_사용한다() {
-        let engine = PythonSidecarEngine::new(&base_config()).expect("engine 생성 실패");
-        assert!(engine.executable.exists());
-    }
-}

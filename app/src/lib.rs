@@ -472,6 +472,27 @@ mod tests {
     }
 
     #[test]
+    fn configured_경로가_실존하면_그대로_반환한다() {
+        let dir = temp_path("buzhidao-ocr-server-configured");
+        fs::create_dir_all(&dir).expect("configured 디렉토리 생성 실패");
+        let exe_path = dir.join("ocr_server.exe");
+        fs::write(&exe_path, b"exe").expect("configured exe 생성 실패");
+
+        let resolved =
+            resolve_ocr_server_executable(Some(dir.clone()), &exe_path.to_string_lossy());
+
+        assert_eq!(PathBuf::from(resolved), exe_path);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resource_dir가_없으면_configured_경로를_그대로_반환한다() {
+        let resolved = resolve_ocr_server_executable(None, "missing/ocr_server.exe");
+        assert_eq!(resolved, "missing/ocr_server.exe");
+    }
+
+    #[test]
     fn 번들_리소스에_onedir_폴더가_있으면_그_안의_ocr_server를_사용한다() {
         let resource_dir = temp_path("buzhidao-ocr-server-onedir-resource");
         let onedir_dir = resource_dir.join("ocr_server");

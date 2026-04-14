@@ -221,6 +221,53 @@ mod tests {
     }
 
     #[test]
+    fn 선택_영역이_이미지_크기_0이면_실패한다() {
+        let err = selection_rect_to_image_rect(0, 100, 0.0, 0.0, 10.0, 10.0, 10.0, 10.0)
+            .expect_err("이미지 크기 0이면 실패해야 한다");
+        assert!(err.contains("캡처 이미지 크기"));
+    }
+
+    #[test]
+    fn 선택_영역이_뷰포트_크기_0_이하이면_실패한다() {
+        let err = selection_rect_to_image_rect(100, 100, 0.0, 0.0, 10.0, 10.0, 0.0, 10.0)
+            .expect_err("뷰포트 크기 0이면 실패해야 한다");
+        assert!(err.contains("뷰포트"));
+    }
+
+    #[test]
+    fn 음수_크기의_선택_영역은_좌상단으로_정규화된다() {
+        let rect = selection_rect_to_image_rect(100, 100, 80.0, 60.0, -40.0, -30.0, 100.0, 100.0)
+            .expect("음수 선택 영역 처리 실패");
+        assert_eq!(rect, (40, 30, 40, 30));
+    }
+
+    #[test]
+    fn 뷰포트_밖_선택은_이미지_범위_안으로_클램프된다() {
+        let rect = selection_rect_to_image_rect(200, 200, -50.0, -50.0, 400.0, 400.0, 100.0, 100.0)
+            .expect("클램프 실패");
+        assert_eq!(rect, (0, 0, 200, 200));
+    }
+
+    #[test]
+    fn 이미지_폭이_최대_이하이면_원본을_유지한다() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(512, 256, Rgba([9, 9, 9, 9])));
+        let (out, sx, sy) = resize_image_to_max_width(img, 1024);
+        assert_eq!(out.width(), 512);
+        assert_eq!(out.height(), 256);
+        assert!((sx - 1.0).abs() < f64::EPSILON);
+        assert!((sy - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn 최대_폭이_0이면_이미지를_그대로_반환한다() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(2000, 1000, Rgba([0, 0, 0, 0])));
+        let (out, sx, sy) = resize_image_to_max_width(img, 0);
+        assert_eq!(out.width(), 2000);
+        assert!((sx - 1.0).abs() < f64::EPSILON);
+        assert!((sy - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn 축소된_ocr_좌표를_원본_배율로_복원한다() {
         let mut payload = OcrResultPayload {
             detections: vec![(vec![[10.0, 20.0], [30.0, 40.0]], "text".to_string())],

@@ -13,22 +13,6 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-try:
-    from paddleocr import PaddleOCR
-except ModuleNotFoundError as exc:
-    missing = exc.name or "unknown"
-    print(
-        (
-            f"missing python dependency: {missing}\n"
-            "Install OCR server dependencies with uv before building.\n"
-            "Example: uv sync --group build"
-        ),
-        file=sys.stderr,
-        flush=True,
-    )
-    raise
-
-
 LANGS = ("en", "ch")
 
 
@@ -82,7 +66,26 @@ def resolve_ocr_device() -> str:
     return device
 
 
-def build_ocr(lang: str) -> PaddleOCR:
+def _load_paddleocr():
+    try:
+        from paddleocr import PaddleOCR
+    except ModuleNotFoundError as exc:
+        missing = exc.name or "unknown"
+        print(
+            (
+                f"missing python dependency: {missing}\n"
+                "Install OCR server dependencies with uv before building.\n"
+                "Example: uv sync --group build"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    return PaddleOCR
+
+
+def build_ocr(lang: str):
+    PaddleOCR = _load_paddleocr()
     return PaddleOCR(
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
@@ -92,7 +95,7 @@ def build_ocr(lang: str) -> PaddleOCR:
     )
 
 
-def warmup_models(ocrs: dict[str, PaddleOCR]) -> None:
+def warmup_models(ocrs: dict) -> None:
     with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as fp:
         fp.write(WARMUP_IMAGE)
         warmup_path = fp.name
@@ -111,7 +114,7 @@ def warmup_models(ocrs: dict[str, PaddleOCR]) -> None:
 
 
 def predict_image(
-    ocr: PaddleOCR,
+    ocr,
     image_path: str,
     score_thresh: float,
 ) -> tuple[list[dict], list[dict]]:

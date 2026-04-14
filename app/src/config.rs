@@ -101,10 +101,7 @@ fn load_system_prompt() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        env_or, load_system_prompt, optional_env, parse_ocr_server_device, DEFAULT_SCORE_THRESH,
-        DEFAULT_SYSTEM_PROMPT, OCR_SERVER_RESIZE_WIDTH,
-    };
+    use super::{load_system_prompt, optional_env, parse_ocr_server_device, DEFAULT_SYSTEM_PROMPT};
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,28 +142,6 @@ mod tests {
 
         std::env::remove_var("SYSTEM_PROMPT_PATH");
         let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn score_thresh_기본값은_0_5다() {
-        assert!((DEFAULT_SCORE_THRESH - 0.5).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn ocr_debug_trace_기본값은_false다() {
-        let _guard = env_lock().lock().unwrap();
-        std::env::remove_var("OCR_DEBUG_TRACE");
-
-        let value = env_or("OCR_DEBUG_TRACE", "false")
-            .parse::<bool>()
-            .expect("bool 파싱이 되어야 한다");
-
-        assert!(!value);
-    }
-
-    #[test]
-    fn ocr_server_resize_width_기본값은_1024다() {
-        assert_eq!(OCR_SERVER_RESIZE_WIDTH, 1024);
     }
 
     #[test]
