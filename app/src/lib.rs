@@ -481,7 +481,7 @@ mod tests {
 
         let resolved = resolve_ocr_server_executable(
             Some(resource_dir.clone()),
-            "../ocr_server/dist/ocr_server/ocr_server.exe",
+            "missing-nonexistent/ocr_server/ocr_server.exe",
         );
 
         assert_eq!(PathBuf::from(resolved), exe_path);
