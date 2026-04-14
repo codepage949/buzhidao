@@ -28,7 +28,10 @@ gpu = [
 
 [tool.uv]
 package = false
-environments = ["sys_platform == 'win32' and python_full_version >= '3.11'"]
+environments = [
+  "python_full_version >= '3.11' and sys_platform == 'win32' and platform_machine == 'AMD64'",
+  "python_full_version >= '3.11' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 
 [tool.uv.sources]
 paddlepaddle-gpu = { index = "paddle-cu118" }

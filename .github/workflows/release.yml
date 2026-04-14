@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "릴리즈 버전 태그 (예: v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release_sha.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag does not already exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if git rev-parse "refs/tags/$version" >/dev/null 2>&1; then
+            echo "Tag already exists: $version" >&2
+            exit 1
+          fi
+
+      - name: Capture release SHA
+        id: release_sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: windows
+            arch: amd64
+            flavor: cpu
+            label: windows-amd64-cpu
+            runner: windows-latest
+            archive_format: zip
+            app_binary: app/target/release/buzhidao.exe
+            ocr_binary: ocr_server/dist/ocr_server/ocr_server.exe
+            cargo_features: ""
+          - os_name: windows
+            arch: amd64
+            flavor: gpu
+            label: windows-amd64-gpu
+            runner: windows-latest
+            archive_format: zip
+            app_binary: app/target/release/buzhidao.exe
+            ocr_binary: ocr_server/dist/ocr_server/ocr_server.exe
+            cargo_features: "--features gpu"
+          - os_name: linux
+            arch: amd64
+            flavor: cpu
+            label: linux-amd64-cpu
+            runner: ubuntu-24.04
+            archive_format: tar.gz
+            app_binary: app/target/release/buzhidao
+            ocr_binary: ocr_server/dist/ocr_server/ocr_server
+            cargo_features: ""
+          - os_name: linux
+            arch: amd64
+            flavor: gpu
+            label: linux-amd64-gpu
+            runner: ubuntu-24.04
+            archive_format: tar.gz
+            app_binary: app/target/release/buzhidao
+            ocr_binary: ocr_server/dist/ocr_server/ocr_server
+            cargo_features: "--features gpu"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v2.x
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libx11-dev \
+            libxtst-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxfixes-dev
+
+      - name: Build OCR server
+        shell: bash
+        working-directory: ocr_server
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.flavor }}" = "gpu" ]; then
+            uv sync -p 3.13 --group build --group gpu
+            uv run --group build --group gpu python build.py --gpu
+          else
+            uv sync -p 3.13 --group build --group cpu
+            uv run --group build --group cpu python build.py
+          fi
+
+      - name: Build frontend
+        shell: bash
+        working-directory: app/ui
+        run: |
+          set -euo pipefail
+          deno install
+          deno task build
+
+      - name: Build desktop app
+        shell: bash
+        working-directory: app
+        run: |
+          set -euo pipefail
+          cargo build --release ${{ matrix.cargo_features }}
+
+      - name: Prepare archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_helper.py make-archive \
+            --version "${{ inputs.version }}" \
+            --os "${{ matrix.os_name }}" \
+            --arch "${{ matrix.arch }}" \
+            --flavor "${{ matrix.flavor }}" \
+            --app-binary "${{ matrix.app_binary }}" \
+            --ocr-server-dir "$(dirname "${{ matrix.ocr_binary }}")" \
+            --dist-dir dist \
+            --format "${{ matrix.archive_format }}"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: |
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}.zip
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          previous_tag="$(git tag --sort=-creatordate | head -n 1 || true)"
+          {
+            echo "# ${version}"
+            echo
+            if [ -n "$previous_tag" ]; then
+              echo "## Changes since ${previous_tag}"
+              echo
+              git log --oneline "${previous_tag}..HEAD"
+            else
+              echo "## Changes"
+              echo
+              git log --oneline
+            fi
+          } > RELEASE_NOTES.md
+
+      - name: Create tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "${{ inputs.version }}" "${{ needs.prepare.outputs.release_sha }}"
+          git push origin "${{ inputs.version }}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-assets -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
+          gh release create "${{ inputs.version }}" \
+            "${assets[@]}" \
+            --title "${{ inputs.version }}" \
+            --notes-file RELEASE_NOTES.md
