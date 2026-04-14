@@ -8,7 +8,7 @@ mod window;
 use std::env;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -41,6 +41,27 @@ fn emit_ocr_outcome(app: &AppHandle, result: Result<OcrResultPayload, String>) {
             let _ = overlay.emit("ocr_error", &e);
         }
     }
+}
+
+/// OCR 세대 토큰. 진행 중 OCR이 끝난 시점에 세대가 바뀌었으면 결과를 버린다.
+struct OcrJobGen(AtomicU64);
+
+/// OCR 시작 세대(`my_gen`)와 현재 세대(`current_gen`)가 같으면 emit해도 된다.
+fn should_emit_ocr(my_gen: u64, current_gen: u64) -> bool {
+    my_gen == current_gen
+}
+
+fn emit_ocr_outcome_if_current(
+    app: &AppHandle,
+    my_gen: u64,
+    result: Result<OcrResultPayload, String>,
+) {
+    let current = app.state::<OcrJobGen>().0.load(Ordering::SeqCst);
+    if !should_emit_ocr(my_gen, current) {
+        eprintln!("[OCR] 취소된 작업의 결과를 버립니다 (my_gen={my_gen}, current={current})");
+        return;
+    }
+    emit_ocr_outcome(app, result);
 }
 
 struct PendingCapture(Mutex<Option<CaptureInfo>>);
@@ -93,6 +114,8 @@ async fn close_overlay(app: AppHandle) -> Result<(), String> {
     hide_window(&app, "overlay");
     hide_window(&app, "popup");
     clear_pending_capture(&app);
+    // 진행 중 OCR 작업의 결과를 무효화한다.
+    app.state::<OcrJobGen>().0.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
@@ -114,6 +137,8 @@ async fn run_region_ocr(
     viewport_w: f64,
     viewport_h: f64,
 ) -> Result<(), String> {
+    // 영역 선택 OCR은 같은 세션의 연속이므로 세대를 bump하지 않고 스냅샷만 기록.
+    let my_gen = app.state::<OcrJobGen>().0.load(Ordering::SeqCst);
     let (cropped, offset_x, offset_y, orig_width, orig_height) = {
         let pending = app.state::<PendingCapture>();
         let guard = pending
@@ -136,7 +161,7 @@ async fn run_region_ocr(
     .await
     .map_err(|e| format!("OCR 스레드 오류: {e}"))?;
 
-    emit_ocr_outcome(&app, result);
+    emit_ocr_outcome_if_current(&app, my_gen, result);
     Ok(())
 }
 
@@ -146,6 +171,9 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     if busy.swap(true, Ordering::SeqCst) {
         return;
     }
+
+    // 새 캡처 세션 시작: 세대 번호를 bump해 진행 중인 이전 작업을 무효화한다.
+    let my_gen = app.state::<OcrJobGen>().0.fetch_add(1, Ordering::SeqCst) + 1;
 
     // 1. 스크린샷 캡처
     let info = match capture_screen(&app).await {
@@ -175,7 +203,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         .map_err(|e| format!("OCR 스레드 오류: {e}"))
         .and_then(|r| r)
     };
-    emit_ocr_outcome(&app, ocr_result);
+    emit_ocr_outcome_if_current(&app, my_gen, ocr_result);
 
     busy.store(false, Ordering::SeqCst);
 }
@@ -299,6 +327,7 @@ pub fn run() {
         .manage(config)
         .manage(reqwest::Client::new())
         .manage(PendingCapture(Mutex::new(None)))
+        .manage(OcrJobGen(AtomicU64::new(0)))
         .setup(move |app| {
             #[cfg(target_os = "linux")]
             let _ = register_linux_portal_host_app();
@@ -369,7 +398,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_pending_capture, resolve_ocr_server_executable};
+    use super::{clone_pending_capture, resolve_ocr_server_executable, should_emit_ocr};
     use crate::services::CaptureInfo;
     use image::{DynamicImage, Rgba, RgbaImage};
     use std::fs;
@@ -402,6 +431,17 @@ mod tests {
         assert_eq!(second.orig_height, 4);
         assert_eq!(pending.as_ref().map(|v| v.x), Some(10));
         assert_eq!(pending.as_ref().map(|v| v.y), Some(20));
+    }
+
+    #[test]
+    fn 세대가_같으면_ocr_결과를_emit한다() {
+        assert!(should_emit_ocr(7, 7));
+    }
+
+    #[test]
+    fn 세대가_다르면_ocr_결과를_버린다() {
+        assert!(!should_emit_ocr(7, 8));
+        assert!(!should_emit_ocr(0, 1));
     }
 
     #[test]
