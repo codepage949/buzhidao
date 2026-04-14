@@ -4,31 +4,39 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from scripts.release_helper import archive_basename, create_archive, prepare_layout
+from scripts.release_helper import (
+    archive_basename,
+    create_archive,
+    prepare_app_layout,
+    prepare_ocr_server_layout,
+)
 
 
 class ReleaseHelperTest(unittest.TestCase):
     def test_아카이브_이름은_플랫폼과_플레이버를_포함한다(self):
-        name = archive_basename("v1.2.3", "windows", "amd64", "gpu")
-        self.assertEqual(name, "buzhidao-v1.2.3-windows-amd64-gpu")
+        name = archive_basename("v1.2.3", "windows", "amd64", "gpu", "ocr-server")
+        self.assertEqual(name, "buzhidao-v1.2.3-windows-amd64-gpu-ocr-server")
 
     def test_레이아웃_준비는_앱과_ocr_server를_복사한다(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             app_binary = root / "buzhidao.exe"
             ocr_server_dir = root / "dist" / "ocr_server"
-            output_dir = root / "out"
+            app_output_dir = root / "app-out"
+            ocr_output_dir = root / "ocr-out"
 
             app_binary.write_bytes(b"app")
             (ocr_server_dir / "_internal").mkdir(parents=True)
             (ocr_server_dir / "ocr_server.exe").write_bytes(b"ocr")
             (ocr_server_dir / "_internal" / "data.txt").write_text("x", encoding="utf-8")
 
-            prepare_layout(app_binary, ocr_server_dir, output_dir)
+            prepare_app_layout(app_binary, app_output_dir)
+            prepare_ocr_server_layout(ocr_server_dir, ocr_output_dir)
 
-            self.assertTrue((output_dir / "buzhidao.exe").exists())
-            self.assertTrue((output_dir / "ocr_server" / "ocr_server.exe").exists())
-            self.assertTrue((output_dir / "ocr_server" / "_internal" / "data.txt").exists())
+            self.assertTrue((app_output_dir / "buzhidao.exe").exists())
+            self.assertFalse((app_output_dir / "ocr_server").exists())
+            self.assertTrue((ocr_output_dir / "ocr_server" / "ocr_server.exe").exists())
+            self.assertTrue((ocr_output_dir / "ocr_server" / "_internal" / "data.txt").exists())
 
     def test_zip_아카이브를_생성한다(self):
         with tempfile.TemporaryDirectory() as td:

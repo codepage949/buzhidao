@@ -60,14 +60,15 @@ macOS는 이번 범위에서 제외한다.
 
 - Windows: `.zip`
 - Linux: 실행 권한 보존을 위해 `.tar.gz`
+- GitHub Release 파일당 2 GiB 제한을 피하기 위해 앱과 `ocr_server`를 별도 아카이브로 분리한다.
 
-아카이브 루트에는 아래를 포함한다.
+생성 자산은 아래 두 종류다.
 
-- `buzhidao(.exe)`
-- `ocr_server/` onedir 산출물 전체
+- `buzhidao-<version>-<os>-<arch>-<flavor>-app`
+- `buzhidao-<version>-<os>-<arch>-<flavor>-ocr-server`
 
-앱은 런타임에 `resource_dir/ocr_server/ocr_server(.exe)` 후보를 찾을 수 있으므로
-위 구조로 배포 아카이브를 맞춘다.
+앱 아카이브에는 `buzhidao(.exe)`만 포함하고,
+OCR 서버 아카이브에는 `ocr_server/` onedir 산출물 전체만 포함한다.
 
 ### 헬퍼 스크립트
 
@@ -109,3 +110,9 @@ macOS는 이번 범위에서 제외한다.
 
 - GitHub Actions 경고에 맞춰 `astral-sh/setup-uv`를 Node 24 대응 메이저로 올린다.
 - 현재 공식 저장소 README 기준 최신 사용 예시는 `astral-sh/setup-uv@v8.0.0`이다.
+
+### GPU 릴리즈 자산 크기 대응
+
+- Windows/Linux GPU 빌드에서 단일 배포 아카이브가 GitHub Release 파일당 2 GiB 제한을 넘을 수 있다.
+- 이를 피하기 위해 릴리즈 패키징을 `app`/`ocr-server` 2개 자산으로 분리한다.
+- 워크플로우 artifact 업로드와 release 자산 게시도 분리 자산 이름 기준으로 갱신한다.

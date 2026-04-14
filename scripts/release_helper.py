@@ -7,16 +7,24 @@ import zipfile
 from pathlib import Path
 
 
-def archive_basename(version: str, os_name: str, arch: str, flavor: str) -> str:
-    return f"buzhidao-{version}-{os_name}-{arch}-{flavor}"
+def archive_basename(
+    version: str, os_name: str, arch: str, flavor: str, component: str
+) -> str:
+    return f"buzhidao-{version}-{os_name}-{arch}-{flavor}-{component}"
 
 
-def prepare_layout(app_binary: Path, ocr_server_dir: Path, output_dir: Path) -> None:
+def prepare_app_layout(app_binary: Path, output_dir: Path) -> None:
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(app_binary, output_dir / app_binary.name)
+
+
+def prepare_ocr_server_layout(ocr_server_dir: Path, output_dir: Path) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy2(app_binary, output_dir / app_binary.name)
     shutil.copytree(ocr_server_dir, output_dir / "ocr_server")
 
 
@@ -50,6 +58,9 @@ def parse_args() -> argparse.Namespace:
     make_archive.add_argument("--ocr-server-dir", required=True)
     make_archive.add_argument("--dist-dir", required=True)
     make_archive.add_argument("--format", choices=["zip", "tar.gz"], required=True)
+    make_archive.add_argument(
+        "--component", choices=["app", "ocr-server"], required=True
+    )
 
     return parser.parse_args()
 
@@ -60,10 +71,18 @@ def main() -> int:
         raise ValueError(f"지원하지 않는 명령: {args.command}")
 
     dist_dir = Path(args.dist_dir)
-    layout_dir = dist_dir / f"{args.os_name}-{args.arch}-{args.flavor}"
-    prepare_layout(Path(args.app_binary), Path(args.ocr_server_dir), layout_dir)
+    layout_dir = (
+        dist_dir / f"{args.os_name}-{args.arch}-{args.flavor}-{args.component}"
+    )
 
-    stem = archive_basename(args.version, args.os_name, args.arch, args.flavor)
+    if args.component == "app":
+        prepare_app_layout(Path(args.app_binary), layout_dir)
+    else:
+        prepare_ocr_server_layout(Path(args.ocr_server_dir), layout_dir)
+
+    stem = archive_basename(
+        args.version, args.os_name, args.arch, args.flavor, args.component
+    )
     extension = ".zip" if args.format == "zip" else ".tar.gz"
     archive_path = dist_dir / f"{stem}{extension}"
     create_archive(layout_dir, archive_path)
@@ -73,4 +92,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -170,7 +170,7 @@ jobs:
           set -euo pipefail
           cargo build --release ${{ matrix.cargo_features }}
 
-      - name: Prepare archive
+      - name: Prepare archives
         shell: bash
         run: |
           set -euo pipefail
@@ -182,15 +182,28 @@ jobs:
             --app-binary "${{ matrix.app_binary }}" \
             --ocr-server-dir "$(dirname "${{ matrix.ocr_binary }}")" \
             --dist-dir dist \
+            --component app \
+            --format "${{ matrix.archive_format }}"
+          python scripts/release_helper.py make-archive \
+            --version "${{ inputs.version }}" \
+            --os "${{ matrix.os_name }}" \
+            --arch "${{ matrix.arch }}" \
+            --flavor "${{ matrix.flavor }}" \
+            --app-binary "${{ matrix.app_binary }}" \
+            --ocr-server-dir "$(dirname "${{ matrix.ocr_binary }}")" \
+            --dist-dir dist \
+            --component ocr-server \
             --format "${{ matrix.archive_format }}"
 
-      - name: Upload release archive
+      - name: Upload release archives
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.label }}
           path: |
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}.zip
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}.tar.gz
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.zip
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.zip
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.tar.gz
+            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.tar.gz
           if-no-files-found: error
 
   release:
