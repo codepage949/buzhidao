@@ -1,0 +1,14 @@
+{
+    "folders": [
+        {
+            "path": "app"
+        },
+        {
+            "path": "ocr_server"
+        },
+        {
+            "name": "workspace",
+            "path": "./"
+        }
+    ]
+}
