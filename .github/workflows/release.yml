@@ -272,8 +272,8 @@ jobs:
             echo
             echo "| 스크립트 | 대상 | 실행 방법 |"
             echo "|---------|------|----------|"
-            echo "| \`install-windows-amd64-cpu.ps1\` | Windows AMD64 CPU | PowerShell: \`.\\\`install-windows-amd64-cpu.ps1\` |"
-            echo "| \`install-windows-amd64-gpu.ps1\` | Windows AMD64 GPU | PowerShell: \`.\\\`install-windows-amd64-gpu.ps1\` |"
+            echo "| \`install-windows-amd64-cpu.ps1\` | Windows AMD64 CPU | PowerShell: \`.\\install-windows-amd64-cpu.ps1\` |"
+            echo "| \`install-windows-amd64-gpu.ps1\` | Windows AMD64 GPU | PowerShell: \`.\\install-windows-amd64-gpu.ps1\` |"
             echo "| \`install-linux-amd64-cpu.sh\` | Linux AMD64 CPU | \`bash install-linux-amd64-cpu.sh\` |"
             echo "| \`install-linux-amd64-gpu.sh\` | Linux AMD64 GPU | \`bash install-linux-amd64-gpu.sh\` |"
             echo
