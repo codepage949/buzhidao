@@ -8,6 +8,16 @@ const DEFAULT_OCR_SERVER_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS: u64 = 20;
 pub(crate) const OCR_SERVER_RESIZE_WIDTH: u32 = 1024;
 
+/// 플랫폼별 캡처 단축키 기본값 (Tauri Accelerator 문자열).
+/// 수식키 없는 PrtSc는 OS API가 전역 등록을 거부하므로 조합키를 기본으로 한다.
+pub(crate) fn default_capture_shortcut() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Cmd+Shift+A"
+    } else {
+        "Ctrl+Alt+A"
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) source: String,
@@ -22,6 +32,7 @@ pub(crate) struct Config {
     pub(crate) ocr_server_executable: String,
     pub(crate) ocr_server_startup_timeout_secs: u64,
     pub(crate) ocr_server_request_timeout_secs: u64,
+    pub(crate) capture_shortcut: String,
 }
 
 impl Config {
@@ -57,6 +68,8 @@ impl Config {
             ocr_server_request_timeout_secs: env_or("OCR_SERVER_REQUEST_TIMEOUT_SECS", "20")
                 .parse()
                 .unwrap_or(DEFAULT_OCR_SERVER_REQUEST_TIMEOUT_SECS),
+            capture_shortcut: optional_env("CAPTURE_SHORTCUT")
+                .unwrap_or_else(|| default_capture_shortcut().to_string()),
         })
     }
 }
@@ -124,9 +137,9 @@ fn load_system_prompt(path: &std::path::Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_ocr_server_executable, load_system_prompt, materialize_prompt_file, optional_env,
-        parse_ocr_server_device, Config, DEFAULT_SCORE_THRESH, DEFAULT_SOURCE,
-        DEFAULT_SYSTEM_PROMPT,
+        default_capture_shortcut, default_ocr_server_executable, load_system_prompt,
+        materialize_prompt_file, optional_env, parse_ocr_server_device, Config,
+        DEFAULT_SCORE_THRESH, DEFAULT_SOURCE, DEFAULT_SYSTEM_PROMPT,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -239,10 +252,21 @@ mod tests {
         assert_eq!(cfg.ai_gateway_api_key, "");
         assert_eq!(cfg.ai_gateway_model, "");
         assert_eq!(cfg.system_prompt, DEFAULT_SYSTEM_PROMPT);
+        assert_eq!(cfg.capture_shortcut, default_capture_shortcut());
 
         let _ = std::fs::remove_file(&env_path);
         let _ = std::fs::remove_file(&prompt_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn capture_shortcut_기본값은_플랫폼별로_다르다() {
+        let shortcut = default_capture_shortcut();
+        if cfg!(target_os = "macos") {
+            assert_eq!(shortcut, "Cmd+Shift+A");
+        } else {
+            assert_eq!(shortcut, "Ctrl+Alt+A");
+        }
     }
 
     #[test]

@@ -7,8 +7,8 @@
 ## 주요 기능
 
 ### 1. 원클릭 화면 캡처 및 OCR
-- 단축키: `PrintScreen` 전역 후킹
-- 동작: 어떤 화면에서든 `PrtSc`를 누르면 즉시 현재 화면을 캡처하고, 외부 `ocr_server` 실행 파일로 텍스트 영역을 검출합니다.
+- 단축키: 전역 조합키 기본값 `Ctrl+Alt+A` (macOS는 `Cmd+Shift+A`)
+- 동작: 어떤 화면에서든 캡처 단축키를 누르면 즉시 현재 화면을 캡처하고, 외부 `ocr_server` 실행 파일로 텍스트 영역을 검출합니다.
 
 ### 2. 인터랙티브 오버레이 UI
 - 동작: OCR 분석 결과가 화면 전체에 투명 오버레이로 표시됩니다.
@@ -62,6 +62,7 @@
 - `OCR_DEBUG_TRACE` (선택, 기본 `false`) : 터미널에 `rec` accept/reject 로그 출력, 오버레이에 raw 박스 표시
 - `OCR_SERVER_DEVICE` (선택, 기본 `cpu`) : `cpu` 또는 `gpu`
 - `OCR_SERVER_EXECUTABLE`
+- `CAPTURE_SHORTCUT` (선택) : Tauri Accelerator 문자열. 비우면 플랫폼 기본값 사용
 
 예시는 [app/.env.example](app/.env.example)에 있습니다.
 
@@ -125,7 +126,7 @@ cargo test
 
 ```bash
 cd app/ui
-deno task test
+deno test
 ```
 
 ---

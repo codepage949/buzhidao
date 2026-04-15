@@ -1,15 +1,15 @@
 use crate::services::CaptureInfo;
 use crate::window::{focus_window, hide_window, place_overlay_window};
-#[cfg(target_os = "linux")]
-use evdev_rs::{enums::EventCode, enums::EV_KEY, Device, ReadFlag};
-#[cfg(not(target_os = "linux"))]
-use rdev::{grab, Event, EventType, Key};
-use std::sync::atomic::AtomicBool as StdAtomicBool;
+use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+pub(crate) type CaptureShortcutHandler =
+    Arc<dyn Fn(AppHandle, Arc<AtomicBool>) + Send + Sync + 'static>;
 
 pub(crate) fn prepare_overlay_for_capture(app: &AppHandle, capture: &CaptureInfo) {
     hide_window(app, "popup");
@@ -20,107 +20,58 @@ pub(crate) fn prepare_overlay_for_capture(app: &AppHandle, capture: &CaptureInfo
     }
 }
 
+/// 플러그인으로 전역 단축키를 등록한다. 등록 실패 시 에러 로그만 남기고 앱은 계속 구동된다.
 pub(crate) fn install_capture_shortcut(
     app: AppHandle,
     busy: Arc<AtomicBool>,
-    on_trigger: impl Fn(AppHandle, Arc<AtomicBool>) + Send + Sync + 'static,
+    accelerator: &str,
+    on_trigger: CaptureShortcutHandler,
 ) {
-    #[cfg(target_os = "linux")]
-    {
-        install_linux_capture_shortcut(app, busy, on_trigger);
-        return;
+    if let Err(err) = register_capture_shortcut(&app, busy, accelerator, on_trigger) {
+        eprintln!("{err}");
+    }
+}
+
+pub(crate) fn replace_capture_shortcut(
+    app: &AppHandle,
+    busy: Arc<AtomicBool>,
+    current_accelerator: &str,
+    next_accelerator: &str,
+    on_trigger: CaptureShortcutHandler,
+) -> Result<(), String> {
+    if current_accelerator == next_accelerator {
+        return Ok(());
     }
 
-    #[cfg(not(target_os = "linux"))]
-    install_rdev_capture_shortcut(app, busy, on_trigger);
-}
+    let current_shortcut = Shortcut::from_str(current_accelerator).map_err(|err| {
+        format!(
+            "현재 캡처 단축키를 해제할 수 없습니다: {current_accelerator} ({err:?})"
+        )
+    })?;
 
-#[cfg(not(target_os = "linux"))]
-fn install_rdev_capture_shortcut(
-    app: AppHandle,
-    busy: Arc<AtomicBool>,
-    on_trigger: impl Fn(AppHandle, Arc<AtomicBool>) + Send + Sync + 'static,
-) {
-    let handle = app;
-    let callback = Arc::new(on_trigger);
-    let debug = shortcut_debug_enabled();
-    let warned = Arc::new(StdAtomicBool::new(false));
+    app.global_shortcut()
+        .unregister(current_shortcut)
+        .map_err(|err| {
+            format!(
+                "기존 캡처 단축키 해제 실패: {current_accelerator} ({err:?})"
+            )
+        })?;
 
-    std::thread::spawn(move || {
-        if debug {
-            eprintln!("[단축키] 전역 키 훅 스레드 시작");
-        }
-        if let Err(e) = grab(move |event: Event| {
-            log_shortcut_event(&event, debug);
-            if is_capture_shortcut_pressed(&event) {
-                if debug {
-                    eprintln!("[단축키] PrtSc 입력 감지");
-                }
-                if should_trigger_capture(&handle, &busy) {
-                    if debug {
-                        eprintln!("[단축키] 캡처 처리 시작");
-                    }
-                    callback(handle.clone(), busy.clone());
-                } else if debug && !warned.swap(true, Ordering::SeqCst) {
-                    eprintln!(
-                        "[단축키] PrtSc는 감지됐지만 busy=true 이거나 overlay가 이미 보여서 무시됨"
-                    );
-                }
-                return None;
+    match register_capture_shortcut(app, busy.clone(), next_accelerator, on_trigger.clone()) {
+        Ok(()) => Ok(()),
+        Err(register_err) => {
+            let rollback_result =
+                register_capture_shortcut(app, busy, current_accelerator, on_trigger);
+            match rollback_result {
+                Ok(()) => Err(format!(
+                    "새 캡처 단축키 등록 실패: {register_err}. 기존 단축키로 복구했습니다."
+                )),
+                Err(rollback_err) => Err(format!(
+                    "새 캡처 단축키 등록 실패: {register_err}. 기존 단축키 복구도 실패했습니다: {rollback_err}"
+                )),
             }
-            Some(event)
-        }) {
-            eprintln!("[단축키] 전역 키 훅 설치 실패: {e:?}");
         }
-    });
-}
-
-#[cfg(target_os = "linux")]
-fn install_linux_capture_shortcut(
-    app: AppHandle,
-    busy: Arc<AtomicBool>,
-    on_trigger: impl Fn(AppHandle, Arc<AtomicBool>) + Send + Sync + 'static,
-) {
-    let callback = Arc::new(on_trigger);
-    let debug = shortcut_debug_enabled();
-    let warned = Arc::new(StdAtomicBool::new(false));
-
-    std::thread::spawn(move || {
-        if debug {
-            eprintln!("[단축키] Linux evdev 단축키 스레드 시작");
-        }
-
-        let entries = match std::fs::read_dir("/dev/input") {
-            Ok(entries) => entries,
-            Err(err) => {
-                eprintln!("[단축키] /dev/input 조회 실패: {err}");
-                return;
-            }
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !name.starts_with("event") {
-                continue;
-            }
-
-            let handle = app.clone();
-            let busy = busy.clone();
-            let callback = callback.clone();
-            let warned = warned.clone();
-
-            std::thread::spawn(move || {
-                if let Err(err) =
-                    watch_linux_input_device(&path, handle, busy, callback, warned, debug)
-                {
-                    eprintln!("[단축키] 입력 장치 감시 실패 ({}): {err}", path.display());
-                }
-            });
-        }
-    });
+    }
 }
 
 fn shortcut_debug_enabled() -> bool {
@@ -130,90 +81,63 @@ fn shortcut_debug_enabled() -> bool {
     )
 }
 
-#[cfg(not(target_os = "linux"))]
-fn log_shortcut_event(event: &Event, debug: bool) {
-    if !debug {
-        return;
-    }
-
-    match event.event_type {
-        EventType::KeyPress(key) | EventType::KeyRelease(key) => {
-            eprintln!(
-                "[단축키][debug] key={key:?} type={:?} name={:?}",
-                event.event_type, event.name
-            );
-        }
-        _ => {}
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn watch_linux_input_device(
-    path: &std::path::Path,
-    app: AppHandle,
+fn register_capture_shortcut(
+    app: &AppHandle,
     busy: Arc<AtomicBool>,
-    callback: Arc<impl Fn(AppHandle, Arc<AtomicBool>) + Send + Sync + 'static>,
-    warned: Arc<StdAtomicBool>,
-    debug: bool,
-) -> std::io::Result<()> {
-    let file = std::fs::File::open(path)?;
-    let mut device = Device::new().ok_or_else(|| std::io::Error::other("evdev init failed"))?;
-    device.set_fd(file)?;
+    accelerator: &str,
+    on_trigger: CaptureShortcutHandler,
+) -> Result<(), String> {
+    let debug = shortcut_debug_enabled();
+    let shortcut = Shortcut::from_str(accelerator).map_err(|err| {
+        format!(
+            "[단축키] 단축키 파싱 실패: accelerator={accelerator:?} err={err:?} — 캡처 단축키가 동작하지 않습니다"
+        )
+    })?;
 
-    if !device.has(&evdev_rs::enums::EventType::EV_KEY) {
-        return Ok(());
-    }
+    let callback = on_trigger;
+    let handler_shortcut = shortcut;
+    let handler_busy = busy.clone();
+    let handler_app = app.clone();
+    let accelerator_owned = accelerator.to_string();
+    let accelerator_for_handler = accelerator_owned.clone();
+
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, received, event| {
+            if received != &handler_shortcut {
+                return;
+            }
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            if debug {
+                eprintln!("[단축키] {accelerator_for_handler} 감지");
+            }
+            if !should_trigger_capture(&handler_app, &handler_busy) {
+                if debug {
+                    eprintln!("[단축키] busy=true 이거나 overlay가 이미 보여서 무시됨");
+                }
+                return;
+            }
+            let app = handler_app.clone();
+            let busy = handler_busy.clone();
+            let callback = callback.clone();
+            tauri::async_runtime::spawn(async move {
+                callback(app, busy);
+            });
+        })
+        .map_err(|err| {
+            format!(
+                "[단축키] 단축키 등록 실패: accelerator={accelerator_owned:?} err={err:?}\n\
+                 ├─ Linux Wayland에서는 전역 단축키가 차단될 수 있습니다.\n\
+                 └─ 다른 앱이 이미 같은 단축키를 선점했을 수 있습니다."
+            )
+        })?;
 
     if debug {
-        let device_name = device.name().unwrap_or("<unknown>");
-        eprintln!(
-            "[단축키][debug] 감시 시작: {} ({device_name})",
-            path.display()
-        );
+        eprintln!("[단축키] {accelerator_owned} 등록 완료");
     }
 
-    loop {
-        let (_, event) = match device.next_event(ReadFlag::NORMAL | ReadFlag::BLOCKING) {
-            Ok(event) => event,
-            Err(err) => {
-                return Err(std::io::Error::other(err));
-            }
-        };
-
-        if debug {
-            eprintln!(
-                "[단축키][debug] evdev path={} code={:?} value={}",
-                path.display(),
-                event.event_code,
-                event.value
-            );
-        }
-
-        if is_linux_capture_shortcut_event(&event.event_code, event.value) {
-            if debug {
-                eprintln!("[단축키] PrtSc/SysRq 입력 감지");
-            }
-            if should_trigger_capture(&app, &busy) {
-                if debug {
-                    eprintln!("[단축키] 캡처 처리 시작");
-                }
-                callback(app.clone(), busy.clone());
-            } else if debug && !warned.swap(true, Ordering::SeqCst) {
-                eprintln!(
-                    "[단축키] PrtSc/SysRq는 감지됐지만 busy=true 이거나 overlay가 이미 보여서 무시됨"
-                );
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn is_linux_capture_shortcut_event(code: &EventCode, value: i32) -> bool {
-    value != 0
-        && matches!(
-            code,
-            EventCode::EV_KEY(EV_KEY::KEY_PRINT) | EventCode::EV_KEY(EV_KEY::KEY_SYSRQ)
-        )
+    Ok(())
 }
 
 fn show_overlay(app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo) {
@@ -263,16 +187,6 @@ fn show_overlay(app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo)
     let _ = overlay.set_fullscreen(true);
 }
 
-#[cfg(not(target_os = "linux"))]
-fn is_capture_shortcut_pressed(event: &Event) -> bool {
-    match event.event_type {
-        EventType::KeyPress(Key::PrintScreen) => true,
-        #[cfg(target_os = "linux")]
-        EventType::KeyPress(Key::Unknown(99)) => true,
-        _ => false,
-    }
-}
-
 fn should_trigger_capture(app: &AppHandle, busy: &Arc<AtomicBool>) -> bool {
     !overlay_visible(app) && !busy.load(Ordering::SeqCst)
 }
@@ -285,49 +199,18 @@ fn overlay_visible(app: &AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(target_os = "linux"))]
-    use super::is_capture_shortcut_pressed;
-    #[cfg(target_os = "linux")]
-    use evdev_rs::enums::{EventCode, EV_KEY};
-    #[cfg(not(target_os = "linux"))]
-    use rdev::{Event, EventType, Key};
+    use super::*;
+    use std::str::FromStr;
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
-    fn 캡처_단축키는_print_screen_누름만_감지한다() {
-        let key_down = Event {
-            time: std::time::SystemTime::now(),
-            name: None,
-            event_type: EventType::KeyPress(Key::PrintScreen),
-        };
-        let key_up = Event {
-            time: std::time::SystemTime::now(),
-            name: None,
-            event_type: EventType::KeyRelease(Key::PrintScreen),
-        };
-
-        assert!(is_capture_shortcut_pressed(&key_down));
-        assert!(!is_capture_shortcut_pressed(&key_up));
+    fn 기본_capture_shortcut_accelerator는_파싱된다() {
+        assert!(Shortcut::from_str(crate::config::default_capture_shortcut()).is_ok());
     }
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
-    fn 캡처_단축키는_다른_키를_무시한다() {
-        let event = Event {
-            time: std::time::SystemTime::now(),
-            name: None,
-            event_type: EventType::KeyPress(Key::KeyA),
-        };
-
-        assert!(!is_capture_shortcut_pressed(&event));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn 캡처_단축키는_linux_sysrq_키코드도_감지한다() {
-        assert!(super::is_linux_capture_shortcut_event(
-            &EventCode::EV_KEY(EV_KEY::KEY_SYSRQ),
-            1
-        ));
+    fn 사용자_지정_accelerator_예시가_파싱된다() {
+        for acc in ["Ctrl+Alt+A", "Ctrl+Shift+Space", "Cmd+Shift+A", "Alt+F4"] {
+            assert!(Shortcut::from_str(acc).is_ok(), "파싱 실패: {acc}");
+        }
     }
 }

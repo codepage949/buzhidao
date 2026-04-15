@@ -1,6 +1,8 @@
-use crate::config::Config;
+use crate::config::{default_capture_shortcut, Config};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::str::FromStr;
+use tauri_plugin_global_shortcut::Shortcut;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct UserSettings {
@@ -12,6 +14,7 @@ pub(crate) struct UserSettings {
     pub system_prompt: String,
     pub word_gap: i32,
     pub line_gap: i32,
+    pub capture_shortcut: String,
 }
 
 impl UserSettings {
@@ -25,6 +28,7 @@ impl UserSettings {
             system_prompt: cfg.system_prompt.clone(),
             word_gap: cfg.word_gap,
             line_gap: cfg.line_gap,
+            capture_shortcut: cfg.capture_shortcut.clone(),
         }
     }
 
@@ -37,6 +41,7 @@ impl UserSettings {
         self.ai_gateway_api_key = self.ai_gateway_api_key.trim().to_string();
         self.ai_gateway_model = self.ai_gateway_model.trim().to_string();
         self.system_prompt = self.system_prompt.trim().to_string();
+        self.capture_shortcut = normalize_capture_shortcut(&self.capture_shortcut);
         self
     }
 
@@ -49,6 +54,7 @@ impl UserSettings {
         cfg.system_prompt = self.system_prompt.clone();
         cfg.word_gap = self.word_gap;
         cfg.line_gap = self.line_gap;
+        cfg.capture_shortcut = self.capture_shortcut.clone();
     }
 }
 
@@ -90,6 +96,25 @@ fn normalize_device(value: &str) -> String {
     } else {
         "cpu".to_string()
     }
+}
+
+/// 빈 문자열이면 플랫폼 기본값으로 복원한다. 그 외에는 trim만 수행한다.
+/// Accelerator 유효성은 플러그인 등록 시점에 검증된다.
+fn normalize_capture_shortcut(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default_capture_shortcut().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub(crate) fn validate_capture_shortcut(value: &str) -> Result<(), String> {
+    Shortcut::from_str(value).map(|_| ()).map_err(|err| {
+        format!(
+            "캡처 단축키 형식이 올바르지 않습니다. 예: Ctrl+Alt+A, Cmd+Shift+A"
+        )
+    })
 }
 
 pub(crate) fn save_to_env_file(path: &Path, settings: &UserSettings) -> Result<(), String> {
@@ -170,7 +195,7 @@ fn merge_env_example_with_existing(env_example: &str, existing: &str) -> String 
     content
 }
 
-fn managed_env_entries(settings: &UserSettings) -> [(&'static str, String); 7] {
+fn managed_env_entries(settings: &UserSettings) -> [(&'static str, String); 8] {
     [
         ("SOURCE", settings.source.clone()),
         ("SCORE_THRESH", settings.score_thresh.to_string()),
@@ -179,6 +204,7 @@ fn managed_env_entries(settings: &UserSettings) -> [(&'static str, String); 7] {
         ("AI_GATEWAY_MODEL", settings.ai_gateway_model.clone()),
         ("WORD_GAP", settings.word_gap.to_string()),
         ("LINE_GAP", settings.line_gap.to_string()),
+        ("CAPTURE_SHORTCUT", settings.capture_shortcut.clone()),
     ]
 }
 
@@ -233,6 +259,7 @@ mod tests {
             ocr_server_executable: "x".to_string(),
             ocr_server_startup_timeout_secs: 30,
             ocr_server_request_timeout_secs: 20,
+            capture_shortcut: "Ctrl+Alt+A".to_string(),
         }
     }
 
@@ -290,6 +317,40 @@ mod tests {
     }
 
     #[test]
+    fn sanitized는_빈_capture_shortcut을_플랫폼_기본값으로_복원한다() {
+        let cfg = base_config();
+        let s = UserSettings {
+            capture_shortcut: "   ".to_string(),
+            ..UserSettings::from_config(&cfg)
+        }
+        .validate();
+        assert_eq!(s.capture_shortcut, default_capture_shortcut());
+    }
+
+    #[test]
+    fn sanitized는_지정된_capture_shortcut을_그대로_유지한다() {
+        let cfg = base_config();
+        let s = UserSettings {
+            capture_shortcut: "  Ctrl+Shift+Space  ".to_string(),
+            ..UserSettings::from_config(&cfg)
+        }
+        .validate();
+        assert_eq!(s.capture_shortcut, "Ctrl+Shift+Space");
+    }
+
+    #[test]
+    fn capture_shortcut_검증은_유효한_accelerator를_허용한다() {
+        assert!(validate_capture_shortcut("Ctrl+Alt+A").is_ok());
+        assert!(validate_capture_shortcut("Ctrl+Shift+Space").is_ok());
+    }
+
+    #[test]
+    fn capture_shortcut_검증은_잘못된_accelerator를_거부한다() {
+        let err = validate_capture_shortcut("Ctrl++A").expect_err("잘못된 단축키는 거부되어야 한다");
+        assert!(err.contains("캡처 단축키 형식이 올바르지 않습니다"));
+    }
+
+    #[test]
     fn sanitized는_음수_gap을_0으로_보정한다() {
         let s = UserSettings {
             word_gap: -3,
@@ -331,6 +392,7 @@ mod tests {
             system_prompt: "한국어로 요약".to_string(),
             word_gap: 30,
             line_gap: 25,
+            capture_shortcut: "Ctrl+Alt+A".to_string(),
         };
         s.apply_to(&mut cfg);
 
@@ -342,6 +404,7 @@ mod tests {
         assert_eq!(cfg.system_prompt, "한국어로 요약");
         assert_eq!(cfg.word_gap, 30);
         assert_eq!(cfg.line_gap, 25);
+        assert_eq!(cfg.capture_shortcut, "Ctrl+Alt+A");
         // 인프라 필드는 건드리지 않음
         assert_eq!(cfg.ocr_server_executable, "x");
         assert_eq!(cfg.ocr_server_startup_timeout_secs, 30);
@@ -370,6 +433,7 @@ mod tests {
             system_prompt: "첫 줄\n둘째 줄".to_string(),
             word_gap: 20,
             line_gap: 15,
+            capture_shortcut: "Ctrl+Alt+A".to_string(),
         };
         save_to_env_file(&path, &settings).expect(".env 저장 실패");
 
@@ -377,6 +441,7 @@ mod tests {
         assert!(text.contains("SOURCE=en"));
         assert!(text.contains("AI_GATEWAY_MODEL=new-model"));
         assert!(text.contains("AI_GATEWAY_API_KEY=secret"));
+        assert!(text.contains("CAPTURE_SHORTCUT=Ctrl+Alt+A"));
         assert!(!text.contains("SYSTEM_PROMPT="));
 
         let _ = std::fs::remove_dir_all(dir);

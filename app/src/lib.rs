@@ -18,7 +18,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::Config;
 use crate::ocr::OcrBackend;
-use crate::platform::{install_capture_shortcut, prepare_overlay_for_capture};
+use crate::platform::{
+    install_capture_shortcut, prepare_overlay_for_capture, replace_capture_shortcut,
+    CaptureShortcutHandler,
+};
 use crate::popup::calc_popup_pos;
 use crate::services::{
     call_ai, capture_screen, crop_capture_to_region, offset_ocr_result, run_ocr, CaptureInfo,
@@ -31,6 +34,11 @@ type SharedConfig = Arc<RwLock<Config>>;
 struct SettingsState {
     store: SettingsStore,
     prompt_path: PathBuf,
+}
+
+struct CaptureShortcutState {
+    busy: Arc<AtomicBool>,
+    handler: CaptureShortcutHandler,
 }
 
 enum SettingsStore {
@@ -220,12 +228,49 @@ fn save_user_settings(
     if !missing.is_empty() {
         return Err(format!("필수 항목을 입력하세요: {}", missing.join(", ")));
     }
+    settings::validate_capture_shortcut(&settings.capture_shortcut)?;
+    let current_config = config_snapshot(&app)?;
+    let shortcut_state = app.state::<CaptureShortcutState>();
+    replace_capture_shortcut(
+        &app,
+        shortcut_state.busy.clone(),
+        &current_config.capture_shortcut,
+        &settings.capture_shortcut,
+        shortcut_state.handler.clone(),
+    )?;
+
+    let rollback_shortcut = |cause: String| -> Result<SaveUserSettingsResult, String> {
+        let rollback_result = replace_capture_shortcut(
+            &app,
+            shortcut_state.busy.clone(),
+            &settings.capture_shortcut,
+            &current_config.capture_shortcut,
+            shortcut_state.handler.clone(),
+        );
+        match rollback_result {
+            Ok(()) => Err(format!(
+                "{cause}. 캡처 단축키는 기존 값으로 복구했습니다."
+            )),
+            Err(rollback_err) => Err(format!(
+                "{cause}. 캡처 단축키 복구도 실패했습니다: {rollback_err}"
+            )),
+        }
+    };
+
     let state = app.state::<SettingsState>();
     match &state.store {
-        SettingsStore::Env(path) => settings::save_to_env_file(path, &settings)?,
+        SettingsStore::Env(path) => {
+            if let Err(err) = settings::save_to_env_file(path, &settings) {
+                return rollback_shortcut(err);
+            }
+        }
     }
-    std::fs::write(&state.prompt_path, &settings.system_prompt)
-        .map_err(|e| format!("프롬프트 파일 저장 실패 ({}): {e}", state.prompt_path.display()))?;
+    if let Err(e) = std::fs::write(&state.prompt_path, &settings.system_prompt) {
+        return rollback_shortcut(format!(
+            "프롬프트 파일 저장 실패 ({}): {e}",
+            state.prompt_path.display()
+        ));
+    }
 
     let shared = app.state::<SharedConfig>();
     let restart_required = {
@@ -465,14 +510,24 @@ pub fn run() {
     let development_build = is_development_build();
     // 시작 시 warmup이 끝날 때까지 핫키를 차단하기 위해 busy=true로 초기화.
     let busy = Arc::new(AtomicBool::new(true));
+    let capture_shortcut_handler: CaptureShortcutHandler = Arc::new(|app, busy| {
+        tauri::async_runtime::spawn(async move {
+            handle_prtsc(app, busy).await;
+        });
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_active_window(app);
         }))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(reqwest::Client::new())
         .manage(PendingCapture(Mutex::new(None)))
         .manage(OcrJobGen(AtomicU64::new(0)))
+        .manage(CaptureShortcutState {
+            busy: busy.clone(),
+            handler: capture_shortcut_handler.clone(),
+        })
         .setup(move |app| {
             #[cfg(target_os = "linux")]
             let _ = register_linux_portal_host_app();
@@ -539,11 +594,13 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            install_capture_shortcut(app.handle().clone(), busy.clone(), |app, busy| {
-                tauri::async_runtime::spawn(async move {
-                    handle_prtsc(app, busy).await;
-                });
-            });
+            let capture_shortcut = config.capture_shortcut.clone();
+            install_capture_shortcut(
+                app.handle().clone(),
+                busy.clone(),
+                &capture_shortcut,
+                capture_shortcut_handler.clone(),
+            );
 
             // 백그라운드에서 OCR 사이드카를 선행 시작(Python 쪽 warmup_models 포함)한 뒤
             // 로딩 창을 숨기고 핫키 busy 플래그를 해제한다.
@@ -566,7 +623,6 @@ pub fn run() {
 
             Ok(())
         })
-        .device_event_filter(tauri::DeviceEventFilter::Always)
         .invoke_handler(tauri::generate_handler![
             select_text,
             close_overlay,
@@ -742,6 +798,7 @@ mod tests {
             ocr_server_executable: "../ocr_server/dist/ocr_server/ocr_server.exe".to_string(),
             ocr_server_startup_timeout_secs: 30,
             ocr_server_request_timeout_secs: 20,
+            capture_shortcut: "Ctrl+Alt+A".to_string(),
         };
         assert_eq!(show_ocr_device_setting(&cfg), cfg!(feature = "gpu"));
     }
@@ -761,6 +818,7 @@ mod tests {
             ocr_server_executable: "../ocr_server/dist/ocr_server/ocr_server.exe".to_string(),
             ocr_server_startup_timeout_secs: 30,
             ocr_server_request_timeout_secs: 20,
+            capture_shortcut: "Ctrl+Alt+A".to_string(),
         };
 
         assert_eq!(

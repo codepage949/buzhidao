@@ -17,6 +17,7 @@ type UserSettings = {
   system_prompt: string;
   word_gap: number;
   line_gap: number;
+  capture_shortcut: string;
 };
 
 type SaveUserSettingsResult = {
@@ -341,6 +342,21 @@ function SettingsApp() {
               />
             </Field>
           </div>
+
+          <Field
+            label="캡처 단축키"
+            hint="예: Ctrl+Alt+A, Cmd+Shift+A. 수식키(Ctrl/Alt/Shift/Cmd)를 포함한 조합만 허용합니다. 저장하면 즉시 반영됩니다."
+          >
+            <input
+              type="text"
+              value={settings.capture_shortcut}
+              onChange={(event) =>
+                setSettings({ ...settings, capture_shortcut: event.currentTarget.value })
+              }
+              placeholder="Ctrl+Alt+A"
+              style={textInputStyle}
+            />
+          </Field>
 
           <Field label="System Prompt">
             <textarea
