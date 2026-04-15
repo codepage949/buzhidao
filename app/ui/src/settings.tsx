@@ -176,6 +176,10 @@ function SettingsApp() {
         setHighlightedFields(event.payload.missing_fields as HighlightableField[]);
         setStatus("");
       }),
+      getCurrentWindow().onCloseRequested(async (event) => {
+        event.preventDefault();
+        await getCurrentWindow().hide();
+      }),
     ],
     [],
   );
@@ -307,7 +311,7 @@ function SettingsApp() {
           </Field>
 
           <div style={gridTwoStyle}>
-            <Field label="WORD_GAP" hint="단어 박스 병합 간격입니다.">
+            <Field label="단어 간격" hint="단어 박스 병합 간격입니다.">
               <input
                 type="number"
                 min="0"
@@ -322,7 +326,7 @@ function SettingsApp() {
               />
             </Field>
 
-            <Field label="LINE_GAP" hint="줄 병합 간격입니다.">
+            <Field label="줄 간격" hint="줄 병합 간격입니다.">
               <input
                 type="number"
                 min="0"
