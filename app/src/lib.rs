@@ -652,8 +652,20 @@ fn register_linux_portal_host_app() -> Result<(), String> {
 
 // ── 앱 진입점 ─────────────────────────────────────────────────────────────────
 
+/// GPU 빌드에서는 `.env` 최초 생성 시 `OCR_SERVER_DEVICE` 기본값이 `gpu`가 되도록 치환한다.
+fn default_env_example() -> std::borrow::Cow<'static, str> {
+    const BASE: &str = include_str!("../.env.example");
+    #[cfg(feature = "gpu")]
+    {
+        std::borrow::Cow::Owned(BASE.replace("OCR_SERVER_DEVICE=cpu", "OCR_SERVER_DEVICE=gpu"))
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        std::borrow::Cow::Borrowed(BASE)
+    }
+}
+
 pub fn run() {
-    const ENV_EXAMPLE: &str = include_str!("../.env.example");
     let development_build = is_development_build();
     // 시작 시 warmup이 끝날 때까지 핫키를 차단하기 위해 busy=true로 초기화.
     let busy = Arc::new(AtomicBool::new(true));
@@ -694,7 +706,7 @@ pub fn run() {
                     .map_err(|e| format!("앱 데이터 경로 확인 실패: {e}"))?;
                 (dir.join(".env"), dir.join(".prompt"))
             };
-            settings::materialize_env_file(&env_path, ENV_EXAMPLE)?;
+            settings::materialize_env_file(&env_path, &default_env_example())?;
             config::materialize_prompt_file(&prompt_path)?;
             app.manage(SettingsState {
                 store: SettingsStore::Env(env_path.clone()),
@@ -788,9 +800,10 @@ pub fn run() {
 mod tests {
     use super::{
         build_settings_notice_payload, clone_pending_capture, decide_capture_hotkey_action,
-        missing_prtsc_required_setting_keys, missing_prtsc_required_settings, resolve_ocr_server_executable,
-        resolve_ocr_server_executable_with_current_exe_dir, should_emit_ocr, show_ocr_device_setting,
-        take_pending_settings_notice_slot, CaptureHotkeyAction, SettingsNoticePayload,
+        default_env_example, missing_prtsc_required_setting_keys, missing_prtsc_required_settings,
+        resolve_ocr_server_executable, resolve_ocr_server_executable_with_current_exe_dir,
+        should_emit_ocr, show_ocr_device_setting, take_pending_settings_notice_slot,
+        CaptureHotkeyAction, SettingsNoticePayload,
     };
     use crate::config::Config;
     use crate::services::CaptureInfo;
@@ -959,6 +972,26 @@ mod tests {
         assert_eq!(PathBuf::from(resolved), sidecar_path);
 
         let _ = fs::remove_dir_all(app_dir);
+    }
+
+    #[test]
+    fn gpu_빌드에서_env_example의_device_기본값은_gpu다() {
+        let example = default_env_example();
+        if cfg!(feature = "gpu") {
+            assert!(
+                example.contains("OCR_SERVER_DEVICE=gpu"),
+                "GPU 빌드에서는 OCR_SERVER_DEVICE=gpu가 포함되어야 한다"
+            );
+            assert!(
+                !example.contains("OCR_SERVER_DEVICE=cpu"),
+                "GPU 빌드에서는 OCR_SERVER_DEVICE=cpu가 없어야 한다"
+            );
+        } else {
+            assert!(
+                example.contains("OCR_SERVER_DEVICE=cpu"),
+                "CPU 빌드에서는 OCR_SERVER_DEVICE=cpu가 포함되어야 한다"
+            );
+        }
     }
 
     #[test]
