@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useWindowKeydown } from "./app-hooks";
+import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
 type Source = "en" | "ch";
 type Device = "cpu" | "gpu";
@@ -26,6 +27,13 @@ type GetUserSettingsResult = {
   settings: UserSettings;
   show_ocr_server_device: boolean;
 };
+
+type SettingsNoticePayload = {
+  message: string;
+  missing_fields: string[];
+};
+
+type HighlightableField = "ai_gateway_api_key" | "ai_gateway_model";
 
 const formCardStyle: React.CSSProperties = {
   background: "#1e1e2e",
@@ -89,16 +97,26 @@ function RadioRow<T extends string>({
 function Field({
   label,
   hint,
+  emphasized = false,
   children,
 }: {
   label: string;
   hint?: string;
+  emphasized?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <label style={{ display: "grid", gap: "10px" }}>
       <div style={{ display: "grid", gap: "4px" }}>
-        <span style={{ color: "#cdd6f4", fontSize: "15px", fontWeight: 700 }}>{label}</span>
+        <span
+          style={{
+            color: emphasized ? "#f9e2af" : "#cdd6f4",
+            fontSize: "15px",
+            fontWeight: 700,
+          }}
+        >
+          {label}
+        </span>
         {hint ? (
           <span style={{ color: "#a6adc8", fontSize: "12px", lineHeight: 1.5 }}>{hint}</span>
         ) : null}
@@ -114,6 +132,22 @@ function SettingsApp() {
   const [status, setStatus] = useState<string>("설정을 불러오는 중입니다.");
   const [error, setError] = useState<string>("");
   const [saving, setSaving] = useState(false);
+  const [highlightedFields, setHighlightedFields] = useState<HighlightableField[]>([]);
+
+  function missingRequiredFields(next: UserSettings): HighlightableField[] {
+    const missing: HighlightableField[] = [];
+    if (!next.ai_gateway_api_key.trim()) {
+      missing.push("ai_gateway_api_key");
+    }
+    if (!next.ai_gateway_model.trim()) {
+      missing.push("ai_gateway_model");
+    }
+    return missing;
+  }
+
+  function isHighlighted(field: HighlightableField) {
+    return highlightedFields.includes(field);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -122,6 +156,7 @@ function SettingsApp() {
         if (cancelled) return;
         setSettings(payload.settings);
         setShowOcrServerDevice(payload.show_ocr_server_device);
+        setHighlightedFields(missingRequiredFields(payload.settings));
         setStatus("");
       })
       .catch((err) => {
@@ -134,6 +169,17 @@ function SettingsApp() {
     };
   }, []);
 
+  useListenerCleanup(
+    () => [
+      listen<SettingsNoticePayload>("settings_notice", (event) => {
+        setError(event.payload.message);
+        setHighlightedFields(event.payload.missing_fields as HighlightableField[]);
+        setStatus("");
+      }),
+    ],
+    [],
+  );
+
   useWindowKeydown((event) => {
     if (event.key === "Escape" && !saving) {
       void getCurrentWindow().hide();
@@ -142,11 +188,19 @@ function SettingsApp() {
 
   async function save() {
     if (!settings || saving) return;
+    const missing = missingRequiredFields(settings);
+    if (missing.length > 0) {
+      setHighlightedFields(missing);
+      setError("필수 항목을 입력하세요.");
+      setStatus("");
+      return;
+    }
     setSaving(true);
     setError("");
     setStatus("설정을 저장하는 중입니다.");
     try {
       const result = await invoke<SaveUserSettingsResult>("save_user_settings", { settings });
+      setHighlightedFields([]);
       setStatus(
         result.restart_required
           ? "저장되었습니다. OCR 장치 변경은 다음 앱 실행부터 적용됩니다."
@@ -226,25 +280,29 @@ function SettingsApp() {
             </Field>
           ) : null}
 
-          <Field label="AI Gateway API Key">
+          <Field label="AI Gateway API Key" emphasized={isHighlighted("ai_gateway_api_key")}>
             <input
               type="password"
               value={settings.ai_gateway_api_key}
-              onChange={(event) =>
-                setSettings({ ...settings, ai_gateway_api_key: event.currentTarget.value })
-              }
-              style={textInputStyle}
+              onChange={(event) => {
+                const next = { ...settings, ai_gateway_api_key: event.currentTarget.value };
+                setSettings(next);
+                setHighlightedFields(missingRequiredFields(next));
+              }}
+              style={inputStyle(isHighlighted("ai_gateway_api_key"))}
             />
           </Field>
 
-          <Field label="AI Gateway Model">
+          <Field label="AI Gateway Model" emphasized={isHighlighted("ai_gateway_model")}>
             <input
               type="text"
               value={settings.ai_gateway_model}
-              onChange={(event) =>
-                setSettings({ ...settings, ai_gateway_model: event.currentTarget.value })
-              }
-              style={textInputStyle}
+              onChange={(event) => {
+                const next = { ...settings, ai_gateway_model: event.currentTarget.value };
+                setSettings(next);
+                setHighlightedFields(missingRequiredFields(next));
+              }}
+              style={inputStyle(isHighlighted("ai_gateway_model"))}
             />
           </Field>
 
@@ -319,16 +377,17 @@ const rootStyle: React.CSSProperties = {
   minHeight: "100vh",
   background:
     "linear-gradient(180deg, #181825 0%, #1e1e2e 100%)",
-  padding: "20px",
+  padding: "0",
   boxSizing: "border-box",
   fontFamily: "'Segoe UI', 'Noto Sans KR', sans-serif",
 };
 
 const shellStyle: React.CSSProperties = {
-  maxWidth: "880px",
-  margin: "0 auto",
+  width: "100%",
+  maxWidth: "100%",
+  margin: "0",
   display: "grid",
-  gap: "16px",
+  gap: "0",
 };
 
 const heroStyle: React.CSSProperties = {
@@ -372,6 +431,16 @@ const textInputStyle: React.CSSProperties = {
   fontSize: "14px",
   lineHeight: 1.5,
 };
+
+function inputStyle(emphasized: boolean): React.CSSProperties {
+  return emphasized
+    ? {
+        ...textInputStyle,
+        border: "1px solid #f9e2af",
+        boxShadow: "0 0 0 1px rgba(249, 226, 175, 0.25)",
+      }
+    : textInputStyle;
+}
 
 const gridTwoStyle: React.CSSProperties = {
   display: "grid",
