@@ -27,6 +27,7 @@ type SaveUserSettingsResult = {
 type GetUserSettingsResult = {
   settings: UserSettings;
   show_ocr_server_device: boolean;
+  notice?: SettingsNoticePayload | null;
 };
 
 type SettingsNoticePayload = {
@@ -157,7 +158,13 @@ function SettingsApp() {
         if (cancelled) return;
         setSettings(payload.settings);
         setShowOcrServerDevice(payload.show_ocr_server_device);
-        setHighlightedFields(missingRequiredFields(payload.settings));
+        if (payload.notice) {
+          setError(payload.notice.message);
+          setHighlightedFields(payload.notice.missing_fields as HighlightableField[]);
+        } else {
+          setError("");
+          setHighlightedFields(missingRequiredFields(payload.settings));
+        }
         setStatus("");
       })
       .catch((err) => {
@@ -177,17 +184,13 @@ function SettingsApp() {
         setHighlightedFields(event.payload.missing_fields as HighlightableField[]);
         setStatus("");
       }),
-      getCurrentWindow().onCloseRequested(async (event) => {
-        event.preventDefault();
-        await getCurrentWindow().hide();
-      }),
     ],
     [],
   );
 
   useWindowKeydown((event) => {
     if (event.key === "Escape" && !saving) {
-      void getCurrentWindow().hide();
+      void getCurrentWindow().close();
     }
   }, [saving]);
 
@@ -211,7 +214,7 @@ function SettingsApp() {
           ? "저장되었습니다. OCR 장치 변경은 다음 앱 실행부터 적용됩니다."
           : "저장되었습니다.",
       );
-      await getCurrentWindow().hide();
+      await getCurrentWindow().close();
     } catch (err) {
       setError(String(err));
       setStatus("");

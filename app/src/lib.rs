@@ -14,7 +14,7 @@ use std::sync::{
 };
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder};
 
 use crate::config::Config;
 use crate::ocr::OcrBackend;
@@ -35,6 +35,8 @@ struct SettingsState {
     store: SettingsStore,
     prompt_path: PathBuf,
 }
+
+struct PendingSettingsNotice(Mutex<Option<SettingsNoticePayload>>);
 
 struct CaptureShortcutState {
     busy: Arc<AtomicBool>,
@@ -60,6 +62,7 @@ struct SaveUserSettingsResult {
 struct GetUserSettingsResult {
     settings: settings::UserSettings,
     show_ocr_server_device: bool,
+    notice: Option<SettingsNoticePayload>,
 }
 
 fn config_snapshot(app: &AppHandle) -> Result<Config, String> {
@@ -91,13 +94,67 @@ fn build_settings_notice_payload(message: String, missing_fields: &[&str]) -> Se
 }
 
 fn open_settings_with_notice(app: &AppHandle, payload: &SettingsNoticePayload) {
-    let Some(window) = app.get_webview_window("settings") else {
-        eprintln!("설정 창을 찾을 수 없음: {}", payload.message);
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("settings_notice", payload);
         return;
-    };
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("settings_notice", payload);
+    }
+
+    store_pending_settings_notice(app, payload.clone());
+    if let Err(err) = open_settings_window(app) {
+        eprintln!("설정 창을 열 수 없음: {err}");
+    }
+}
+
+fn open_settings_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    let window = ensure_settings_window(app)?;
+    window
+        .show()
+        .map_err(|e| format!("설정 창 표시 실패: {e}"))?;
+    window
+        .set_focus()
+        .map_err(|e| format!("설정 창 포커스 실패: {e}"))?;
+    Ok(window)
+}
+
+fn ensure_settings_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        return Ok(window);
+    }
+
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "settings")
+        .cloned()
+        .ok_or("settings 윈도우 설정을 찾을 수 없음".to_string())?;
+
+    WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|e| format!("설정 창 빌더 생성 실패: {e}"))?
+        .build()
+        .map_err(|e| format!("설정 창 생성 실패: {e}"))
+}
+
+fn store_pending_settings_notice(app: &AppHandle, payload: SettingsNoticePayload) {
+    if let Some(state) = app.try_state::<PendingSettingsNotice>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = Some(payload);
+        }
+    }
+}
+
+fn take_pending_settings_notice(app: &AppHandle) -> Option<SettingsNoticePayload> {
+    app.try_state::<PendingSettingsNotice>()
+        .and_then(|state| take_pending_settings_notice_slot(&state.0))
+}
+
+fn take_pending_settings_notice_slot(
+    slot: &Mutex<Option<SettingsNoticePayload>>,
+) -> Option<SettingsNoticePayload> {
+    slot.lock().ok().and_then(|mut guard| guard.take())
 }
 
 fn is_development_build() -> bool {
@@ -212,6 +269,7 @@ fn get_user_settings(app: AppHandle) -> Result<GetUserSettingsResult, String> {
     Ok(GetUserSettingsResult {
         settings: settings::UserSettings::from_config(&cfg),
         show_ocr_server_device: show_ocr_device_setting(&cfg),
+        notice: take_pending_settings_notice(&app),
     })
 }
 
@@ -523,6 +581,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(reqwest::Client::new())
         .manage(PendingCapture(Mutex::new(None)))
+        .manage(PendingSettingsNotice(Mutex::new(None)))
         .manage(OcrJobGen(AtomicU64::new(0)))
         .manage(CaptureShortcutState {
             busy: busy.clone(),
@@ -583,10 +642,7 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
                         "settings" => {
-                            if let Some(window) = app.get_webview_window("settings") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                            let _ = open_settings_window(app);
                         }
                         "quit" => app.exit(0),
                         _ => {}
@@ -640,14 +696,15 @@ mod tests {
     use super::{
         build_settings_notice_payload, clone_pending_capture, missing_prtsc_required_setting_keys,
         missing_prtsc_required_settings, resolve_ocr_server_executable,
-        resolve_ocr_server_executable_with_current_exe_dir, should_emit_ocr,
-        show_ocr_device_setting,
+        resolve_ocr_server_executable_with_current_exe_dir, should_emit_ocr, show_ocr_device_setting,
+        take_pending_settings_notice_slot, SettingsNoticePayload,
     };
     use crate::config::Config;
     use crate::services::CaptureInfo;
     use image::{DynamicImage, Rgba, RgbaImage};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(prefix: &str) -> PathBuf {
@@ -843,5 +900,19 @@ mod tests {
             payload.missing_fields,
             vec!["ai_gateway_api_key", "ai_gateway_model"]
         );
+    }
+
+    #[test]
+    fn pending_settings_notice는_한번만_소비된다() {
+        let slot = Mutex::new(Some(SettingsNoticePayload {
+            message: "필수 항목을 입력하세요".to_string(),
+            missing_fields: vec!["ai_gateway_api_key".to_string()],
+        }));
+
+        let first = take_pending_settings_notice_slot(&slot);
+        let second = take_pending_settings_notice_slot(&slot);
+
+        assert_eq!(first.as_ref().map(|payload| payload.message.as_str()), Some("필수 항목을 입력하세요"));
+        assert!(second.is_none());
     }
 }
