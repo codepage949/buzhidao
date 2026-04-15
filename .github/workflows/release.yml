@@ -168,7 +168,7 @@ jobs:
         working-directory: app
         run: |
           set -euo pipefail
-          cargo build --release ${{ matrix.cargo_features }}
+          cargo tauri build --no-bundle ${{ matrix.cargo_features }}
 
       - name: Prepare archives
         shell: bash

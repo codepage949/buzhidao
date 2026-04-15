@@ -23,6 +23,30 @@ WARMUP_IMAGE = bytes.fromhex(
 )
 
 
+def configure_windows_paddle_probe_env() -> None:
+    if os.name != "nt":
+        return
+
+    shim_dir = Path(tempfile.gettempdir()) / "buzhidao-paddle-shims"
+    try:
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        (shim_dir / "ccache").touch(exist_ok=True)
+    except OSError:
+        return
+
+    shim = str(shim_dir)
+    path = os.environ.get("PATH", "")
+    entries = path.split(os.pathsep) if path else []
+    if shim not in entries:
+        os.environ["PATH"] = os.pathsep.join([shim, *entries]) if entries else shim
+
+    # Paddle imports cpp_extension on startup and probes `where nvcc` / `where ccache`
+    # even though we never build custom ops at runtime. Seed harmless existing paths to
+    # keep that import from spawning short-lived console processes on Windows.
+    os.environ.setdefault("CUDA_HOME", shim)
+    os.environ.setdefault("CUDA_PATH", shim)
+
+
 def configure_frozen_dll_search_path() -> None:
     if not getattr(sys, "frozen", False):
         return
@@ -161,7 +185,7 @@ def parse_request(line: str) -> tuple[int, str, str, float]:
 
 def run_server() -> int:
     ocrs = {lang: build_ocr(lang) for lang in LANGS}
-    warmup_models(ocrs)
+    warmup_models({"en": ocrs["en"]})
     emit({"type": "ready", "langs": list(LANGS)})
 
     for line in sys.stdin:
@@ -211,6 +235,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     configure_frozen_dll_search_path()
+    configure_windows_paddle_probe_env()
     args = parse_args()
     if args.server:
         return run_server()

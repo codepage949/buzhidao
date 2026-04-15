@@ -99,6 +99,7 @@ def main() -> int:
         "pyinstaller",
         "--noconfirm",
         "--clean",
+        "--noconsole",
         "--onefile" if args.onefile else "--onedir",
         "--name",
         str(target_name),

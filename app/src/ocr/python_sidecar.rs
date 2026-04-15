@@ -8,6 +8,13 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(target_os = "windows")]
+const DETACHED_PROCESS: u32 = 0x00000008;
 
 pub(crate) struct PythonSidecarEngine {
     executable: PathBuf,
@@ -262,6 +269,8 @@ fn spawn_sidecar(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
 
     let mut child = cmd
         .spawn()
@@ -385,4 +394,3 @@ fn temp_image_path() -> PathBuf {
         .as_nanos();
     std::env::temp_dir().join(format!("buzhidao-python-ocr-{nanos}.png"))
 }
-
