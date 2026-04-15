@@ -163,15 +163,6 @@ fn merge_env_example_with_existing(env_example: &str, existing: &str) -> String 
         }
     }
 
-    for (key, value) in existing_entries {
-        if !lines
-            .iter()
-            .any(|line| env_key_of(line).is_some_and(|current| current == key))
-        {
-            lines.push(format!("{key}={value}"));
-        }
-    }
-
     let mut content = lines.join(newline);
     if !content.ends_with(newline) {
         content.push_str(newline);
@@ -402,6 +393,18 @@ mod tests {
         assert!(merged.contains("SOURCE=en"));
         assert!(merged.contains("AI_GATEWAY_MODEL=override"));
         assert!(merged.contains("WORD_GAP=20"));
-        assert!(merged.contains("EXTRA_KEY=1"));
+        assert!(!merged.contains("EXTRA_KEY=1"));
+    }
+
+    #[test]
+    fn materialize_env_file은_깨진_줄과_example에_없는_키를_버린다() {
+        let example = "SOURCE=en\nAI_GATEWAY_MODEL=\n";
+        let existing = "SYSTEM_PROMPT=translate\n다음을 한국어로 번역하세요.\nAI_GATEWAY_MODEL=override\n";
+
+        let merged = merge_env_example_with_existing(example, existing);
+
+        assert!(merged.contains("AI_GATEWAY_MODEL=override"));
+        assert!(!merged.contains("SYSTEM_PROMPT="));
+        assert!(!merged.contains("다음을 한국어로 번역하세요."));
     }
 }

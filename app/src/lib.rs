@@ -485,22 +485,22 @@ pub fn run() {
                     .path()
                     .app_data_dir()
                     .map_err(|e| format!("앱 데이터 경로 확인 실패: {e}"))?;
-                let env_path = dir.join(".env");
-                settings::materialize_env_file(&env_path, ENV_EXAMPLE)?;
-                (env_path, dir.join(".prompt"))
+                (dir.join(".env"), dir.join(".prompt"))
             };
+            settings::materialize_env_file(&env_path, ENV_EXAMPLE)?;
             config::materialize_prompt_file(&prompt_path)?;
             app.manage(SettingsState {
                 store: SettingsStore::Env(env_path.clone()),
                 prompt_path: prompt_path.clone(),
             });
 
-            let config = if development_build {
-                Config::from_env(&prompt_path)
-                    .map_err(|e| format!("개발 설정(.env/.prompt) 로드 실패: {e}"))?
-            } else {
-                Config::from_env_file(&env_path, &prompt_path)?
-            };
+            let config = Config::from_env_file(&env_path, &prompt_path).map_err(|e| {
+                if development_build {
+                    format!("개발 설정(.env/.prompt) 로드 실패: {e}")
+                } else {
+                    e
+                }
+            })?;
             app.manage(Arc::new(RwLock::new(config.clone())));
 
             // OCR 엔진 초기화

@@ -25,11 +25,6 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub(crate) fn from_env(prompt_path: &std::path::Path) -> Result<Self, String> {
-        let _ = dotenvy::dotenv();
-        Self::from_loaded_env(prompt_path)
-    }
-
     pub(crate) fn from_env_file(
         path: &std::path::Path,
         prompt_path: &std::path::Path,
