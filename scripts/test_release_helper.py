@@ -8,6 +8,7 @@ from scripts.release_helper import (
     DEFAULT_MAX_PART_BYTES,
     archive_basename,
     create_archive,
+    make_install_script,
     prepare_app_layout,
     prepare_ocr_server_layout,
     split_archive,
@@ -93,6 +94,44 @@ class ReleaseHelperTest(unittest.TestCase):
             )
             rebuilt = b"".join(part.read_bytes() for part in parts)
             self.assertEqual(rebuilt, original)
+
+
+class InstallScriptTest(unittest.TestCase):
+    def test_windows_스크립트_파일명은_ps1이다(self):
+        filename, _ = make_install_script("windows", "amd64", "gpu", "v1.0.0")
+        self.assertEqual(filename, "install-windows-amd64-gpu.ps1")
+
+    def test_windows_스크립트는_올바른_아카이브명을_포함한다(self):
+        _, content = make_install_script("windows", "amd64", "cpu", "v1.0.0")
+        self.assertIn("buzhidao-v1.0.0-windows-amd64-cpu-app.zip", content)
+        self.assertIn("buzhidao-v1.0.0-windows-amd64-cpu-ocr-server.zip", content)
+
+    def test_windows_스크립트는_Get_Location을_사용한다(self):
+        _, content = make_install_script("windows", "amd64", "cpu", "v1.0.0")
+        self.assertIn("(Get-Location).Path", content)
+
+    def test_windows_스크립트는_상대경로로_Create를_호출하지_않는다(self):
+        _, content = make_install_script("windows", "amd64", "cpu", "v1.0.0")
+        # .NET 메서드에 직접 상대 경로 문자열을 넘기면 PowerShell $PWD가 무시된다
+        self.assertNotIn('[System.IO.File]::Create(".\\', content)
+        self.assertNotIn("[System.IO.File]::Create('.\\", content)
+
+    def test_linux_스크립트_파일명은_sh이다(self):
+        filename, _ = make_install_script("linux", "amd64", "cpu", "v1.0.0")
+        self.assertEqual(filename, "install-linux-amd64-cpu.sh")
+
+    def test_linux_스크립트는_shebang으로_시작한다(self):
+        _, content = make_install_script("linux", "amd64", "cpu", "v1.0.0")
+        self.assertTrue(content.startswith("#!/usr/bin/env bash"))
+
+    def test_linux_스크립트는_올바른_아카이브명을_포함한다(self):
+        _, content = make_install_script("linux", "amd64", "gpu", "v1.0.0")
+        self.assertIn("buzhidao-v1.0.0-linux-amd64-gpu-app.tar.gz", content)
+        self.assertIn("buzhidao-v1.0.0-linux-amd64-gpu-ocr-server.tar.gz", content)
+
+    def test_지원하지_않는_os는_ValueError를_발생시킨다(self):
+        with self.assertRaises(ValueError):
+            make_install_script("macos", "amd64", "cpu", "v1.0.0")
 
 
 if __name__ == "__main__":

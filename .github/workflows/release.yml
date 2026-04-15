@@ -265,16 +265,30 @@ jobs:
             echo "- \`buzhidao-${version}-windows-amd64-gpu-app.zip\`"
             echo "- \`buzhidao-${version}-windows-amd64-gpu-ocr-server.zip\`"
             echo
+            echo "## 설치 스크립트"
+            echo
+            echo "각 플랫폼별 설치 스크립트가 릴리즈 자산으로 첨부되어 있습니다."
+            echo "압축 파일을 내려받은 디렉터리에서 해당 스크립트를 실행하면 분할 파일 합치기와 압축 해제를 자동으로 처리합니다."
+            echo
+            echo "| 스크립트 | 대상 | 실행 방법 |"
+            echo "|---------|------|----------|"
+            echo "| \`install-windows-amd64-cpu.ps1\` | Windows AMD64 CPU | PowerShell: \`.\\\`install-windows-amd64-cpu.ps1\` |"
+            echo "| \`install-windows-amd64-gpu.ps1\` | Windows AMD64 GPU | PowerShell: \`.\\\`install-windows-amd64-gpu.ps1\` |"
+            echo "| \`install-linux-amd64-cpu.sh\` | Linux AMD64 CPU | \`bash install-linux-amd64-cpu.sh\` |"
+            echo "| \`install-linux-amd64-gpu.sh\` | Linux AMD64 GPU | \`bash install-linux-amd64-gpu.sh\` |"
+            echo
             echo "## 분할 파일(.part001 등)이 있는 경우"
             echo
             echo "일부 GPU 자산은 2 GiB 제한 때문에 \`.part001\`, \`.part002\`처럼 분할되어 업로드될 수 있습니다."
-            echo "이 경우 먼저 조각 파일을 원래 아카이브 하나로 합친 뒤 압축을 해제하세요."
+            echo "이 경우 위 설치 스크립트가 자동으로 합쳐 주거나, 직접 합치려면 아래를 참고하세요."
             echo
             echo "### Windows (PowerShell)"
             echo
             echo '```powershell'
-            echo '$parts = Get-ChildItem .\buzhidao-...zip.part* | Sort-Object Name'
-            echo '$out = [System.IO.File]::Create(".\buzhidao-...zip")'
+            echo '$pwd_path = (Get-Location).Path'
+            echo '$parts = Get-ChildItem -Path $pwd_path -Filter "buzhidao-...zip.part*" | Sort-Object Name'
+            echo '$outPath = Join-Path $pwd_path "buzhidao-...zip"'
+            echo '$out = [System.IO.File]::Create($outPath)'
             echo 'foreach ($part in $parts) {'
             echo '  $bytes = [System.IO.File]::ReadAllBytes($part.FullName)'
             echo '  $out.Write($bytes, 0, $bytes.Length)'
@@ -299,6 +313,16 @@ jobs:
             fi
           } > RELEASE_NOTES.md
 
+      - name: Generate install scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          python scripts/release_helper.py make-install-script --version "$version" --os windows --arch amd64 --flavor cpu
+          python scripts/release_helper.py make-install-script --version "$version" --os windows --arch amd64 --flavor gpu
+          python scripts/release_helper.py make-install-script --version "$version" --os linux --arch amd64 --flavor cpu
+          python scripts/release_helper.py make-install-script --version "$version" --os linux --arch amd64 --flavor gpu
+
       - name: Create tag
         shell: bash
         run: |
@@ -313,7 +337,9 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t assets < <(find release-assets -type f \( -name '*.zip' -o -name '*.zip.part*' -o -name '*.tar.gz' -o -name '*.tar.gz.part*' \) | sort)
+          mapfile -t install_scripts < <(find . -maxdepth 1 \( -name 'install-*.ps1' -o -name 'install-*.sh' \) | sort)
           gh release create "${{ inputs.version }}" \
             "${assets[@]}" \
+            "${install_scripts[@]}" \
             --title "${{ inputs.version }}" \
             --notes-file RELEASE_NOTES.md

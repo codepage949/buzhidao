@@ -71,6 +71,91 @@ def split_archive(archive_path: Path, max_part_bytes: int) -> list[Path]:
     return parts
 
 
+def make_install_script(os_name: str, arch: str, flavor: str, version: str) -> tuple[str, str]:
+    """(파일명, 스크립트 내용) 튜플을 반환한다."""
+    if os_name == "windows":
+        return (
+            f"install-windows-{arch}-{flavor}.ps1",
+            _windows_install_script(version, arch, flavor),
+        )
+    if os_name == "linux":
+        return (
+            f"install-linux-{arch}-{flavor}.sh",
+            _linux_install_script(version, arch, flavor),
+        )
+    raise ValueError(f"지원하지 않는 OS: {os_name}")
+
+
+def _windows_install_script(version: str, arch: str, flavor: str) -> str:
+    app_archive = f"buzhidao-{version}-windows-{arch}-{flavor}-app.zip"
+    ocr_archive = f"buzhidao-{version}-windows-{arch}-{flavor}-ocr-server.zip"
+    script_name = f"install-windows-{arch}-{flavor}.ps1"
+    lines = [
+        f"# buzhidao {version} windows-{arch}-{flavor} 설치 스크립트",
+        "# 압축 파일이 있는 디렉터리에서 PowerShell로 실행하세요.",
+        f"#   .\\{script_name}",
+        "",
+        "$archives = @(",
+        f'    "{app_archive}",',
+        f'    "{ocr_archive}"',
+        ")",
+        "$pwd_path = (Get-Location).Path",
+        "",
+        "# 분할 파일 합치기 (분할된 경우)",
+        "foreach ($archive in $archives) {",
+        '    $parts = Get-ChildItem -Path $pwd_path -Filter "$archive.part*" |',
+        "             Sort-Object Name",
+        "    if ($parts.Count -gt 0) {",
+        "        $outPath = Join-Path $pwd_path $archive",
+        "        $out = [System.IO.File]::Create($outPath)",
+        "        foreach ($part in $parts) {",
+        "            $bytes = [System.IO.File]::ReadAllBytes($part.FullName)",
+        "            $out.Write($bytes, 0, $bytes.Length)",
+        "        }",
+        "        $out.Close()",
+        '        Write-Host "합침: $archive"',
+        "    }",
+        "}",
+        "",
+        "# 압축 해제 (현재 디렉터리)",
+        "foreach ($archive in $archives) {",
+        "    Expand-Archive -Path (Join-Path $pwd_path $archive) -DestinationPath $pwd_path -Force",
+        '    Write-Host "해제: $archive"',
+        "}",
+        'Write-Host "완료: $pwd_path"',
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _linux_install_script(version: str, arch: str, flavor: str) -> str:
+    app_archive = f"buzhidao-{version}-linux-{arch}-{flavor}-app.tar.gz"
+    ocr_archive = f"buzhidao-{version}-linux-{arch}-{flavor}-ocr-server.tar.gz"
+    script_name = f"install-linux-{arch}-{flavor}.sh"
+    lines = [
+        "#!/usr/bin/env bash",
+        f"# buzhidao {version} linux-{arch}-{flavor} 설치 스크립트",
+        "# 압축 파일이 있는 디렉터리에서 실행하세요.",
+        f"#   bash {script_name}",
+        "set -euo pipefail",
+        "",
+        "# 분할 파일 합치기 (분할된 경우)",
+        f'for archive in "{app_archive}" "{ocr_archive}"; do',
+        '    if [ -f "${archive}.part001" ]; then',
+        '        cat "${archive}".part* > "$archive"',
+        '        echo "합침: $archive"',
+        "    fi",
+        "done",
+        "",
+        "# 압축 해제 (현재 디렉터리)",
+        f'tar xzf "{app_archive}"',
+        f'tar xzf "{ocr_archive}"',
+        'echo "완료: $(pwd)"',
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -91,11 +176,24 @@ def parse_args() -> argparse.Namespace:
         "--max-part-bytes", type=int, default=DEFAULT_MAX_PART_BYTES
     )
 
+    make_script = sub.add_parser("make-install-script")
+    make_script.add_argument("--version", required=True)
+    make_script.add_argument("--os", dest="os_name", required=True)
+    make_script.add_argument("--arch", required=True)
+    make_script.add_argument("--flavor", required=True)
+
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    if args.command == "make-install-script":
+        filename, content = make_install_script(args.os_name, args.arch, args.flavor, args.version)
+        Path(filename).write_text(content, encoding="utf-8")
+        print(filename)
+        return 0
+
     if args.command != "make-archive":
         raise ValueError(f"지원하지 않는 명령: {args.command}")
 
