@@ -25,18 +25,21 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub(crate) fn from_env() -> Result<Self, String> {
+    pub(crate) fn from_env(prompt_path: &std::path::Path) -> Result<Self, String> {
         let _ = dotenvy::dotenv();
-        Self::from_loaded_env()
+        Self::from_loaded_env(prompt_path)
     }
 
-    pub(crate) fn from_env_file(path: &std::path::Path) -> Result<Self, String> {
+    pub(crate) fn from_env_file(
+        path: &std::path::Path,
+        prompt_path: &std::path::Path,
+    ) -> Result<Self, String> {
         dotenvy::from_path_override(path)
             .map_err(|e| format!("환경 파일 로드 실패 ({}): {e}", path.display()))?;
-        Self::from_loaded_env()
+        Self::from_loaded_env(prompt_path)
     }
 
-    fn from_loaded_env() -> Result<Self, String> {
+    fn from_loaded_env(prompt_path: &std::path::Path) -> Result<Self, String> {
         Ok(Self {
             source: env_or("SOURCE", DEFAULT_SOURCE),
             score_thresh: env_or("SCORE_THRESH", "0.8")
@@ -46,9 +49,9 @@ impl Config {
                 .parse()
                 .unwrap_or(DEFAULT_OCR_DEBUG_TRACE),
             ocr_server_device: parse_ocr_server_device(optional_env("OCR_SERVER_DEVICE"))?,
-            ai_gateway_api_key: require_env("AI_GATEWAY_API_KEY")?,
-            ai_gateway_model: require_env("AI_GATEWAY_MODEL")?,
-            system_prompt: load_system_prompt()?,
+            ai_gateway_api_key: optional_env("AI_GATEWAY_API_KEY").unwrap_or_default(),
+            ai_gateway_model: optional_env("AI_GATEWAY_MODEL").unwrap_or_default(),
+            system_prompt: load_system_prompt(prompt_path)?,
             word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(DEFAULT_WORD_GAP),
             line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(DEFAULT_LINE_GAP),
             ocr_server_executable: optional_env("OCR_SERVER_EXECUTABLE")
@@ -78,10 +81,6 @@ fn default_ocr_server_executable() -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn require_env(name: &str) -> Result<String, String> {
-    std::env::var(name).map_err(|_| format!("환경변수 누락: {name}"))
-}
-
 fn env_or(name: &str, default: &str) -> String {
     optional_env(name).unwrap_or_else(|| default.to_string())
 }
@@ -106,25 +105,33 @@ fn parse_ocr_server_device(value: Option<String>) -> Result<String, String> {
     }
 }
 
-fn load_system_prompt() -> Result<String, String> {
-    if let Some(prompt) = optional_env("SYSTEM_PROMPT") {
-        return Ok(prompt.replace("\\n", "\n"));
+pub(crate) fn materialize_prompt_file(path: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("프롬프트 디렉토리 생성 실패: {e}"))?;
     }
-    match std::env::var("SYSTEM_PROMPT_PATH") {
-        Ok(path) => std::fs::read_to_string(&path)
-            .map_err(|e| format!("시스템 프롬프트 로드 실패 ({path}): {e}")),
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_SYSTEM_PROMPT.to_string()),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            Err("환경변수 값이 유효한 UTF-8이 아닙니다: SYSTEM_PROMPT_PATH".to_string())
-        }
+    if path.exists() {
+        return Ok(());
     }
+    std::fs::write(path, DEFAULT_SYSTEM_PROMPT)
+        .map_err(|e| format!("프롬프트 파일 생성 실패 ({}): {e}", path.display()))
+}
+
+fn load_system_prompt(path: &std::path::Path) -> Result<String, String> {
+    if !path.exists() {
+        materialize_prompt_file(path)?;
+    }
+    std::fs::read_to_string(path)
+        .map(|text| text.trim().to_string())
+        .map_err(|e| format!("시스템 프롬프트 로드 실패 ({}): {e}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        default_ocr_server_executable, load_system_prompt, optional_env, parse_ocr_server_device,
-        Config, DEFAULT_SCORE_THRESH, DEFAULT_SOURCE, DEFAULT_SYSTEM_PROMPT,
+        default_ocr_server_executable, load_system_prompt, materialize_prompt_file, optional_env,
+        parse_ocr_server_device, Config, DEFAULT_SCORE_THRESH, DEFAULT_SOURCE,
+        DEFAULT_SYSTEM_PROMPT,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -146,11 +153,11 @@ mod tests {
     #[test]
     fn 환경변수가_없으면_기본_프롬프트를_사용한다() {
         let _guard = env_lock().lock().unwrap();
-        std::env::remove_var("SYSTEM_PROMPT_PATH");
-
-        let prompt = load_system_prompt().expect("기본 프롬프트를 불러와야 한다");
+        let path = temp_prompt_path();
+        let prompt = load_system_prompt(&path).expect("기본 프롬프트를 불러와야 한다");
 
         assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -158,30 +165,20 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         let path = temp_prompt_path();
         std::fs::write(&path, "커스텀 프롬프트").expect("테스트 프롬프트 파일 작성 실패");
-        std::env::set_var("SYSTEM_PROMPT_PATH", &path);
-
-        let prompt = load_system_prompt().expect("프롬프트 파일을 읽어야 한다");
+        let prompt = load_system_prompt(&path).expect("프롬프트 파일을 읽어야 한다");
 
         assert_eq!(prompt, "커스텀 프롬프트");
 
-        std::env::remove_var("SYSTEM_PROMPT_PATH");
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn system_prompt_환경변수가_있으면_파일보다_우선한다() {
+    fn prompt_파일이_없으면_기본값으로_생성한다() {
         let _guard = env_lock().lock().unwrap();
         let path = temp_prompt_path();
-        std::fs::write(&path, "파일 프롬프트").expect("테스트 프롬프트 파일 작성 실패");
-        std::env::set_var("SYSTEM_PROMPT_PATH", &path);
-        std::env::set_var("SYSTEM_PROMPT", "첫 줄\\n둘째 줄");
-
-        let prompt = load_system_prompt().expect("인라인 프롬프트를 읽어야 한다");
-
-        assert_eq!(prompt, "첫 줄\n둘째 줄");
-
-        std::env::remove_var("SYSTEM_PROMPT");
-        std::env::remove_var("SYSTEM_PROMPT_PATH");
+        materialize_prompt_file(&path).expect(".prompt 생성 실패");
+        let prompt = std::fs::read_to_string(&path).expect(".prompt 읽기 실패");
+        assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
         let _ = std::fs::remove_file(path);
     }
 
@@ -225,6 +222,8 @@ mod tests {
     #[test]
     fn from_env_file은_누락값에_기본값을_적용한다() {
         let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("SYSTEM_PROMPT");
+        std::env::remove_var("SYSTEM_PROMPT_PATH");
         let dir = std::env::temp_dir().join(format!(
             "buzhidao-config-env-{}",
             SystemTime::now()
@@ -234,22 +233,45 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("임시 디렉토리 생성 실패");
         let env_path = dir.join(".env");
-        std::fs::write(
-            &env_path,
-            "AI_GATEWAY_API_KEY=key\nAI_GATEWAY_MODEL=model\n",
-        )
-        .expect(".env 작성 실패");
+        let prompt_path = dir.join(".prompt");
+        std::fs::write(&env_path, "").expect(".env 작성 실패");
 
-        let cfg = Config::from_env_file(&env_path).expect("환경 파일 로드 실패");
+        let cfg = Config::from_env_file(&env_path, &prompt_path).expect("환경 파일 로드 실패");
 
         assert_eq!(cfg.source, DEFAULT_SOURCE);
         assert!((cfg.score_thresh - DEFAULT_SCORE_THRESH).abs() < f32::EPSILON);
         assert_eq!(cfg.ocr_server_device, "cpu");
-        assert_eq!(cfg.ai_gateway_api_key, "key");
-        assert_eq!(cfg.ai_gateway_model, "model");
+        assert_eq!(cfg.ai_gateway_api_key, "");
+        assert_eq!(cfg.ai_gateway_model, "");
         assert_eq!(cfg.system_prompt, DEFAULT_SYSTEM_PROMPT);
 
         let _ = std::fs::remove_file(&env_path);
+        let _ = std::fs::remove_file(&prompt_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn from_env_file은_prompt_파일을_읽는다() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "buzhidao-config-env-quoted-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("시계가 UNIX_EPOCH 이전입니다")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("임시 디렉토리 생성 실패");
+        let env_path = dir.join(".env");
+        let prompt_path = dir.join(".prompt");
+        std::fs::write(&env_path, "").expect(".env 작성 실패");
+        std::fs::write(&prompt_path, "다음을 한국어로 번역하세요.").expect(".prompt 작성 실패");
+
+        let cfg = Config::from_env_file(&env_path, &prompt_path).expect("환경 파일 로드 실패");
+
+        assert_eq!(cfg.system_prompt, "다음을 한국어로 번역하세요.");
+
+        let _ = std::fs::remove_file(&env_path);
+        let _ = std::fs::remove_file(&prompt_path);
         let _ = std::fs::remove_dir(&dir);
     }
 }

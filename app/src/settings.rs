@@ -52,6 +52,28 @@ impl UserSettings {
     }
 }
 
+pub(crate) fn missing_required_fields(api_key: &str, model: &str) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if api_key.trim().is_empty() {
+        missing.push("AI Gateway API Key");
+    }
+    if model.trim().is_empty() {
+        missing.push("AI Gateway Model");
+    }
+    missing
+}
+
+pub(crate) fn missing_required_field_keys(api_key: &str, model: &str) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if api_key.trim().is_empty() {
+        missing.push("ai_gateway_api_key");
+    }
+    if model.trim().is_empty() {
+        missing.push("ai_gateway_model");
+    }
+    missing
+}
+
 fn normalize_source(value: &str) -> String {
     let v = value.trim().to_ascii_lowercase();
     if v == "ch" {
@@ -157,20 +179,13 @@ fn merge_env_example_with_existing(env_example: &str, existing: &str) -> String 
     content
 }
 
-fn managed_env_entries(settings: &UserSettings) -> [(&'static str, String); 8] {
+fn managed_env_entries(settings: &UserSettings) -> [(&'static str, String); 7] {
     [
         ("SOURCE", settings.source.clone()),
         ("SCORE_THRESH", settings.score_thresh.to_string()),
         ("OCR_SERVER_DEVICE", settings.ocr_server_device.clone()),
         ("AI_GATEWAY_API_KEY", settings.ai_gateway_api_key.clone()),
         ("AI_GATEWAY_MODEL", settings.ai_gateway_model.clone()),
-        (
-            "SYSTEM_PROMPT",
-            settings
-                .system_prompt
-                .replace('\\', "\\\\")
-                .replace('\n', "\\n"),
-        ),
         ("WORD_GAP", settings.word_gap.to_string()),
         ("LINE_GAP", settings.line_gap.to_string()),
     ]
@@ -296,6 +311,24 @@ mod tests {
     }
 
     #[test]
+    fn 필수_설정_누락_항목을_반환한다() {
+        let missing = missing_required_fields(" ", "");
+        assert_eq!(missing, vec!["AI Gateway API Key", "AI Gateway Model"]);
+    }
+
+    #[test]
+    fn 필수_설정이_채워지면_누락_항목이_없다() {
+        let missing = missing_required_fields("key", "model");
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn 필수_설정_누락_key를_반환한다() {
+        let missing = missing_required_field_keys(" ", "");
+        assert_eq!(missing, vec!["ai_gateway_api_key", "ai_gateway_model"]);
+    }
+
+    #[test]
     fn apply_to는_user_편집_필드만_config에_반영한다() {
         let mut cfg = base_config();
         let s = UserSettings {
@@ -353,7 +386,7 @@ mod tests {
         assert!(text.contains("SOURCE=en"));
         assert!(text.contains("AI_GATEWAY_MODEL=new-model"));
         assert!(text.contains("AI_GATEWAY_API_KEY=secret"));
-        assert!(text.contains("SYSTEM_PROMPT=첫 줄\\n둘째 줄"));
+        assert!(!text.contains("SYSTEM_PROMPT="));
 
         let _ = std::fs::remove_dir_all(dir);
     }

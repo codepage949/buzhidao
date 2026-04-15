@@ -30,10 +30,17 @@ type SharedConfig = Arc<RwLock<Config>>;
 
 struct SettingsState {
     store: SettingsStore,
+    prompt_path: PathBuf,
 }
 
 enum SettingsStore {
     Env(PathBuf),
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SettingsNoticePayload {
+    message: String,
+    missing_fields: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -58,6 +65,31 @@ fn config_snapshot(app: &AppHandle) -> Result<Config, String> {
 fn show_ocr_device_setting(cfg: &Config) -> bool {
     let _ = cfg;
     cfg!(feature = "gpu")
+}
+
+fn missing_prtsc_required_settings(cfg: &Config) -> Vec<&'static str> {
+    settings::missing_required_fields(&cfg.ai_gateway_api_key, &cfg.ai_gateway_model)
+}
+
+fn missing_prtsc_required_setting_keys(cfg: &Config) -> Vec<&'static str> {
+    settings::missing_required_field_keys(&cfg.ai_gateway_api_key, &cfg.ai_gateway_model)
+}
+
+fn build_settings_notice_payload(message: String, missing_fields: &[&str]) -> SettingsNoticePayload {
+    SettingsNoticePayload {
+        message,
+        missing_fields: missing_fields.iter().map(|field| (*field).to_string()).collect(),
+    }
+}
+
+fn open_settings_with_notice(app: &AppHandle, payload: &SettingsNoticePayload) {
+    let Some(window) = app.get_webview_window("settings") else {
+        eprintln!("설정 창을 찾을 수 없음: {}", payload.message);
+        return;
+    };
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.emit("settings_notice", payload);
 }
 
 fn is_development_build() -> bool {
@@ -181,10 +213,19 @@ fn save_user_settings(
     settings: settings::UserSettings,
 ) -> Result<SaveUserSettingsResult, String> {
     let settings = settings.validate();
+    let missing = settings::missing_required_fields(
+        &settings.ai_gateway_api_key,
+        &settings.ai_gateway_model,
+    );
+    if !missing.is_empty() {
+        return Err(format!("필수 항목을 입력하세요: {}", missing.join(", ")));
+    }
     let state = app.state::<SettingsState>();
     match &state.store {
         SettingsStore::Env(path) => settings::save_to_env_file(path, &settings)?,
     }
+    std::fs::write(&state.prompt_path, &settings.system_prompt)
+        .map_err(|e| format!("프롬프트 파일 저장 실패 ({}): {e}", state.prompt_path.display()))?;
 
     let shared = app.state::<SharedConfig>();
     let restart_required = {
@@ -244,6 +285,25 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         return;
     }
 
+    let cfg = match config_snapshot(&app) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("설정 스냅샷 오류: {e}");
+            busy.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    let missing = missing_prtsc_required_settings(&cfg);
+    if !missing.is_empty() {
+        let payload = build_settings_notice_payload(
+            format!("설정에서 다음 항목을 먼저 입력하세요: {}", missing.join(", ")),
+            &missing_prtsc_required_setting_keys(&cfg),
+        );
+        open_settings_with_notice(&app, &payload);
+        busy.store(false, Ordering::SeqCst);
+        return;
+    }
+
     // 새 캡처 세션 시작: 세대 번호를 bump해 진행 중인 이전 작업을 무효화한다.
     let my_gen = app.state::<OcrJobGen>().0.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -264,14 +324,6 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
     let engine = app.state::<Arc<OcrBackend>>().inner().clone();
 
     // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
-    let cfg = match config_snapshot(&app) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("설정 스냅샷 오류: {e}");
-            busy.store(false, Ordering::SeqCst);
-            return;
-        }
-    };
     let (orig_width, orig_height) = (info.orig_width, info.orig_height);
     let ocr_result = {
         let img = info.image;
@@ -311,6 +363,17 @@ fn clear_pending_capture(app: &AppHandle) {
 }
 
 fn resolve_ocr_server_executable(resource_dir: Option<PathBuf>, configured: &str) -> String {
+    let current_exe_dir = env::current_exe()
+        .ok()
+        .and_then(|current_exe| current_exe.parent().map(|parent| parent.to_path_buf()));
+    resolve_ocr_server_executable_with_current_exe_dir(resource_dir, current_exe_dir, configured)
+}
+
+fn resolve_ocr_server_executable_with_current_exe_dir(
+    resource_dir: Option<PathBuf>,
+    current_exe_dir: Option<PathBuf>,
+    configured: &str,
+) -> String {
     let configured_path = PathBuf::from(configured);
     if configured_path.exists() {
         return configured.to_string();
@@ -319,16 +382,19 @@ fn resolve_ocr_server_executable(resource_dir: Option<PathBuf>, configured: &str
     let Some(file_name) = configured_path.file_name() else {
         return configured.to_string();
     };
-    let Some(resource_dir) = resource_dir else {
-        return configured.to_string();
-    };
-
-    let mut candidates = vec![resource_dir.join(file_name)];
-    if let Some(parent_name) = configured_path
-        .parent()
-        .and_then(|parent| parent.file_name())
-    {
-        candidates.push(resource_dir.join(parent_name).join(file_name));
+    let mut candidates = Vec::new();
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join(file_name));
+        if let Some(parent_name) = configured_path
+            .parent()
+            .and_then(|parent| parent.file_name())
+        {
+            candidates.push(resource_dir.join(parent_name).join(file_name));
+        }
+    }
+    if let Some(app_dir) = current_exe_dir {
+        candidates.push(app_dir.join(file_name));
+        candidates.push(app_dir.join("ocr_server").join(file_name));
     }
 
     for resource_path in candidates {
@@ -411,25 +477,29 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             let _ = register_linux_portal_host_app();
 
-            let env_path = if development_build {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env")
+            let (env_path, prompt_path) = if development_build {
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                (root.join(".env"), root.join(".prompt"))
             } else {
-                let path = app
+                let dir = app
                     .path()
                     .app_data_dir()
-                    .map_err(|e| format!("앱 데이터 경로 확인 실패: {e}"))?
-                    .join(".env");
-                settings::materialize_env_file(&path, ENV_EXAMPLE)?;
-                path
+                    .map_err(|e| format!("앱 데이터 경로 확인 실패: {e}"))?;
+                let env_path = dir.join(".env");
+                settings::materialize_env_file(&env_path, ENV_EXAMPLE)?;
+                (env_path, dir.join(".prompt"))
             };
+            config::materialize_prompt_file(&prompt_path)?;
             app.manage(SettingsState {
                 store: SettingsStore::Env(env_path.clone()),
+                prompt_path: prompt_path.clone(),
             });
 
             let config = if development_build {
-                Config::from_env().map_err(|e| format!("개발 설정(.env) 로드 실패: {e}"))?
+                Config::from_env(&prompt_path)
+                    .map_err(|e| format!("개발 설정(.env/.prompt) 로드 실패: {e}"))?
             } else {
-                Config::from_env_file(&env_path)?
+                Config::from_env_file(&env_path, &prompt_path)?
             };
             app.manage(Arc::new(RwLock::new(config.clone())));
 
@@ -512,7 +582,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clone_pending_capture, resolve_ocr_server_executable, should_emit_ocr,
+        build_settings_notice_payload, clone_pending_capture, missing_prtsc_required_setting_keys,
+        missing_prtsc_required_settings, resolve_ocr_server_executable,
+        resolve_ocr_server_executable_with_current_exe_dir, should_emit_ocr,
         show_ocr_device_setting,
     };
     use crate::config::Config;
@@ -581,7 +653,11 @@ mod tests {
         fs::write(&exe_path, b"exe").expect("ocr server 생성 실패");
 
         let resolved =
-            resolve_ocr_server_executable(Some(resource_dir.clone()), "missing/ocr_server.exe");
+            resolve_ocr_server_executable_with_current_exe_dir(
+                Some(resource_dir.clone()),
+                None,
+                "missing/ocr_server.exe",
+            );
 
         assert_eq!(PathBuf::from(resolved), exe_path);
 
@@ -596,7 +672,11 @@ mod tests {
         fs::write(&exe_path, b"exe").expect("configured exe 생성 실패");
 
         let resolved =
-            resolve_ocr_server_executable(Some(dir.clone()), &exe_path.to_string_lossy());
+            resolve_ocr_server_executable_with_current_exe_dir(
+                Some(dir.clone()),
+                None,
+                &exe_path.to_string_lossy(),
+            );
 
         assert_eq!(PathBuf::from(resolved), exe_path);
 
@@ -605,7 +685,8 @@ mod tests {
 
     #[test]
     fn resource_dir가_없으면_configured_경로를_그대로_반환한다() {
-        let resolved = resolve_ocr_server_executable(None, "missing/ocr_server.exe");
+        let resolved =
+            resolve_ocr_server_executable_with_current_exe_dir(None, None, "missing/ocr_server.exe");
         assert_eq!(resolved, "missing/ocr_server.exe");
     }
 
@@ -628,6 +709,25 @@ mod tests {
     }
 
     #[test]
+    fn 릴리즈_배치에서는_앱_옆_ocr_server_폴더를_사용한다() {
+        let app_dir = temp_path("buzhidao-release-app-dir");
+        let sidecar_dir = app_dir.join("ocr_server");
+        let sidecar_path = sidecar_dir.join("ocr_server.exe");
+        fs::create_dir_all(&sidecar_dir).expect("ocr_server 디렉토리 생성 실패");
+        fs::write(&sidecar_path, b"exe").expect("릴리즈 배치용 ocr_server 생성 실패");
+
+        let resolved = resolve_ocr_server_executable_with_current_exe_dir(
+            None,
+            Some(app_dir.clone()),
+            "missing/ocr_server.exe",
+        );
+
+        assert_eq!(PathBuf::from(resolved), sidecar_path);
+
+        let _ = fs::remove_dir_all(app_dir);
+    }
+
+    #[test]
     fn gpu_앱_빌드에서만_장치_설정을_노출한다() {
         let cfg = Config {
             source: "en".to_string(),
@@ -644,5 +744,46 @@ mod tests {
             ocr_server_request_timeout_secs: 20,
         };
         assert_eq!(show_ocr_device_setting(&cfg), cfg!(feature = "gpu"));
+    }
+
+    #[test]
+    fn prt_sc_필수_설정_누락을_판별한다() {
+        let cfg = Config {
+            source: "en".to_string(),
+            score_thresh: 0.5,
+            ocr_debug_trace: false,
+            ocr_server_device: "cpu".to_string(),
+            ai_gateway_api_key: "".to_string(),
+            ai_gateway_model: " ".to_string(),
+            system_prompt: "p".to_string(),
+            word_gap: 20,
+            line_gap: 15,
+            ocr_server_executable: "../ocr_server/dist/ocr_server/ocr_server.exe".to_string(),
+            ocr_server_startup_timeout_secs: 30,
+            ocr_server_request_timeout_secs: 20,
+        };
+
+        assert_eq!(
+            missing_prtsc_required_settings(&cfg),
+            vec!["AI Gateway API Key", "AI Gateway Model"]
+        );
+        assert_eq!(
+            missing_prtsc_required_setting_keys(&cfg),
+            vec!["ai_gateway_api_key", "ai_gateway_model"]
+        );
+    }
+
+    #[test]
+    fn 설정_안내_payload를_구성한다() {
+        let payload = build_settings_notice_payload(
+            "필수 항목을 입력하세요".to_string(),
+            &["ai_gateway_api_key", "ai_gateway_model"],
+        );
+
+        assert_eq!(payload.message, "필수 항목을 입력하세요");
+        assert_eq!(
+            payload.missing_fields,
+            vec!["ai_gateway_api_key", "ai_gateway_model"]
+        );
     }
 }
