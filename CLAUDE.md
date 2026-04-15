@@ -1,5 +1,15 @@
 ## 회고
 
+### Tauri ACL 권한 누락
+
+Tauri에서 JS API(`window.close()`, `window.hide()` 등)를 사용하려면
+`capabilities/*.json`의 `permissions` 배열에 해당 권한을 명시해야 한다.
+권한 없이 호출하면 런타임에 `Command plugin:window|XXX not allowed by ACL` 오류가 발생한다.
+
+→ JS에서 새 Tauri API를 호출할 때마다 대응하는 `core:window:allow-XXX`(또는
+`plugin-name:allow-XXX`) 권한이 capabilities에 있는지 반드시 확인할 것.
+권한 이름은 `core:window:allow-<메서드명>` 패턴을 따른다(예: `allow-close`, `allow-hide`, `allow-set-focus`).
+
 ### bbox 그루핑 canMerge 비대칭 조건 버그
 
 `item.x - group.right <= xGap` 단방향 조건은 item이 group 왼쪽에 있을 때

@@ -4,6 +4,7 @@
   "windows": ["overlay", "popup", "loading", "settings"],
   "permissions": [
     "core:default",
+    "core:window:allow-close",
     "core:window:allow-hide",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register",
