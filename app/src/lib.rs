@@ -19,8 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder};
 use crate::config::Config;
 use crate::ocr::OcrBackend;
 use crate::platform::{
-    install_capture_shortcut, prepare_overlay_for_capture, replace_capture_shortcut,
-    CaptureShortcutHandler,
+    install_capture_shortcut, overlay_visible, prepare_overlay_for_capture, replace_capture_shortcut,
+    show_overlay_notice, CaptureShortcutHandler,
 };
 use crate::popup::calc_popup_pos;
 use crate::services::{
@@ -41,6 +41,11 @@ struct PendingSettingsNotice(Mutex<Option<SettingsNoticePayload>>);
 struct CaptureShortcutState {
     busy: Arc<AtomicBool>,
     handler: CaptureShortcutHandler,
+}
+
+struct CaptureRetryState {
+    ocr_in_flight: AtomicBool,
+    pending_retry: AtomicBool,
 }
 
 enum SettingsStore {
@@ -202,6 +207,30 @@ fn emit_ocr_outcome_if_current(
 
 struct PendingCapture(Mutex<Option<CaptureInfo>>);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureHotkeyAction {
+    StartNow,
+    QueueRetry,
+    Ignore,
+}
+
+fn decide_capture_hotkey_action(
+    overlay_is_visible: bool,
+    busy: bool,
+    ocr_in_flight: bool,
+) -> CaptureHotkeyAction {
+    if overlay_is_visible {
+        return CaptureHotkeyAction::Ignore;
+    }
+    if !busy {
+        return CaptureHotkeyAction::StartNow;
+    }
+    if ocr_in_flight {
+        return CaptureHotkeyAction::QueueRetry;
+    }
+    CaptureHotkeyAction::Ignore
+}
+
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
 /// OCR 영역 클릭 시 호출. 오버레이는 유지하고 팝업에 번역 결과를 표시한다.
@@ -250,6 +279,7 @@ async fn close_overlay(app: AppHandle) -> Result<(), String> {
     hide_window(&app, "overlay");
     hide_window(&app, "popup");
     clear_pending_capture(&app);
+    set_pending_retry(&app, false);
     // 진행 중 OCR 작업의 결과를 무효화한다.
     app.state::<OcrJobGen>().0.fetch_add(1, Ordering::SeqCst);
     Ok(())
@@ -384,60 +414,95 @@ async fn run_region_ocr(
 // ── PrtSc 처리 ────────────────────────────────────────────────────────────────
 
 async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
-    if busy.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    let cfg = match config_snapshot(&app) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("설정 스냅샷 오류: {e}");
-            busy.store(false, Ordering::SeqCst);
-            return;
-        }
-    };
-    let missing = missing_prtsc_required_settings(&cfg);
-    if !missing.is_empty() {
-        let payload = build_settings_notice_payload(
-            format!("설정에서 다음 항목을 먼저 입력하세요: {}", missing.join(", ")),
-            &missing_prtsc_required_setting_keys(&cfg),
+    let action = decide_capture_hotkey_action(
+        overlay_visible(&app),
+        busy.load(Ordering::SeqCst),
+        ocr_in_flight(&app),
+    );
+    if action == CaptureHotkeyAction::QueueRetry {
+        set_pending_retry(&app, true);
+        show_overlay_notice(
+            &app,
+            "overlay_pending_retry",
+            "이전 작업이 끝나면 새 캡처를 시작합니다",
         );
-        open_settings_with_notice(&app, &payload);
-        busy.store(false, Ordering::SeqCst);
+        return;
+    }
+    if action == CaptureHotkeyAction::Ignore {
+        return;
+    }
+    if busy.swap(true, Ordering::SeqCst) {
+        let action = decide_capture_hotkey_action(
+            overlay_visible(&app),
+            true,
+            ocr_in_flight(&app),
+        );
+        if action == CaptureHotkeyAction::QueueRetry {
+            set_pending_retry(&app, true);
+            show_overlay_notice(
+                &app,
+                "overlay_pending_retry",
+                "이전 작업이 끝나면 새 캡처를 시작합니다",
+            );
+        }
         return;
     }
 
-    // 새 캡처 세션 시작: 세대 번호를 bump해 진행 중인 이전 작업을 무효화한다.
-    let my_gen = app.state::<OcrJobGen>().0.fetch_add(1, Ordering::SeqCst) + 1;
-
-    // 1. 스크린샷 캡처
-    let info = match capture_screen(&app).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("캡처 오류: {e}");
-            busy.store(false, Ordering::SeqCst);
-            return;
+    loop {
+        let cfg = match config_snapshot(&app) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("설정 스냅샷 오류: {e}");
+                break;
+            }
+        };
+        let missing = missing_prtsc_required_settings(&cfg);
+        if !missing.is_empty() {
+            let payload = build_settings_notice_payload(
+                format!("설정에서 다음 항목을 먼저 입력하세요: {}", missing.join(", ")),
+                &missing_prtsc_required_setting_keys(&cfg),
+            );
+            open_settings_with_notice(&app, &payload);
+            break;
         }
-    };
 
-    // 2. 오버레이 즉시 표시 (로딩 상태)
-    prepare_overlay_for_capture(&app, &info);
-    store_pending_capture(&app, info.clone());
+        // 새 캡처 세션 시작: 세대 번호를 bump해 진행 중인 이전 작업을 무효화한다.
+        let my_gen = app.state::<OcrJobGen>().0.fetch_add(1, Ordering::SeqCst) + 1;
 
-    let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+        // 1. 스크린샷 캡처
+        let info = match capture_screen(&app).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("캡처 오류: {e}");
+                break;
+            }
+        };
 
-    // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
-    let (orig_width, orig_height) = (info.orig_width, info.orig_height);
-    let ocr_result = {
-        let img = info.image;
-        tauri::async_runtime::spawn_blocking(move || {
-            run_ocr(&cfg, &engine, img, orig_width, orig_height)
-        })
-        .await
-        .map_err(|e| format!("OCR 스레드 오류: {e}"))
-        .and_then(|r| r)
-    };
-    emit_ocr_outcome_if_current(&app, my_gen, ocr_result);
+        // 2. 오버레이 즉시 표시 (로딩 상태)
+        prepare_overlay_for_capture(&app, &info);
+        store_pending_capture(&app, info.clone());
+
+        let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+        set_ocr_in_flight(&app, true);
+
+        // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
+        let (orig_width, orig_height) = (info.orig_width, info.orig_height);
+        let ocr_result = {
+            let img = info.image;
+            tauri::async_runtime::spawn_blocking(move || {
+                run_ocr(&cfg, &engine, img, orig_width, orig_height)
+            })
+            .await
+            .map_err(|e| format!("OCR 스레드 오류: {e}"))
+            .and_then(|r| r)
+        };
+        set_ocr_in_flight(&app, false);
+        emit_ocr_outcome_if_current(&app, my_gen, ocr_result);
+
+        if !take_pending_retry(&app) {
+            break;
+        }
+    }
 
     busy.store(false, Ordering::SeqCst);
 }
@@ -463,6 +528,30 @@ fn clear_pending_capture(app: &AppHandle) {
             *guard = None;
         }
     }
+}
+
+fn ocr_in_flight(app: &AppHandle) -> bool {
+    app.state::<CaptureRetryState>()
+        .ocr_in_flight
+        .load(Ordering::SeqCst)
+}
+
+fn set_ocr_in_flight(app: &AppHandle, value: bool) {
+    app.state::<CaptureRetryState>()
+        .ocr_in_flight
+        .store(value, Ordering::SeqCst);
+}
+
+fn set_pending_retry(app: &AppHandle, value: bool) {
+    app.state::<CaptureRetryState>()
+        .pending_retry
+        .store(value, Ordering::SeqCst);
+}
+
+fn take_pending_retry(app: &AppHandle) -> bool {
+    app.state::<CaptureRetryState>()
+        .pending_retry
+        .swap(false, Ordering::SeqCst)
 }
 
 fn resolve_ocr_server_executable(resource_dir: Option<PathBuf>, configured: &str) -> String {
@@ -583,6 +672,10 @@ pub fn run() {
         .manage(PendingCapture(Mutex::new(None)))
         .manage(PendingSettingsNotice(Mutex::new(None)))
         .manage(OcrJobGen(AtomicU64::new(0)))
+        .manage(CaptureRetryState {
+            ocr_in_flight: AtomicBool::new(false),
+            pending_retry: AtomicBool::new(false),
+        })
         .manage(CaptureShortcutState {
             busy: busy.clone(),
             handler: capture_shortcut_handler.clone(),
@@ -694,10 +787,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_settings_notice_payload, clone_pending_capture, missing_prtsc_required_setting_keys,
-        missing_prtsc_required_settings, resolve_ocr_server_executable,
+        build_settings_notice_payload, clone_pending_capture, decide_capture_hotkey_action,
+        missing_prtsc_required_setting_keys, missing_prtsc_required_settings, resolve_ocr_server_executable,
         resolve_ocr_server_executable_with_current_exe_dir, should_emit_ocr, show_ocr_device_setting,
-        take_pending_settings_notice_slot, SettingsNoticePayload,
+        take_pending_settings_notice_slot, CaptureHotkeyAction, SettingsNoticePayload,
     };
     use crate::config::Config;
     use crate::services::CaptureInfo;
@@ -744,6 +837,34 @@ mod tests {
     fn 세대가_다르면_ocr_결과를_버린다() {
         assert!(!should_emit_ocr(7, 8));
         assert!(!should_emit_ocr(0, 1));
+    }
+
+    #[test]
+    fn 오버레이가_보이는_동안_핫키를_다시_눌러도_무시한다() {
+        let action = decide_capture_hotkey_action(true, false, false);
+
+        assert_eq!(action, CaptureHotkeyAction::Ignore);
+    }
+
+    #[test]
+    fn 유휴_상태에서_핫키를_누르면_즉시_캡처를_시작한다() {
+        let action = decide_capture_hotkey_action(false, false, false);
+
+        assert_eq!(action, CaptureHotkeyAction::StartNow);
+    }
+
+    #[test]
+    fn 이전_ocr이_끝나는_중이면_재요청을_예약한다() {
+        let action = decide_capture_hotkey_action(false, true, true);
+
+        assert_eq!(action, CaptureHotkeyAction::QueueRetry);
+    }
+
+    #[test]
+    fn warmup처럼_ocr이_아닌_busy_상태에서는_재요청을_예약하지_않는다() {
+        let action = decide_capture_hotkey_action(false, true, false);
+
+        assert_eq!(action, CaptureHotkeyAction::Ignore);
     }
 
     #[test]

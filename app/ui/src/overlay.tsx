@@ -25,6 +25,7 @@ type OcrResultPayload = {
 type State =
   | { kind: "hidden" }
   | { kind: "loading" }
+  | { kind: "pending_retry"; message: string }
   | { kind: "selecting" }
   | { kind: "ready"; ocr: OcrResultPayload }
   | { kind: "error"; message: string };
@@ -47,6 +48,17 @@ function OverlayApp() {
         suppressNextCloseRef.current = nextCloseSuppressed(
           suppressNextCloseRef.current,
           "overlay_show",
+        );
+      }),
+      listen<string>("overlay_pending_retry", (e) => {
+        setState({ kind: "pending_retry", message: e.payload });
+        setHoveredIdx(null);
+        setSelectionStart(null);
+        setSelectionRect(null);
+        selectionResumeStateRef.current = null;
+        suppressNextCloseRef.current = nextCloseSuppressed(
+          suppressNextCloseRef.current,
+          "overlay_pending_retry",
         );
       }),
       listen("overlay_select_region", () => {
@@ -283,7 +295,7 @@ function OverlayApp() {
       </button>
 
       {/* 로딩 */}
-      {state.kind === "loading" && (
+      {(state.kind === "loading" || state.kind === "pending_retry") && (
         <div
           style={{
             position: "absolute",
@@ -303,7 +315,7 @@ function OverlayApp() {
               borderRadius: "8px",
             }}
           >
-            텍스트 인식 중…
+            {state.kind === "pending_retry" ? state.message : "텍스트 인식 중…"}
           </div>
         </div>
       )}

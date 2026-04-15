@@ -2,7 +2,7 @@ use crate::services::CaptureInfo;
 use crate::window::{focus_window, hide_window, place_overlay_window};
 use std::str::FromStr;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::AtomicBool,
     Arc,
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -17,6 +17,17 @@ pub(crate) fn prepare_overlay_for_capture(app: &AppHandle, capture: &CaptureInfo
     if let Some(overlay) = app.get_webview_window("overlay") {
         show_overlay(app, &overlay, capture);
         focus_window(app, "overlay");
+    }
+}
+
+pub(crate) fn show_overlay_notice(app: &AppHandle, event_name: &str, message: &str) {
+    hide_window(app, "popup");
+
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.emit(event_name, message);
+        let _ = overlay.set_ignore_cursor_events(false);
+        let _ = overlay.show();
+        let _ = overlay.set_focus();
     }
 }
 
@@ -112,9 +123,9 @@ fn register_capture_shortcut(
             if debug {
                 eprintln!("[단축키] {accelerator_for_handler} 감지");
             }
-            if !should_trigger_capture(&handler_app, &handler_busy) {
+            if overlay_visible(&handler_app) {
                 if debug {
-                    eprintln!("[단축키] busy=true 이거나 overlay가 이미 보여서 무시됨");
+                    eprintln!("[단축키] overlay가 이미 보여서 무시됨");
                 }
                 return;
             }
@@ -187,11 +198,7 @@ fn show_overlay(app: &AppHandle, overlay: &WebviewWindow, capture: &CaptureInfo)
     let _ = overlay.set_fullscreen(true);
 }
 
-fn should_trigger_capture(app: &AppHandle, busy: &Arc<AtomicBool>) -> bool {
-    !overlay_visible(app) && !busy.load(Ordering::SeqCst)
-}
-
-fn overlay_visible(app: &AppHandle) -> bool {
+pub(crate) fn overlay_visible(app: &AppHandle) -> bool {
     app.get_webview_window("overlay")
         .and_then(|w| w.is_visible().ok())
         .unwrap_or(false)

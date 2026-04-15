@@ -110,7 +110,7 @@ fn normalize_capture_shortcut(value: &str) -> String {
 }
 
 pub(crate) fn validate_capture_shortcut(value: &str) -> Result<(), String> {
-    Shortcut::from_str(value).map(|_| ()).map_err(|err| {
+    Shortcut::from_str(value).map(|_| ()).map_err(|_err| {
         format!(
             "캡처 단축키 형식이 올바르지 않습니다. 예: Ctrl+Alt+A, Cmd+Shift+A"
         )
