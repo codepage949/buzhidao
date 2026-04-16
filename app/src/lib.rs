@@ -195,6 +195,20 @@ fn set_loading_status(app: &AppHandle, kind: &str, message: Option<String>) {
     }
 }
 
+fn emit_ocr_busy_changed(app: &AppHandle, busy: bool) {
+    if let Some(settings) = app.get_webview_window("settings") {
+        let _ = settings.emit("ocr_busy_changed", busy);
+    }
+}
+
+fn set_capture_busy(app: &AppHandle, value: bool) {
+    let state = app.state::<CaptureShortcutState>();
+    let previous = state.busy.swap(value, Ordering::SeqCst);
+    if previous != value {
+        emit_ocr_busy_changed(app, value);
+    }
+}
+
 fn is_development_build() -> bool {
     cfg!(debug_assertions)
 }
@@ -350,6 +364,14 @@ fn get_loading_status(app: AppHandle) -> Result<LoadingStatusPayload, String> {
         .map_err(|_| "로딩 상태 읽기 잠금 실패".to_string())
 }
 
+#[tauri::command]
+fn get_ocr_busy(app: AppHandle) -> Result<bool, String> {
+    Ok(app
+        .state::<CaptureShortcutState>()
+        .busy
+        .load(Ordering::SeqCst))
+}
+
 fn show_loading_window(app: &AppHandle) {
     set_loading_status(app, "loading", None);
     if let Some(loading) = app.get_webview_window("loading") {
@@ -433,8 +455,7 @@ fn save_user_settings(
     };
 
     if lang_changed {
-        let shortcut_state = app.state::<CaptureShortcutState>();
-        shortcut_state.busy.store(true, Ordering::SeqCst);
+        set_capture_busy(&app, true);
         show_loading_window(&app);
         let engine = match ocr_backend_snapshot(&app) {
             Ok(engine) => engine,
@@ -445,7 +466,6 @@ fn save_user_settings(
         };
         let new_lang = settings.source.clone();
         let app_handle = app.clone();
-        let busy = shortcut_state.busy.clone();
         tauri::async_runtime::spawn(async move {
             let engine_task = engine.clone();
             let lang_for_task = new_lang.clone();
@@ -461,7 +481,7 @@ fn save_user_settings(
                     if let Some(loading) = app_handle.get_webview_window("loading") {
                         let _ = loading.hide();
                     }
-                    busy.store(false, Ordering::SeqCst);
+                    set_capture_busy(&app_handle, false);
                 }
                 Err(e) => {
                     eprintln!("[OCR] 언어 변경 웜업 실패: {e}");
@@ -544,6 +564,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         }
         return;
     }
+    emit_ocr_busy_changed(&app, true);
 
     loop {
         let cfg = match config_snapshot(&app) {
@@ -611,7 +632,10 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         }
     }
 
-    busy.store(false, Ordering::SeqCst);
+    if !busy.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    emit_ocr_busy_changed(&app, false);
 }
 
 #[allow(dead_code)]
@@ -875,7 +899,6 @@ pub fn run() {
             // 백그라운드에서 OCR 사이드카를 선행 시작(Python 쪽 warmup_models 포함)한 뒤
             // 로딩 창을 숨기고 핫키 busy 플래그를 해제한다.
             let warmup_handle = app.handle().clone();
-            let warmup_busy = busy.clone();
             tauri::async_runtime::spawn(async move {
                 show_loading_window(&warmup_handle);
                 let engine = match ocr_backend_snapshot(&warmup_handle) {
@@ -895,7 +918,7 @@ pub fn run() {
                         if let Some(loading) = warmup_handle.get_webview_window("loading") {
                             let _ = loading.hide();
                         }
-                        warmup_busy.store(false, Ordering::SeqCst);
+                        set_capture_busy(&warmup_handle, false);
                     }
                     Err(e) => {
                         eprintln!("OCR warmup 실패: {e}");
@@ -914,7 +937,8 @@ pub fn run() {
             get_user_settings,
             save_user_settings,
             exit_app,
-            get_loading_status
+            get_loading_status,
+            get_ocr_busy
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");

@@ -4,6 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
+import {
+  canSaveSettings,
+  getSettingsFooterMessage,
+} from "./settings_save_state";
 
 type Device = "cpu" | "gpu";
 
@@ -120,9 +124,15 @@ function Field({
         >
           {label}
         </span>
-        {hint ? (
-          <span style={{ color: "#a6adc8", fontSize: "12px", lineHeight: 1.5 }}>{hint}</span>
-        ) : null}
+        {hint
+          ? (
+            <span
+              style={{ color: "#a6adc8", fontSize: "12px", lineHeight: 1.5 }}
+            >
+              {hint}
+            </span>
+          )
+          : null}
       </div>
       {children}
     </label>
@@ -135,7 +145,10 @@ function SettingsApp() {
   const [status, setStatus] = useState<string>("설정을 불러오는 중입니다.");
   const [error, setError] = useState<string>("");
   const [saving, setSaving] = useState(false);
-  const [highlightedFields, setHighlightedFields] = useState<HighlightableField[]>([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [highlightedFields, setHighlightedFields] = useState<
+    HighlightableField[]
+  >([]);
 
   function missingRequiredFields(next: UserSettings): HighlightableField[] {
     const missing: HighlightableField[] = [];
@@ -161,7 +174,9 @@ function SettingsApp() {
         setShowOcrServerDevice(payload.show_ocr_server_device);
         if (payload.notice) {
           setError(payload.notice.message);
-          setHighlightedFields(payload.notice.missing_fields as HighlightableField[]);
+          setHighlightedFields(
+            payload.notice.missing_fields as HighlightableField[],
+          );
         } else {
           setError("");
           setHighlightedFields(missingRequiredFields(payload.settings));
@@ -178,12 +193,33 @@ function SettingsApp() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    invoke<boolean>("get_ocr_busy")
+      .then((busy) => {
+        if (cancelled) return;
+        setOcrBusy(busy);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOcrBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useListenerCleanup(
     () => [
       listen<SettingsNoticePayload>("settings_notice", (event) => {
         setError(event.payload.message);
-        setHighlightedFields(event.payload.missing_fields as HighlightableField[]);
+        setHighlightedFields(
+          event.payload.missing_fields as HighlightableField[],
+        );
         setStatus("");
+      }),
+      listen<boolean>("ocr_busy_changed", (event) => {
+        setOcrBusy(event.payload);
       }),
     ],
     [],
@@ -196,7 +232,7 @@ function SettingsApp() {
   }, [saving]);
 
   async function save() {
-    if (!settings || saving) return;
+    if (!settings || !canSaveSettings(saving, ocrBusy)) return;
     const missing = missingRequiredFields(settings);
     if (missing.length > 0) {
       setHighlightedFields(missing);
@@ -208,7 +244,10 @@ function SettingsApp() {
     setError("");
     setStatus("설정을 저장하는 중입니다.");
     try {
-      const result = await invoke<SaveUserSettingsResult>("save_user_settings", { settings });
+      const result = await invoke<SaveUserSettingsResult>(
+        "save_user_settings",
+        { settings },
+      );
       setHighlightedFields([]);
       setStatus(
         result.restart_required
@@ -223,6 +262,9 @@ function SettingsApp() {
       setSaving(false);
     }
   }
+
+  const footerMessage = getSettingsFooterMessage(error, status, ocrBusy);
+  const saveDisabled = !canSaveSettings(saving, ocrBusy);
 
   if (!settings) {
     return (
@@ -248,8 +290,7 @@ function SettingsApp() {
             <select
               value={settings.source}
               onChange={(event) =>
-                setSettings({ ...settings, source: event.currentTarget.value })
-              }
+                setSettings({ ...settings, source: event.currentTarget.value })}
               style={textInputStyle}
             >
               {SUPPORTED_LANGS.map((lang) => (
@@ -273,35 +314,46 @@ function SettingsApp() {
               onChange={(event) =>
                 setSettings({
                   ...settings,
-                  score_thresh: numberFromInput(event.currentTarget.value, settings.score_thresh),
-                })
-              }
+                  score_thresh: numberFromInput(
+                    event.currentTarget.value,
+                    settings.score_thresh,
+                  ),
+                })}
             />
           </Field>
 
-          {showOcrServerDevice ? (
-            <Field
-              label="OCR 장치"
-              hint="저장은 즉시 되지만 OCR 서버 재시작은 하지 않습니다. 다음 앱 실행 때 적용됩니다."
-            >
-              <RadioRow
-                name="device"
-                value={settings.ocr_server_device}
-                onChange={(ocr_server_device) => setSettings({ ...settings, ocr_server_device })}
-                options={[
-                  { value: "cpu", label: "CPU" },
-                  { value: "gpu", label: "GPU" },
-                ]}
-              />
-            </Field>
-          ) : null}
+          {showOcrServerDevice
+            ? (
+              <Field
+                label="OCR 장치"
+                hint="저장은 즉시 되지만 OCR 서버 재시작은 하지 않습니다. 다음 앱 실행 때 적용됩니다."
+              >
+                <RadioRow
+                  name="device"
+                  value={settings.ocr_server_device}
+                  onChange={(ocr_server_device) =>
+                    setSettings({ ...settings, ocr_server_device })}
+                  options={[
+                    { value: "cpu", label: "CPU" },
+                    { value: "gpu", label: "GPU" },
+                  ]}
+                />
+              </Field>
+            )
+            : null}
 
-          <Field label="AI Gateway API Key" emphasized={isHighlighted("ai_gateway_api_key")}>
+          <Field
+            label="AI Gateway API Key"
+            emphasized={isHighlighted("ai_gateway_api_key")}
+          >
             <input
               type="password"
               value={settings.ai_gateway_api_key}
               onChange={(event) => {
-                const next = { ...settings, ai_gateway_api_key: event.currentTarget.value };
+                const next = {
+                  ...settings,
+                  ai_gateway_api_key: event.currentTarget.value,
+                };
                 setSettings(next);
                 setHighlightedFields(missingRequiredFields(next));
               }}
@@ -309,12 +361,18 @@ function SettingsApp() {
             />
           </Field>
 
-          <Field label="AI Gateway Model" emphasized={isHighlighted("ai_gateway_model")}>
+          <Field
+            label="AI Gateway Model"
+            emphasized={isHighlighted("ai_gateway_model")}
+          >
             <input
               type="text"
               value={settings.ai_gateway_model}
               onChange={(event) => {
-                const next = { ...settings, ai_gateway_model: event.currentTarget.value };
+                const next = {
+                  ...settings,
+                  ai_gateway_model: event.currentTarget.value,
+                };
                 setSettings(next);
                 setHighlightedFields(missingRequiredFields(next));
               }}
@@ -331,9 +389,11 @@ function SettingsApp() {
                 onChange={(event) =>
                   setSettings({
                     ...settings,
-                    word_gap: numberFromInput(event.currentTarget.value, settings.word_gap),
-                  })
-                }
+                    word_gap: numberFromInput(
+                      event.currentTarget.value,
+                      settings.word_gap,
+                    ),
+                  })}
                 style={textInputStyle}
               />
             </Field>
@@ -346,9 +406,11 @@ function SettingsApp() {
                 onChange={(event) =>
                   setSettings({
                     ...settings,
-                    line_gap: numberFromInput(event.currentTarget.value, settings.line_gap),
-                  })
-                }
+                    line_gap: numberFromInput(
+                      event.currentTarget.value,
+                      settings.line_gap,
+                    ),
+                  })}
                 style={textInputStyle}
               />
             </Field>
@@ -362,8 +424,10 @@ function SettingsApp() {
               type="text"
               value={settings.capture_shortcut}
               onChange={(event) =>
-                setSettings({ ...settings, capture_shortcut: event.currentTarget.value })
-              }
+                setSettings({
+                  ...settings,
+                  capture_shortcut: event.currentTarget.value,
+                })}
               placeholder="Ctrl+Alt+A"
               style={textInputStyle}
             />
@@ -373,10 +437,16 @@ function SettingsApp() {
             <textarea
               value={settings.system_prompt}
               onChange={(event) =>
-                setSettings({ ...settings, system_prompt: event.currentTarget.value })
-              }
+                setSettings({
+                  ...settings,
+                  system_prompt: event.currentTarget.value,
+                })}
               rows={8}
-              style={{ ...textInputStyle, resize: "vertical", minHeight: "180px" }}
+              style={{
+                ...textInputStyle,
+                resize: "vertical",
+                minHeight: "180px",
+              }}
             />
           </Field>
 
@@ -389,11 +459,22 @@ function SettingsApp() {
               flexWrap: "wrap",
             }}
           >
-            <div style={{ minHeight: "22px", color: error ? "#f38ba8" : "#a6adc8", fontSize: "13px" }}>
-              {error || status}
+            <div
+              style={{
+                minHeight: "22px",
+                color: error ? "#f38ba8" : "#a6adc8",
+                fontSize: "13px",
+              }}
+            >
+              {footerMessage}
             </div>
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-              <button type="button" onClick={() => void save()} disabled={saving} style={primaryButtonStyle}>
+              <button
+                type="button"
+                onClick={() => void save()}
+                disabled={saveDisabled}
+                style={primaryButtonStyle}
+              >
                 {saving ? "저장 중..." : "저장"}
               </button>
             </div>
@@ -406,8 +487,7 @@ function SettingsApp() {
 
 const rootStyle: React.CSSProperties = {
   minHeight: "100vh",
-  background:
-    "linear-gradient(180deg, #181825 0%, #1e1e2e 100%)",
+  background: "linear-gradient(180deg, #181825 0%, #1e1e2e 100%)",
   padding: "0",
   boxSizing: "border-box",
   fontFamily: "'Segoe UI', 'Noto Sans KR', sans-serif",
@@ -466,10 +546,10 @@ const textInputStyle: React.CSSProperties = {
 function inputStyle(emphasized: boolean): React.CSSProperties {
   return emphasized
     ? {
-        ...textInputStyle,
-        border: "1px solid #f9e2af",
-        boxShadow: "0 0 0 1px rgba(249, 226, 175, 0.25)",
-      }
+      ...textInputStyle,
+      border: "1px solid #f9e2af",
+      boxShadow: "0 0 0 1px rgba(249, 226, 175, 0.25)",
+    }
     : textInputStyle;
 }
 
