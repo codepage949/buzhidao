@@ -19,8 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder};
 use crate::config::Config;
 use crate::ocr::OcrBackend;
 use crate::platform::{
-    install_capture_shortcut, overlay_visible, prepare_overlay_for_capture, replace_capture_shortcut,
-    show_overlay_notice, CaptureShortcutHandler,
+    install_capture_shortcut, overlay_visible, prepare_overlay_for_capture,
+    replace_capture_shortcut, show_overlay_notice, CaptureShortcutHandler,
 };
 use crate::popup::calc_popup_pos;
 use crate::services::{
@@ -30,6 +30,7 @@ use crate::services::{
 use crate::window::{focus_active_window, focus_window, hide_window};
 
 type SharedConfig = Arc<RwLock<Config>>;
+type SharedOcrBackend = Arc<RwLock<Result<Arc<OcrBackend>, String>>>;
 
 struct SettingsState {
     store: SettingsStore,
@@ -37,6 +38,7 @@ struct SettingsState {
 }
 
 struct PendingSettingsNotice(Mutex<Option<SettingsNoticePayload>>);
+struct LoadingStatusState(Mutex<LoadingStatusPayload>);
 
 struct CaptureShortcutState {
     busy: Arc<AtomicBool>,
@@ -70,12 +72,26 @@ struct GetUserSettingsResult {
     notice: Option<SettingsNoticePayload>,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct LoadingStatusPayload {
+    kind: String,
+    message: Option<String>,
+}
+
 fn config_snapshot(app: &AppHandle) -> Result<Config, String> {
     let shared = app.state::<SharedConfig>();
     shared
         .read()
         .map_err(|_| "설정 상태 읽기 잠금 실패".to_string())
         .map(|guard| guard.clone())
+}
+
+fn ocr_backend_snapshot(app: &AppHandle) -> Result<Arc<OcrBackend>, String> {
+    let shared = app.state::<SharedOcrBackend>();
+    shared
+        .read()
+        .map_err(|_| "OCR 엔진 상태 읽기 잠금 실패".to_string())
+        .and_then(|guard| guard.as_ref().map(Arc::clone).map_err(Clone::clone))
 }
 
 fn show_ocr_device_setting(cfg: &Config) -> bool {
@@ -91,10 +107,16 @@ fn missing_prtsc_required_setting_keys(cfg: &Config) -> Vec<&'static str> {
     settings::missing_required_field_keys(&cfg.ai_gateway_api_key, &cfg.ai_gateway_model)
 }
 
-fn build_settings_notice_payload(message: String, missing_fields: &[&str]) -> SettingsNoticePayload {
+fn build_settings_notice_payload(
+    message: String,
+    missing_fields: &[&str],
+) -> SettingsNoticePayload {
     SettingsNoticePayload {
         message,
-        missing_fields: missing_fields.iter().map(|field| (*field).to_string()).collect(),
+        missing_fields: missing_fields
+            .iter()
+            .map(|field| (*field).to_string())
+            .collect(),
     }
 }
 
@@ -160,6 +182,17 @@ fn take_pending_settings_notice_slot(
     slot: &Mutex<Option<SettingsNoticePayload>>,
 ) -> Option<SettingsNoticePayload> {
     slot.lock().ok().and_then(|mut guard| guard.take())
+}
+
+fn set_loading_status(app: &AppHandle, kind: &str, message: Option<String>) {
+    if let Some(state) = app.try_state::<LoadingStatusState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = LoadingStatusPayload {
+                kind: kind.to_string(),
+                message,
+            };
+        }
+    }
 }
 
 fn is_development_build() -> bool {
@@ -304,15 +337,45 @@ fn get_user_settings(app: AppHandle) -> Result<GetUserSettingsResult, String> {
 }
 
 #[tauri::command]
+fn exit_app(app: AppHandle) {
+    app.exit(1);
+}
+
+#[tauri::command]
+fn get_loading_status(app: AppHandle) -> Result<LoadingStatusPayload, String> {
+    app.state::<LoadingStatusState>()
+        .0
+        .lock()
+        .map(|guard| guard.clone())
+        .map_err(|_| "로딩 상태 읽기 잠금 실패".to_string())
+}
+
+fn show_loading_window(app: &AppHandle) {
+    set_loading_status(app, "loading", None);
+    if let Some(loading) = app.get_webview_window("loading") {
+        let _ = loading.emit("warmup_loading", ());
+        let _ = loading.show();
+        let _ = loading.set_focus();
+    }
+}
+
+fn show_warmup_failure(app: &AppHandle, message: &str) {
+    set_loading_status(app, "failed", Some(message.to_string()));
+    if let Some(loading) = app.get_webview_window("loading") {
+        let _ = loading.emit("warmup_failed", message);
+        let _ = loading.show();
+        let _ = loading.set_focus();
+    }
+}
+
+#[tauri::command]
 fn save_user_settings(
     app: AppHandle,
     settings: settings::UserSettings,
 ) -> Result<SaveUserSettingsResult, String> {
     let settings = settings.validate();
-    let missing = settings::missing_required_fields(
-        &settings.ai_gateway_api_key,
-        &settings.ai_gateway_model,
-    );
+    let missing =
+        settings::missing_required_fields(&settings.ai_gateway_api_key, &settings.ai_gateway_model);
     if !missing.is_empty() {
         return Err(format!("필수 항목을 입력하세요: {}", missing.join(", ")));
     }
@@ -336,9 +399,7 @@ fn save_user_settings(
             shortcut_state.handler.clone(),
         );
         match rollback_result {
-            Ok(()) => Err(format!(
-                "{cause}. 캡처 단축키는 기존 값으로 복구했습니다."
-            )),
+            Ok(()) => Err(format!("{cause}. 캡처 단축키는 기존 값으로 복구했습니다.")),
             Err(rollback_err) => Err(format!(
                 "{cause}. 캡처 단축키 복구도 실패했습니다: {rollback_err}"
             )),
@@ -372,13 +433,16 @@ fn save_user_settings(
     };
 
     if lang_changed {
-        let engine = app.state::<Arc<OcrBackend>>().inner().clone();
         let shortcut_state = app.state::<CaptureShortcutState>();
         shortcut_state.busy.store(true, Ordering::SeqCst);
-        if let Some(loading) = app.get_webview_window("loading") {
-            let _ = loading.show();
-            let _ = loading.set_focus();
-        }
+        show_loading_window(&app);
+        let engine = match ocr_backend_snapshot(&app) {
+            Ok(engine) => engine,
+            Err(err) => {
+                show_warmup_failure(&app, &err);
+                return Ok(SaveUserSettingsResult { restart_required });
+            }
+        };
         let new_lang = settings.source.clone();
         let app_handle = app.clone();
         let busy = shortcut_state.busy.clone();
@@ -392,13 +456,18 @@ fn save_user_settings(
             .await
             .map_err(|e| format!("OCR 재웜업 스레드 오류: {e}"))
             .and_then(|r| r);
-            if let Err(e) = result {
-                eprintln!("[OCR] 언어 변경 웜업 실패: {e}");
+            match result {
+                Ok(()) => {
+                    if let Some(loading) = app_handle.get_webview_window("loading") {
+                        let _ = loading.hide();
+                    }
+                    busy.store(false, Ordering::SeqCst);
+                }
+                Err(e) => {
+                    eprintln!("[OCR] 언어 변경 웜업 실패: {e}");
+                    show_warmup_failure(&app_handle, &e);
+                }
             }
-            if let Some(loading) = app_handle.get_webview_window("loading") {
-                let _ = loading.hide();
-            }
-            busy.store(false, Ordering::SeqCst);
         });
     }
 
@@ -430,7 +499,7 @@ async fn run_region_ocr(
     };
 
     let cfg = config_snapshot(&app)?;
-    let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+    let engine = ocr_backend_snapshot(&app)?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut ocr = run_ocr(&cfg, &engine, cropped, orig_width, orig_height)?;
         offset_ocr_result(&mut ocr, offset_x, offset_y);
@@ -464,11 +533,7 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         return;
     }
     if busy.swap(true, Ordering::SeqCst) {
-        let action = decide_capture_hotkey_action(
-            overlay_visible(&app),
-            true,
-            ocr_in_flight(&app),
-        );
+        let action = decide_capture_hotkey_action(overlay_visible(&app), true, ocr_in_flight(&app));
         if action == CaptureHotkeyAction::QueueRetry {
             set_pending_retry(&app, true);
             show_overlay_notice(
@@ -491,7 +556,10 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         let missing = missing_prtsc_required_settings(&cfg);
         if !missing.is_empty() {
             let payload = build_settings_notice_payload(
-                format!("설정에서 다음 항목을 먼저 입력하세요: {}", missing.join(", ")),
+                format!(
+                    "설정에서 다음 항목을 먼저 입력하세요: {}",
+                    missing.join(", ")
+                ),
                 &missing_prtsc_required_setting_keys(&cfg),
             );
             open_settings_with_notice(&app, &payload);
@@ -514,7 +582,14 @@ async fn handle_prtsc(app: AppHandle, busy: Arc<AtomicBool>) {
         prepare_overlay_for_capture(&app, &info);
         store_pending_capture(&app, info.clone());
 
-        let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+        let engine = match ocr_backend_snapshot(&app) {
+            Ok(engine) => engine,
+            Err(e) => {
+                set_ocr_in_flight(&app, false);
+                emit_ocr_outcome_if_current(&app, my_gen, Err(e));
+                break;
+            }
+        };
         set_ocr_in_flight(&app, true);
 
         // 3. OCR 실행 (블로킹 — spawn_blocking 내에서 호출됨)
@@ -715,6 +790,10 @@ pub fn run() {
         .manage(reqwest::Client::new())
         .manage(PendingCapture(Mutex::new(None)))
         .manage(PendingSettingsNotice(Mutex::new(None)))
+        .manage(LoadingStatusState(Mutex::new(LoadingStatusPayload {
+            kind: "loading".to_string(),
+            message: None,
+        })))
         .manage(OcrJobGen(AtomicU64::new(0)))
         .manage(CaptureRetryState {
             ocr_in_flight: AtomicBool::new(false),
@@ -760,8 +839,8 @@ pub fn run() {
                 app.path().resource_dir().ok(),
                 &config.ocr_server_executable,
             );
-            let backend = OcrBackend::new(&config).expect("OCR 엔진 초기화 실패");
-            app.manage(Arc::new(backend));
+            let backend = OcrBackend::new(&config).map(Arc::new);
+            app.manage(Arc::new(RwLock::new(backend)));
             // 시스템 트레이: 종료 메뉴
             let settings_item = MenuItemBuilder::new("설정…").id("settings").build(app)?;
             let quit_item = MenuItemBuilder::new("종료").id("quit").build(app)?;
@@ -776,14 +855,12 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    match event.id().as_ref() {
-                        "settings" => {
-                            let _ = open_settings_window(app);
-                        }
-                        "quit" => app.exit(0),
-                        _ => {}
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "settings" => {
+                        let _ = open_settings_window(app);
                     }
+                    "quit" => app.exit(0),
+                    _ => {}
                 })
                 .build(app)?;
 
@@ -800,18 +877,31 @@ pub fn run() {
             let warmup_handle = app.handle().clone();
             let warmup_busy = busy.clone();
             tauri::async_runtime::spawn(async move {
-                let engine = warmup_handle.state::<Arc<OcrBackend>>().inner().clone();
+                show_loading_window(&warmup_handle);
+                let engine = match ocr_backend_snapshot(&warmup_handle) {
+                    Ok(engine) => engine,
+                    Err(e) => {
+                        eprintln!("OCR 엔진 초기화 실패: {e}");
+                        show_warmup_failure(&warmup_handle, &e);
+                        return;
+                    }
+                };
                 let warmup_result = tauri::async_runtime::spawn_blocking(move || engine.warmup())
                     .await
                     .map_err(|e| format!("OCR warmup 스레드 오류: {e}"))
                     .and_then(|r| r);
-                if let Err(e) = warmup_result {
-                    eprintln!("OCR warmup 실패: {e}");
+                match warmup_result {
+                    Ok(()) => {
+                        if let Some(loading) = warmup_handle.get_webview_window("loading") {
+                            let _ = loading.hide();
+                        }
+                        warmup_busy.store(false, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        eprintln!("OCR warmup 실패: {e}");
+                        show_warmup_failure(&warmup_handle, &e);
+                    }
                 }
-                if let Some(loading) = warmup_handle.get_webview_window("loading") {
-                    let _ = loading.hide();
-                }
-                warmup_busy.store(false, Ordering::SeqCst);
             });
 
             Ok(())
@@ -822,7 +912,9 @@ pub fn run() {
             close_popup,
             run_region_ocr,
             get_user_settings,
-            save_user_settings
+            save_user_settings,
+            exit_app,
+            get_loading_status
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");
@@ -931,12 +1023,11 @@ mod tests {
         let exe_path = resource_dir.join("ocr_server.exe");
         fs::write(&exe_path, b"exe").expect("ocr server 생성 실패");
 
-        let resolved =
-            resolve_ocr_server_executable_with_current_exe_dir(
-                Some(resource_dir.clone()),
-                None,
-                "missing/ocr_server.exe",
-            );
+        let resolved = resolve_ocr_server_executable_with_current_exe_dir(
+            Some(resource_dir.clone()),
+            None,
+            "missing/ocr_server.exe",
+        );
 
         assert_eq!(PathBuf::from(resolved), exe_path);
 
@@ -950,12 +1041,11 @@ mod tests {
         let exe_path = dir.join("ocr_server.exe");
         fs::write(&exe_path, b"exe").expect("configured exe 생성 실패");
 
-        let resolved =
-            resolve_ocr_server_executable_with_current_exe_dir(
-                Some(dir.clone()),
-                None,
-                &exe_path.to_string_lossy(),
-            );
+        let resolved = resolve_ocr_server_executable_with_current_exe_dir(
+            Some(dir.clone()),
+            None,
+            &exe_path.to_string_lossy(),
+        );
 
         assert_eq!(PathBuf::from(resolved), exe_path);
 
@@ -964,8 +1054,11 @@ mod tests {
 
     #[test]
     fn resource_dir가_없으면_configured_경로를_그대로_반환한다() {
-        let resolved =
-            resolve_ocr_server_executable_with_current_exe_dir(None, None, "missing/ocr_server.exe");
+        let resolved = resolve_ocr_server_executable_with_current_exe_dir(
+            None,
+            None,
+            "missing/ocr_server.exe",
+        );
         assert_eq!(resolved, "missing/ocr_server.exe");
     }
 
@@ -1098,7 +1191,10 @@ mod tests {
         let first = take_pending_settings_notice_slot(&slot);
         let second = take_pending_settings_notice_slot(&slot);
 
-        assert_eq!(first.as_ref().map(|payload| payload.message.as_str()), Some("필수 항목을 입력하세요"));
+        assert_eq!(
+            first.as_ref().map(|payload| payload.message.as_str()),
+            Some("필수 항목을 입력하세요")
+        );
         assert!(second.is_none());
     }
 }

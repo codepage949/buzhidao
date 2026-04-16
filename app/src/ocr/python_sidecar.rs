@@ -3,13 +3,13 @@ use crate::services::{OcrDebugDetection, OcrDetection};
 use image::{DynamicImage, ImageFormat};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -85,10 +85,7 @@ impl PythonSidecarEngine {
     pub(crate) fn new(cfg: &Config) -> Result<Self, String> {
         let executable = PathBuf::from(cfg.ocr_server_executable.trim());
         if !executable.exists() {
-            return Err(format!(
-                "OCR server 실행 파일을 찾을 수 없습니다: {}",
-                executable.display()
-            ));
+            return Err("OCR server 실행 파일을 찾을 수 없습니다".to_string());
         }
 
         Ok(Self {
@@ -310,7 +307,7 @@ fn spawn_sidecar(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("OCR server 실행 실패 ({}): {e}", executable.display()))?;
+        .map_err(|e| format!("OCR server 실행 실패: {e}"))?;
     let stdin = child
         .stdin
         .take()
