@@ -80,10 +80,24 @@ pub(crate) fn missing_required_field_keys(api_key: &str, model: &str) -> Vec<&'s
     missing
 }
 
+/// PaddleOCR이 지원하는 언어 코드 화이트리스트.
+/// 참고: https://github.com/Mushroomcat9998/PaddleOCR/blob/main/doc/doc_en/multi_languages_en.md
+pub(crate) const SUPPORTED_LANGS: &[&str] = &[
+    "ch", "en", "fr", "german", "japan", "korean", "ch_tra",
+    "it", "es", "pt", "ru", "uk", "be", "te", "sa", "ta",
+    "af", "az", "bs", "cs", "cy", "da", "mt", "nl", "no", "pl",
+    "ro", "sk", "sl", "sq", "sv", "sw", "tl", "tr", "uz", "vi",
+    "mn", "abq", "ar", "hi", "ug", "fa", "ur", "rs_latin", "oc",
+    "mr", "ne", "rs_cyrillic", "bg", "et", "ga", "hr", "hu", "id",
+    "is", "ku", "lt", "lv", "mi", "ms", "ady", "kbd", "ava", "dar",
+    "inh", "lbe", "lez", "tab", "bh", "mai", "ang", "bho", "mah",
+    "sck", "new", "gom",
+];
+
 fn normalize_source(value: &str) -> String {
     let v = value.trim().to_ascii_lowercase();
-    if v == "ch" {
-        "ch".to_string()
+    if SUPPORTED_LANGS.iter().any(|code| *code == v) {
+        v
     } else {
         "en".to_string()
     }
@@ -281,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn sanitized는_source를_en_또는_ch로_정규화한다() {
+    fn sanitized는_지원_언어는_그대로_유지하고_미지원_값은_en으로_폴백한다() {
         let cfg = base_config();
         let a = UserSettings {
             source: "  CH  ".to_string(),
@@ -289,6 +303,20 @@ mod tests {
         }
         .validate();
         assert_eq!(a.source, "ch");
+
+        let j = UserSettings {
+            source: "japan".to_string(),
+            ..UserSettings::from_config(&cfg)
+        }
+        .validate();
+        assert_eq!(j.source, "japan");
+
+        let k = UserSettings {
+            source: "KOREAN".to_string(),
+            ..UserSettings::from_config(&cfg)
+        }
+        .validate();
+        assert_eq!(k.source, "korean");
 
         let b = UserSettings {
             source: "japanese".to_string(),

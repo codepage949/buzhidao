@@ -16,6 +16,10 @@ impl OcrBackend {
         self.0.warmup()
     }
 
+    pub(crate) fn set_lang(&self, lang: &str) -> Result<(), String> {
+        self.0.set_lang(lang)
+    }
+
     pub(crate) fn resize_width_before_ocr(&self) -> u32 {
         OCR_SERVER_RESIZE_WIDTH
     }

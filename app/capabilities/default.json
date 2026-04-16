@@ -6,6 +6,7 @@
     "core:default",
     "core:window:allow-close",
     "core:window:allow-hide",
+    "core:window:allow-show",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister"

@@ -361,14 +361,46 @@ fn save_user_settings(
     }
 
     let shared = app.state::<SharedConfig>();
-    let restart_required = {
+    let (restart_required, lang_changed) = {
         let mut guard = shared
             .write()
             .map_err(|_| "설정 상태 쓰기 잠금 실패".to_string())?;
         let restart_required = guard.ocr_server_device != settings.ocr_server_device;
+        let lang_changed = guard.source != settings.source;
         settings.apply_to(&mut guard);
-        restart_required
+        (restart_required, lang_changed)
     };
+
+    if lang_changed {
+        let engine = app.state::<Arc<OcrBackend>>().inner().clone();
+        let shortcut_state = app.state::<CaptureShortcutState>();
+        shortcut_state.busy.store(true, Ordering::SeqCst);
+        if let Some(loading) = app.get_webview_window("loading") {
+            let _ = loading.show();
+            let _ = loading.set_focus();
+        }
+        let new_lang = settings.source.clone();
+        let app_handle = app.clone();
+        let busy = shortcut_state.busy.clone();
+        tauri::async_runtime::spawn(async move {
+            let engine_task = engine.clone();
+            let lang_for_task = new_lang.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                engine_task.set_lang(&lang_for_task)?;
+                engine_task.warmup()
+            })
+            .await
+            .map_err(|e| format!("OCR 재웜업 스레드 오류: {e}"))
+            .and_then(|r| r);
+            if let Err(e) = result {
+                eprintln!("[OCR] 언어 변경 웜업 실패: {e}");
+            }
+            if let Some(loading) = app_handle.get_webview_window("loading") {
+                let _ = loading.hide();
+            }
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
 
     Ok(SaveUserSettingsResult { restart_required })
 }
@@ -777,7 +809,7 @@ pub fn run() {
                     eprintln!("OCR warmup 실패: {e}");
                 }
                 if let Some(loading) = warmup_handle.get_webview_window("loading") {
-                    let _ = loading.close();
+                    let _ = loading.hide();
                 }
                 warmup_busy.store(false, Ordering::SeqCst);
             });

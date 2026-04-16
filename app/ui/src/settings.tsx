@@ -5,11 +5,91 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useListenerCleanup, useWindowKeydown } from "./app-hooks";
 
-type Source = "en" | "ch";
 type Device = "cpu" | "gpu";
 
+// PaddleOCR 지원 언어. 값은 서버/백엔드에 그대로 전달되는 코드.
+// https://github.com/Mushroomcat9998/PaddleOCR/blob/main/doc/doc_en/multi_languages_en.md
+const SUPPORTED_LANGS: Array<{ code: string; label: string }> = [
+  { code: "ch", label: "중국어 간체 + 영어 (ch)" },
+  { code: "en", label: "영어 (en)" },
+  { code: "ch_tra", label: "중국어 번체 (ch_tra)" },
+  { code: "japan", label: "일본어 (japan)" },
+  { code: "korean", label: "한국어 (korean)" },
+  { code: "fr", label: "프랑스어 (fr)" },
+  { code: "german", label: "독일어 (german)" },
+  { code: "it", label: "이탈리아어 (it)" },
+  { code: "es", label: "스페인어 (es)" },
+  { code: "pt", label: "포르투갈어 (pt)" },
+  { code: "ru", label: "러시아어 (ru)" },
+  { code: "uk", label: "우크라이나어 (uk)" },
+  { code: "be", label: "벨라루스어 (be)" },
+  { code: "te", label: "텔루구어 (te)" },
+  { code: "sa", label: "사우디아라비아 (sa)" },
+  { code: "ta", label: "타밀어 (ta)" },
+  { code: "af", label: "아프리칸스어 (af)" },
+  { code: "az", label: "아제르바이잔어 (az)" },
+  { code: "bs", label: "보스니아어 (bs)" },
+  { code: "cs", label: "체코어 (cs)" },
+  { code: "cy", label: "웨일스어 (cy)" },
+  { code: "da", label: "덴마크어 (da)" },
+  { code: "mt", label: "몰타어 (mt)" },
+  { code: "nl", label: "네덜란드어 (nl)" },
+  { code: "no", label: "노르웨이어 (no)" },
+  { code: "pl", label: "폴란드어 (pl)" },
+  { code: "ro", label: "루마니아어 (ro)" },
+  { code: "sk", label: "슬로바키아어 (sk)" },
+  { code: "sl", label: "슬로베니아어 (sl)" },
+  { code: "sq", label: "알바니아어 (sq)" },
+  { code: "sv", label: "스웨덴어 (sv)" },
+  { code: "sw", label: "스와힐리어 (sw)" },
+  { code: "tl", label: "타갈로그어 (tl)" },
+  { code: "tr", label: "터키어 (tr)" },
+  { code: "uz", label: "우즈베크어 (uz)" },
+  { code: "vi", label: "베트남어 (vi)" },
+  { code: "mn", label: "몽골어 (mn)" },
+  { code: "ar", label: "아랍어 (ar)" },
+  { code: "hi", label: "힌디어 (hi)" },
+  { code: "ug", label: "위구르어 (ug)" },
+  { code: "fa", label: "페르시아어 (fa)" },
+  { code: "ur", label: "우르두어 (ur)" },
+  { code: "rs_latin", label: "세르비아어(라틴) (rs_latin)" },
+  { code: "rs_cyrillic", label: "세르비아어(키릴) (rs_cyrillic)" },
+  { code: "oc", label: "오크어 (oc)" },
+  { code: "mr", label: "마라티어 (mr)" },
+  { code: "ne", label: "네팔어 (ne)" },
+  { code: "bg", label: "불가리아어 (bg)" },
+  { code: "et", label: "에스토니아어 (et)" },
+  { code: "ga", label: "아일랜드어 (ga)" },
+  { code: "hr", label: "크로아티아어 (hr)" },
+  { code: "hu", label: "헝가리어 (hu)" },
+  { code: "id", label: "인도네시아어 (id)" },
+  { code: "is", label: "아이슬란드어 (is)" },
+  { code: "ku", label: "쿠르드어 (ku)" },
+  { code: "lt", label: "리투아니아어 (lt)" },
+  { code: "lv", label: "라트비아어 (lv)" },
+  { code: "mi", label: "마오리어 (mi)" },
+  { code: "ms", label: "말레이어 (ms)" },
+  { code: "abq", label: "아바자어 (abq)" },
+  { code: "ady", label: "아디게어 (ady)" },
+  { code: "kbd", label: "카바르다어 (kbd)" },
+  { code: "ava", label: "아바르어 (ava)" },
+  { code: "dar", label: "다르긴어 (dar)" },
+  { code: "inh", label: "인구시어 (inh)" },
+  { code: "lbe", label: "락어 (lbe)" },
+  { code: "lez", label: "레즈긴어 (lez)" },
+  { code: "tab", label: "타바사란어 (tab)" },
+  { code: "bh", label: "비하르어 (bh)" },
+  { code: "mai", label: "마이틸리어 (mai)" },
+  { code: "ang", label: "앙기카어 (ang)" },
+  { code: "bho", label: "보즈푸리어 (bho)" },
+  { code: "mah", label: "마가히어 (mah)" },
+  { code: "sck", label: "나그푸리어 (sck)" },
+  { code: "new", label: "네와르어 (new)" },
+  { code: "gom", label: "고안 콘카니어 (gom)" },
+];
+
 type UserSettings = {
-  source: Source;
+  source: string;
   score_thresh: number;
   ocr_server_device: Device;
   ai_gateway_api_key: string;
@@ -240,16 +320,23 @@ function SettingsApp() {
     <div style={rootStyle}>
       <div style={shellStyle}>
         <section style={{ ...formCardStyle, display: "grid", gap: "18px" }}>
-          <Field label="번역 소스 언어">
-            <RadioRow
-              name="source"
+          <Field
+            label="번역 소스 언어"
+            hint="언어를 바꾸면 저장 즉시 OCR 서버가 새 언어로 재시작되며, 로딩이 끝날 때까지 잠시 대기합니다."
+          >
+            <select
               value={settings.source}
-              onChange={(source) => setSettings({ ...settings, source })}
-              options={[
-                { value: "en", label: "영어" },
-                { value: "ch", label: "중국어" },
-              ]}
-            />
+              onChange={(event) =>
+                setSettings({ ...settings, source: event.currentTarget.value })
+              }
+              style={textInputStyle}
+            >
+              {SUPPORTED_LANGS.map((lang) => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.label}
+                </option>
+              ))}
+            </select>
           </Field>
 
           <Field

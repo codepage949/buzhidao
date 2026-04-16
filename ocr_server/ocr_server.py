@@ -13,7 +13,33 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-LANGS = ("en", "ch")
+# PaddleOCR이 지원하는 언어 코드 전체 목록.
+# https://github.com/Mushroomcat9998/PaddleOCR/blob/main/doc/doc_en/multi_languages_en.md
+LANGS = (
+    "ch", "en", "fr", "german", "japan", "korean", "ch_tra",
+    "it", "es", "pt", "ru", "uk", "be", "te", "sa", "ta",
+    "af", "az", "bs", "cs", "cy", "da", "mt", "nl", "no", "pl",
+    "ro", "sk", "sl", "sq", "sv", "sw", "tl", "tr", "uz", "vi",
+    "mn", "abq", "ar", "hi", "ug", "fa", "ur", "rs_latin", "oc",
+    "mr", "ne", "rs_cyrillic", "bg", "et", "ga", "hr", "hu", "id",
+    "is", "ku", "lt", "lv", "mi", "ms", "ady", "kbd", "ava", "dar",
+    "inh", "lbe", "lez", "tab", "bh", "mai", "ang", "bho", "mah",
+    "sck", "new", "gom",
+)
+DEFAULT_LANG = "en"
+
+
+def resolve_selected_lang() -> str:
+    lang = os.environ.get("PYTHON_OCR_LANG", "").strip().lower()
+    if lang in LANGS:
+        return lang
+    if lang:
+        print(
+            f"unsupported PYTHON_OCR_LANG: {lang} (falling back to {DEFAULT_LANG})",
+            file=sys.stderr,
+            flush=True,
+        )
+    return DEFAULT_LANG
 
 
 # 1×1 24bpp BMP — PaddleOCR 모델 워밍업 전용 최소 입력
@@ -184,9 +210,10 @@ def parse_request(line: str) -> tuple[int, str, str, float]:
 
 
 def run_server() -> int:
-    ocrs = {lang: build_ocr(lang) for lang in LANGS}
-    warmup_models({"en": ocrs["en"]})
-    emit({"type": "ready", "langs": list(LANGS)})
+    selected = resolve_selected_lang()
+    ocrs: dict = {selected: build_ocr(selected)}
+    warmup_models(ocrs)
+    emit({"type": "ready", "langs": [selected]})
 
     for line in sys.stdin:
         line = line.strip()
@@ -200,6 +227,11 @@ def run_server() -> int:
             continue
 
         try:
+            if source not in ocrs:
+                raise ValueError(
+                    f"selected language is '{selected}' but request source is '{source}'; "
+                    "restart OCR server with the new PYTHON_OCR_LANG to switch language"
+                )
             detections, debug_detections = predict_image(
                 ocrs[source], image_path, score_thresh
             )

@@ -19,6 +19,7 @@ const DETACHED_PROCESS: u32 = 0x00000008;
 pub(crate) struct PythonSidecarEngine {
     executable: PathBuf,
     device: String,
+    lang: Mutex<String>,
     startup_timeout: Duration,
     request_timeout: Duration,
     state: Mutex<SidecarState>,
@@ -93,6 +94,7 @@ impl PythonSidecarEngine {
         Ok(Self {
             executable,
             device: cfg.ocr_server_device.clone(),
+            lang: Mutex::new(cfg.source.clone()),
             startup_timeout: Duration::from_secs(cfg.ocr_server_startup_timeout_secs.max(1)),
             request_timeout: Duration::from_secs(cfg.ocr_server_request_timeout_secs.max(1)),
             state: Mutex::new(SidecarState {
@@ -103,6 +105,7 @@ impl PythonSidecarEngine {
     }
 
     pub(crate) fn warmup(&self) -> Result<(), String> {
+        let lang = self.lang_snapshot()?;
         let mut state = self
             .state
             .lock()
@@ -111,10 +114,38 @@ impl PythonSidecarEngine {
             &mut state.running,
             &self.executable,
             &self.device,
+            &lang,
             self.startup_timeout,
             "warmup",
         )?;
         Ok(())
+    }
+
+    pub(crate) fn set_lang(&self, new_lang: &str) -> Result<(), String> {
+        {
+            let mut current = self
+                .lang
+                .lock()
+                .map_err(|_| "OCR server 언어 잠금 실패".to_string())?;
+            if current.as_str() == new_lang {
+                return Ok(());
+            }
+            *current = new_lang.to_string();
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "OCR server 상태 잠금 실패".to_string())?;
+        shutdown_state(&mut state);
+        eprintln!("[OCR] 언어 변경으로 OCR server 재시작 예약: {new_lang}");
+        Ok(())
+    }
+
+    fn lang_snapshot(&self) -> Result<String, String> {
+        self.lang
+            .lock()
+            .map(|g| g.clone())
+            .map_err(|_| "OCR server 언어 잠금 실패".to_string())
     }
 
     pub(crate) fn run_image(
@@ -140,6 +171,7 @@ impl PythonSidecarEngine {
         score_thresh: f32,
         debug_trace: bool,
     ) -> Result<(Vec<OcrDetection>, Vec<OcrDebugDetection>), String> {
+        let lang = self.lang_snapshot()?;
         let mut state = self
             .state
             .lock()
@@ -152,6 +184,7 @@ impl PythonSidecarEngine {
                 &mut state.running,
                 &self.executable,
                 &self.device,
+                &lang,
                 self.startup_timeout,
                 source,
             )?;
@@ -178,11 +211,12 @@ fn ensure_running<'a>(
     running: &'a mut Option<RunningSidecar>,
     executable: &Path,
     device: &str,
+    lang: &str,
     startup_timeout: Duration,
     source: &str,
 ) -> Result<&'a mut RunningSidecar, String> {
     if running.is_none() {
-        *running = Some(spawn_sidecar(executable, device, startup_timeout)?);
+        *running = Some(spawn_sidecar(executable, device, lang, startup_timeout)?);
     }
     let running = running
         .as_mut()
@@ -259,11 +293,13 @@ fn perform_request(
 fn spawn_sidecar(
     executable: &Path,
     device: &str,
+    lang: &str,
     startup_timeout: Duration,
 ) -> Result<RunningSidecar, String> {
     let mut cmd = Command::new(executable);
     cmd.arg("--server")
         .env("PYTHON_OCR_DEVICE", device)
+        .env("PYTHON_OCR_LANG", lang)
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::piped())
