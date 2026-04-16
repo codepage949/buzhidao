@@ -127,9 +127,18 @@ function PopupApp() {
         }
         .markdown-body pre {
           background: #313244; border-radius: 6px;
-          padding: 10px; overflow-x: auto; margin-bottom: 0.6em;
+          padding: 10px; margin-bottom: 0.6em;
+          overflow-x: hidden;
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
         }
-        .markdown-body pre code { background: none; padding: 0; }
+        .markdown-body pre code {
+          background: none; padding: 0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+        }
         .markdown-body ul, .markdown-body ol {
           padding-left: 1.4em; margin-bottom: 0.6em;
         }
