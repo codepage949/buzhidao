@@ -89,7 +89,8 @@ cargo tauri build --features gpu
 
 ### 설정 관리
 
-- 런타임 설정은 `.env`와 `.prompt`에서 읽습니다.
+- 개발 빌드는 `app/.env`와 `app/.prompt`를 읽고, 배포 빌드는 앱 데이터 디렉터리의 `.env`와 `.prompt`를 읽습니다.
+- 두 경로를 동시에 읽지 않고, 빌드 모드에 따라 하나만 선택합니다.
 - `get_user_settings`, `save_user_settings` 커맨드로 프런트와 동기화합니다.
 - 필수 설정 누락 시 설정 창을 자동으로 열고 안내 메시지와 강조 필드를 전달합니다.
 - settings 창은 OCR busy 상태를 구독하며, OCR 진행 중에는 저장 버튼을 전체 비활성화합니다.

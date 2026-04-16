@@ -38,7 +38,7 @@
 
 ### 환경 변수 준비
 
-`app/.env`를 준비합니다. 주요 항목은 다음과 같습니다.
+개발 빌드(`cargo tauri dev`)에서는 `app/.env`를 준비합니다. 주요 항목은 다음과 같습니다.
 
 - `SOURCE`
 - `AI_GATEWAY_API_KEY`
@@ -120,7 +120,7 @@ cd app
 cargo tauri build --features gpu
 ```
 
-배포 시 앱은 `app/.env` 또는 앱 데이터 디렉터리의 `.env`를 읽고, OCR 서버 실행 파일은 설정값 경로를 우선 사용한 뒤 번들 리소스나 앱 옆 `ocr_server` 폴더를 fallback으로 탐색합니다.
+개발 빌드는 `app/.env`를 읽고, 배포 빌드는 앱 데이터 디렉터리의 `.env`를 읽습니다. 두 경로를 동시에 읽지 않습니다. OCR 서버 실행 파일은 설정값 경로를 우선 사용한 뒤 번들 리소스나 앱 옆 `ocr_server` 폴더를 fallback으로 탐색합니다.
 
 ## 각 기능 설명
 
