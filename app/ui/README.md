@@ -17,8 +17,9 @@ ui/
 ├── src/
 │   ├── overlay.tsx              # OCR 결과 오버레이
 │   ├── popup.tsx                # 번역 결과 팝업
-│   ├── loading.tsx              # 앱 시작 warmup 로딩 창
+│   ├── loading.ts               # 앱 시작 warmup 로딩 창 상태 제어
 │   ├── settings.tsx             # 설정 창
+│   ├── settings_save_state.ts   # 설정 저장 가능 여부/문구 계산
 │   ├── detection.ts             # OCR 박스 그룹핑 로직
 │   ├── overlay_close.ts         # 오버레이 닫기 억제 규칙
 │   ├── overlay_selection.ts     # 향후 영역 재선택용 규칙 코드
@@ -45,7 +46,7 @@ deno task build
 테스트:
 
 ```bash
-deno test
+deno task test
 ```
 
 ## 실행 경로
@@ -66,13 +67,17 @@ deno test
 
 - 앱 시작 직후 OCR warmup이 끝날 때까지 표시됩니다.
 - warmup 완료 후 Rust가 창을 닫습니다.
+- 초기화나 warmup 실패 시 실패 상태로 전환되며, 종료 버튼을 표시합니다.
+- 이벤트를 놓친 경우에도 `get_loading_status`로 현재 상태를 다시 조회해 복구합니다.
 
 ### settings
 
 - `get_user_settings`로 현재 설정과 초기 notice를 불러옵니다.
+- `get_ocr_busy`와 `ocr_busy_changed`로 OCR busy 상태를 조회/구독합니다.
+- OCR 진행 중에는 저장 버튼이 비활성화되고 `OCR 진행 중에는 설정을 저장할 수 없습니다.` 문구를 표시합니다.
 - 저장 시 `save_user_settings`를 호출합니다.
 
 ## 특이 사항
 
 - `vite.config.ts`는 `overlay`, `popup`, `loading`, `settings`를 multi-entry로 빌드합니다.
-- 테스트는 그룹핑, 오버레이 닫기 억제, 영역 선택 결과 같은 핵심 UI 로직만 포함합니다.
+- 테스트는 그룹핑, 로딩 상태 요약, 오버레이 닫기 억제, 영역 선택 결과, 설정 저장 가능 상태 같은 핵심 UI 로직만 포함합니다.

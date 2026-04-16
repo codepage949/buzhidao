@@ -83,6 +83,7 @@ ocr_server/dist/gpu_import_check/gpu_import_check.exe
 
 - 앱은 이미지 경로, 언어, score threshold가 포함된 요청을 sidecar에 보냅니다.
 - sidecar는 PaddleOCR로 예측하고, 텍스트/박스 결과를 표준 출력 기반 프로토콜로 반환합니다.
+- sidecar 실행 파일이 없거나 실행에 실패하면 앱 쪽에 오류를 전달합니다.
 
 ### 디바이스 선택
 

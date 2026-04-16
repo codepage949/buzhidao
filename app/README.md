@@ -44,7 +44,7 @@ cargo test
 
 ```bash
 cd app/ui
-deno test
+deno task test
 ```
 
 ## 릴리즈 배포 방법
@@ -69,6 +69,7 @@ cargo tauri build --features gpu
 
 - 시작 시 `loading` 창이 먼저 표시됩니다.
 - `.env`와 `.prompt`를 준비하고 OCR 엔진 warmup이 끝나면 `loading` 창을 닫습니다.
+- OCR 엔진 초기화나 warmup이 실패하면 `loading` 창이 실패 상태로 전환되고 종료 버튼이 표시됩니다.
 - warmup 전에는 전역 캡처 단축키 입력을 막습니다.
 
 ### 전역 캡처
@@ -91,6 +92,8 @@ cargo tauri build --features gpu
 - 런타임 설정은 `.env`와 `.prompt`에서 읽습니다.
 - `get_user_settings`, `save_user_settings` 커맨드로 프런트와 동기화합니다.
 - 필수 설정 누락 시 설정 창을 자동으로 열고 안내 메시지와 강조 필드를 전달합니다.
+- settings 창은 OCR busy 상태를 구독하며, OCR 진행 중에는 저장 버튼을 전체 비활성화합니다.
+- OCR 종료 시 settings 창의 저장 버튼은 자동으로 다시 활성화됩니다.
 
 ### 트레이
 
