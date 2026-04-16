@@ -13,20 +13,20 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# PaddleOCR이 지원하는 언어 코드 전체 목록.
-# https://github.com/Mushroomcat9998/PaddleOCR/blob/main/doc/doc_en/multi_languages_en.md
-LANGS = (
-    "ch", "en", "fr", "german", "japan", "korean", "ch_tra",
-    "it", "es", "pt", "ru", "uk", "be", "te", "sa", "ta",
-    "af", "az", "bs", "cs", "cy", "da", "mt", "nl", "no", "pl",
-    "ro", "sk", "sl", "sq", "sv", "sw", "tl", "tr", "uz", "vi",
-    "mn", "abq", "ar", "hi", "ug", "fa", "ur", "rs_latin", "oc",
-    "mr", "ne", "rs_cyrillic", "bg", "et", "ga", "hr", "hu", "id",
-    "is", "ku", "lt", "lv", "mi", "ms", "ady", "kbd", "ava", "dar",
-    "inh", "lbe", "lez", "tab", "bh", "mai", "ang", "bho", "mah",
-    "sck", "new", "gom",
-)
 DEFAULT_LANG = "en"
+
+
+def _load_langs_json() -> tuple[str, ...]:
+    base = getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent.parent
+    langs_path = Path(base) / "shared" / "langs.json"
+    if not langs_path.is_file():
+        langs_path = Path(__file__).resolve().parent.parent / "shared" / "langs.json"
+    with open(langs_path, encoding="utf-8") as f:
+        entries = json.load(f)
+    return tuple(entry["code"] for entry in entries)
+
+
+LANGS = _load_langs_json()
 
 
 def resolve_selected_lang() -> str:

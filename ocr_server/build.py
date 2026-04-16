@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 from argparse import ArgumentParser
@@ -6,8 +7,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
+SHARED_LANGS_JSON = PROJECT_ROOT / "shared" / "langs.json"
 OCR_CORE_METADATA_PACKAGES = [
     "paddlex",
     "paddleocr",
@@ -103,6 +106,8 @@ def main() -> int:
         "--onefile" if args.onefile else "--onedir",
         "--name",
         str(target_name),
+        "--add-data",
+        f"{SHARED_LANGS_JSON}{os.pathsep}shared",
         str(target["entry"]),
     ]
     for package_name in target["collect_data"]:

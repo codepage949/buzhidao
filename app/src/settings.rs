@@ -2,7 +2,21 @@ use crate::config::{default_capture_shortcut, Config};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use tauri_plugin_global_shortcut::Shortcut;
+
+const LANGS_JSON: &str = include_str!("../../shared/langs.json");
+
+#[derive(Deserialize)]
+struct LangEntry {
+    code: String,
+}
+
+static SUPPORTED_LANG_CODES: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let entries: Vec<LangEntry> =
+        serde_json::from_str(LANGS_JSON).expect("shared/langs.json 파싱 실패");
+    entries.into_iter().map(|e| e.code).collect()
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct UserSettings {
@@ -80,23 +94,9 @@ pub(crate) fn missing_required_field_keys(api_key: &str, model: &str) -> Vec<&'s
     missing
 }
 
-/// PaddleOCR이 지원하는 언어 코드 화이트리스트.
-/// 참고: https://github.com/Mushroomcat9998/PaddleOCR/blob/main/doc/doc_en/multi_languages_en.md
-pub(crate) const SUPPORTED_LANGS: &[&str] = &[
-    "ch", "en", "fr", "german", "japan", "korean", "ch_tra",
-    "it", "es", "pt", "ru", "uk", "be", "te", "sa", "ta",
-    "af", "az", "bs", "cs", "cy", "da", "mt", "nl", "no", "pl",
-    "ro", "sk", "sl", "sq", "sv", "sw", "tl", "tr", "uz", "vi",
-    "mn", "abq", "ar", "hi", "ug", "fa", "ur", "rs_latin", "oc",
-    "mr", "ne", "rs_cyrillic", "bg", "et", "ga", "hr", "hu", "id",
-    "is", "ku", "lt", "lv", "mi", "ms", "ady", "kbd", "ava", "dar",
-    "inh", "lbe", "lez", "tab", "bh", "mai", "ang", "bho", "mah",
-    "sck", "new", "gom",
-];
-
 fn normalize_source(value: &str) -> String {
     let v = value.trim().to_ascii_lowercase();
-    if SUPPORTED_LANGS.iter().any(|code| *code == v) {
+    if SUPPORTED_LANG_CODES.iter().any(|code| code == &v) {
         v
     } else {
         "en".to_string()
