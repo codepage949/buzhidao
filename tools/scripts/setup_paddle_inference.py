@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -21,6 +22,8 @@ OPENCV_CONTRIB_PYTHON_VERSION = "4.10.0.84"
 OPENCV_VERSION = "4.10.0"
 PYCLIPPER_VERSION = "1.4.0"
 SHAPELY_VERSION = "2.1.2"
+DOWNLOAD_RETRY_COUNT = 3
+DOWNLOAD_RETRY_DELAY_SECONDS = 5
 OPENCV_WINDOWS_URL = (
     "https://sourceforge.net/projects/opencvlibrary/files/4.10.0/"
     "opencv-4.10.0-windows.exe/download"
@@ -225,16 +228,7 @@ def download_paddle_inference_archive(
         return destination
 
     download_dir.mkdir(parents=True, exist_ok=True)
-    print(f"다운로드: {url}")
-    try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            with destination.open("wb") as target:
-                shutil.copyfileobj(response, target)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"다운로드 실패: {url} ({exc})") from exc
-
-    print(f"저장: {destination}")
-    return destination
+    return download_url_to_file(url, destination)
 
 
 def download_file(url: str, destination: Path, force: bool = False) -> Path:
@@ -243,13 +237,41 @@ def download_file(url: str, destination: Path, force: bool = False) -> Path:
         return destination
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    print(f"다운로드: {url}")
-    try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            with destination.open("wb") as target:
-                shutil.copyfileobj(response, target)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"다운로드 실패: {url} ({exc})") from exc
+    return download_url_to_file(url, destination)
+
+
+def is_retryable_download_error(exc: urllib.error.URLError) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 408 or exc.code == 429 or 500 <= exc.code <= 599
+    return True
+
+
+def download_url_to_file(
+    url: str,
+    destination: Path,
+    retry_count: int = DOWNLOAD_RETRY_COUNT,
+    retry_delay_seconds: int = DOWNLOAD_RETRY_DELAY_SECONDS,
+) -> Path:
+    last_error: urllib.error.URLError | None = None
+    for attempt in range(1, retry_count + 1):
+        print(f"다운로드: {url}")
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                with destination.open("wb") as target:
+                    shutil.copyfileobj(response, target)
+            break
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if destination.exists():
+                destination.unlink()
+            if attempt >= retry_count or not is_retryable_download_error(exc):
+                raise RuntimeError(f"다운로드 실패: {url} ({exc})") from exc
+            print(
+                f"다운로드 재시도 예정 ({attempt}/{retry_count}): {url} ({exc})"
+            )
+            time.sleep(retry_delay_seconds)
+    else:
+        raise RuntimeError(f"다운로드 실패: {url} ({last_error})")
 
     print(f"저장: {destination}")
     return destination

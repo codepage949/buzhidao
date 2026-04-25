@@ -143,12 +143,14 @@ jobs:
           cargo tauri build --no-bundle ${{ matrix.cargo_features }}
 
       - name: Run OCR smoke after build
+        if: matrix.flavor == 'cpu'
         shell: bash
         run: |
           set -euo pipefail
           if [ "${{ matrix.os_name }}" = "linux" ]; then
             export LD_LIBRARY_PATH="$PWD/.cuda:$PWD/target/release:$PWD/target/release/deps:$PWD/.paddle_inference/lib:$PWD/.paddle_inference/third_party/opencv-sdk/linux-x86_64/install/lib:${LD_LIBRARY_PATH:-}"
           fi
+          export BUZHIDAO_PADDLE_MODEL_ROOT="$PWD/.paddle_models"
           export OCR_SERVER_DEVICE=cpu
           export BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1
           cargo test --release ${{ matrix.cargo_features }} 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture

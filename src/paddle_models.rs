@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PADDLE_MODEL_BASE_URL: &str =
     "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0";
+const PADDLE_MODEL_ROOT_ENV: &str = "BUZHIDAO_PADDLE_MODEL_ROOT";
 const DET_MODEL_NAME: &str = "PP-OCRv5_server_det";
 const CLS_MODEL_NAME: &str = "PP-LCNet_x1_0_textline_ori";
 
@@ -124,6 +125,9 @@ where
 
 pub(crate) fn paddle_ocr_cache_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    if let Some(root) = configured_paddle_model_root() {
+        roots.push(root);
+    }
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join(".paddlex").join("official_models"));
         roots.push(home.join(".paddleocr"));
@@ -133,6 +137,14 @@ pub(crate) fn paddle_ocr_cache_roots() -> Vec<PathBuf> {
 
 pub(crate) fn default_paddle_model_root() -> Option<PathBuf> {
     paddle_ocr_cache_roots().into_iter().next()
+}
+
+fn configured_paddle_model_root() -> Option<PathBuf> {
+    let raw = std::env::var_os(PADDLE_MODEL_ROOT_ENV)?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(raw))
 }
 
 pub(crate) fn model_spec_for_lang(lang: &str) -> PaddleModelSpec {
@@ -318,11 +330,15 @@ fn official_model_url(model_name: &str) -> String {
 mod tests {
     use super::{
         model_spec_for_lang, normalize_upstream_source, official_model_url,
-        resolve_paddle_model_dir_for_lang_with_roots,
+        paddle_ocr_cache_roots, resolve_paddle_model_dir_for_lang_with_roots,
+        PADDLE_MODEL_ROOT_ENV,
     };
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn temp_path(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -394,5 +410,22 @@ mod tests {
         assert_eq!(unresolved, None);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn 환경변수_모델_루트를_기본_캐시보다_먼저_사용한다() {
+        let _guard = ENV_LOCK.lock().expect("환경 변수 테스트 락 획득 실패");
+        let root = temp_path("buzhidao-env-paddle-model-root");
+        let previous = std::env::var_os(PADDLE_MODEL_ROOT_ENV);
+        std::env::set_var(PADDLE_MODEL_ROOT_ENV, &root);
+
+        let roots = paddle_ocr_cache_roots();
+
+        if let Some(previous) = previous {
+            std::env::set_var(PADDLE_MODEL_ROOT_ENV, previous);
+        } else {
+            std::env::remove_var(PADDLE_MODEL_ROOT_ENV);
+        }
+        assert_eq!(roots.first(), Some(&root));
     }
 }

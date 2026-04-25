@@ -14,6 +14,7 @@ from tools.scripts.setup_paddle_inference import (
     configure_utf8_stdio,
     detect_archive_mode,
     download_paddle_inference_archive,
+    download_url_to_file,
     import_opencv_sdk,
     opencv_platform_dirname,
     resolve_archive_filename,
@@ -251,6 +252,59 @@ class SetupPaddleInferenceTest(unittest.TestCase):
                 self.assertEqual(result, expected)
                 self.assertTrue(result.exists())
                 self.assertEqual(result.read_bytes(), b"fake-data")
+
+    @patch.object(setup_module.time, "sleep")
+    @patch("tools.scripts.setup_paddle_inference.urllib.request.urlopen")
+    def test_일시적_다운로드_오류는_재시도한다(self, urlopen_mock: MagicMock, sleep_mock: MagicMock):
+        class Response(BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        url = "https://example.com/opencv.exe"
+        urlopen_mock.side_effect = [
+            setup_module.urllib.error.HTTPError(
+                url,
+                502,
+                "Bad Gateway",
+                hdrs=None,
+                fp=None,
+            ),
+            Response(b"ok"),
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            destination = Path(td) / "opencv.exe"
+
+            result = download_url_to_file(url, destination, retry_delay_seconds=0)
+
+            self.assertEqual(result, destination)
+            self.assertEqual(destination.read_bytes(), b"ok")
+            self.assertEqual(urlopen_mock.call_count, 2)
+            sleep_mock.assert_called_once_with(0)
+
+    @patch.object(setup_module.time, "sleep")
+    @patch("tools.scripts.setup_paddle_inference.urllib.request.urlopen")
+    def test_비일시적_다운로드_오류는_재시도하지_않는다(self, urlopen_mock: MagicMock, sleep_mock: MagicMock):
+        url = "https://example.com/missing.exe"
+        urlopen_mock.side_effect = setup_module.urllib.error.HTTPError(
+            url,
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=None,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            destination = Path(td) / "missing.exe"
+
+            with self.assertRaises(RuntimeError):
+                download_url_to_file(url, destination, retry_delay_seconds=0)
+
+            self.assertEqual(urlopen_mock.call_count, 1)
+            sleep_mock.assert_not_called()
 
     @patch("tools.scripts.setup_paddle_inference.urllib.request.urlopen")
     def test_기존_아카이브는_force가_아니면_재사용한다(self, urlopen_mock: MagicMock):
