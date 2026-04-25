@@ -15,6 +15,7 @@ tools/ocr_sidecar_compare/dist/
 tools/ocr_sidecar_compare/*.spec
 
 !.gitignore
+!.gitattributes
 !.dockerignore
 !.env.example
 !.github/

@@ -11,6 +11,7 @@ from tools.scripts.setup_paddle_inference import (
     PADDLE_INFERENCE_VERSION,
     PYCLIPPER_VERSION,
     SHAPELY_VERSION,
+    configure_utf8_stdio,
     detect_archive_mode,
     download_paddle_inference_archive,
     import_opencv_sdk,
@@ -62,6 +63,24 @@ def write_mock_opencv_sdk(root: Path) -> None:
 
 
 class SetupPaddleInferenceTest(unittest.TestCase):
+    def test_stdio를_utf8로_재설정한다(self):
+        class FakeStream:
+            def __init__(self):
+                self.calls = []
+
+            def reconfigure(self, **kwargs):
+                self.calls.append(kwargs)
+
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        with patch.object(setup_module.sys, "stdout", stdout), \
+                patch.object(setup_module.sys, "stderr", stderr):
+            configure_utf8_stdio()
+
+        self.assertEqual(stdout.calls, [{"encoding": "utf-8", "errors": "replace"}])
+        self.assertEqual(stderr.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
     def test_지원_포맷을_탐지한다(self):
         self.assertEqual(detect_archive_mode(Path("a.zip")), "zip")
         self.assertEqual(detect_archive_mode(Path("a.tar.gz")), "tar.gz")

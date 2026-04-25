@@ -5,6 +5,7 @@ import json
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.error
 import urllib.request
@@ -66,6 +67,19 @@ PADDLE_INFERENCE_V3_URLS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
         },
     },
 }
+
+
+def configure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+
+        reconfigure(encoding="utf-8", errors="replace")
 
 
 def parse_args() -> argparse.Namespace:
@@ -512,6 +526,7 @@ def setup_paddle_inference(archive_path: Path, destination_dir: Path) -> Path:
 
 
 def main() -> int:
+    configure_utf8_stdio()
     args = parse_args()
     destination_dir = Path(args.destination_dir)
     download_dir = Path(args.download_dir)
