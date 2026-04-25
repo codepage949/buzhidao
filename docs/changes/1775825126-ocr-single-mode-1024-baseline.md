@@ -27,7 +27,7 @@
 ### `src/config.rs`
 
 - `OCR_PROFILE`, `OCR_DET_RESIZE_LONG`, `OCR_ENABLE_CLS`, `OCR_DENSE_TILE_FAST_PATH` 분기 제거
-- det 입력 스케일은 상수 [`OCR_DET_RESIZE_LONG`](src\config.rs) `= 1024`로 고정
+- det 입력 스케일은 상수 `OCR_DET_RESIZE_LONG`(`app/src/config.rs`) `= 1024`로 고정
 
 ### `src/services.rs`
 

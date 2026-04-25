@@ -1,0 +1,84 @@
+{
+  "productName": "buzhidao",
+  "version": "0.1.0",
+  "identifier": "com.buzhidao.desktop",
+  "build": {
+    "beforeDevCommand": {
+      "script": "deno task dev",
+      "cwd": "ui"
+    },
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": {
+      "script": "deno task build",
+      "cwd": "ui"
+    },
+    "frontendDist": "ui/dist"
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": []
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "overlay",
+        "title": "overlay",
+        "url": "overlay.html",
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "fullscreen": true,
+        "skipTaskbar": false
+      },
+      {
+        "label": "loading",
+        "title": "buzhidao",
+        "url": "loading.html",
+        "visible": true,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "width": 300,
+        "height": 90,
+        "resizable": false
+      },
+      {
+        "label": "popup",
+        "title": "번역",
+        "url": "popup.html",
+        "visible": false,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "width": 420,
+        "height": 500,
+        "resizable": false
+      },
+      {
+        "label": "settings",
+        "title": "설정",
+        "url": "settings.html",
+        "visible": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "center": true,
+        "width": 720,
+        "height": 760,
+        "minWidth": 640,
+        "minHeight": 680,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

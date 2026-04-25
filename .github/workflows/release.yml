@@ -20,7 +20,7 @@ jobs:
     name: Prepare release
     runs-on: ubuntu-latest
     outputs:
-      release_sha: ${{ steps.release_sha.outputs.value }}
+      base_sha: ${{ steps.base_sha.outputs.value }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -37,15 +37,15 @@ jobs:
             exit 1
           fi
 
-      - name: Capture release SHA
-        id: release_sha
+      - name: Capture base SHA
+        id: base_sha
         shell: bash
         run: |
           set -euo pipefail
           echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build ${{ matrix.label }}
+  verify:
+    name: Verify build and OCR ${{ matrix.label }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -57,55 +57,33 @@ jobs:
             flavor: cpu
             label: windows-amd64-cpu
             runner: windows-latest
-            archive_format: zip
-            app_binary: app/target/release/buzhidao.exe
-            ocr_binary: ocr_server/dist/ocr_server/ocr_server.exe
             cargo_features: ""
           - os_name: windows
             arch: amd64
             flavor: gpu
             label: windows-amd64-gpu
             runner: windows-latest
-            archive_format: zip
-            app_binary: app/target/release/buzhidao.exe
-            ocr_binary: ocr_server/dist/ocr_server/ocr_server.exe
             cargo_features: "--features gpu"
           - os_name: linux
             arch: amd64
             flavor: cpu
             label: linux-amd64-cpu
             runner: ubuntu-24.04
-            archive_format: tar.gz
-            app_binary: app/target/release/buzhidao
-            ocr_binary: ocr_server/dist/ocr_server/ocr_server
             cargo_features: ""
           - os_name: linux
             arch: amd64
             flavor: gpu
             label: linux-amd64-gpu
             runner: ubuntu-24.04
-            archive_format: tar.gz
-            app_binary: app/target/release/buzhidao
-            ocr_binary: ocr_server/dist/ocr_server/ocr_server
             cargo_features: "--features gpu"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.prepare.outputs.release_sha }}
+          ref: ${{ needs.prepare.outputs.base_sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v8.0.0
-        with:
-          version: "latest"
 
       - name: Setup Deno
         uses: denoland/setup-deno@v2
@@ -117,47 +95,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libpipewire-0.3-dev \
-            libxdo-dev \
-            libx11-dev \
-            libxtst-dev \
-            libxi-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libxcursor-dev \
-            libxfixes-dev \
-            libevdev-dev \
-            libclang-dev \
-            libgbm-dev \
-            libssl-dev \
-            libgl1 \
-            libgeos-dev \
-            libgomp1 \
-            libglib2.0-0
+          bash tools/scripts/install_linux_build_deps.sh
 
-      - name: Build OCR server
+      - name: Prepare native SDKs
         shell: bash
-        working-directory: ocr_server
         run: |
           set -euo pipefail
+          opencv_args=()
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            sdk="$PWD/.opencv-sdk-ci"
+            mkdir -p "$sdk/install/include" "$sdk/install/lib"
+            ln -s /usr/include/opencv4 "$sdk/install/include/opencv4"
+            for lib in opencv_core opencv_imgproc opencv_imgcodecs; do
+              cp -L "/usr/lib/x86_64-linux-gnu/lib${lib}.so" "$sdk/install/lib/"
+            done
+            opencv_args=(--opencv-sdk-dir "$sdk")
+          fi
+
+          paddle_args=(--destination-dir .paddle_inference)
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
-            uv sync -p 3.13 --group build --group gpu
-            uv run --group build --group gpu python build.py --gpu
-          else
-            uv sync -p 3.13 --group build --group cpu
-            uv run --group build --group cpu python build.py
+            paddle_args+=(--device gpu)
+          fi
+          python tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
+
+          if [ "${{ matrix.flavor }}" = "gpu" ]; then
+            python tools/scripts/setup_cuda_runtime.py --package-set paddle-cu126 --destination-dir .cuda
           fi
 
       - name: Build frontend
         shell: bash
-        working-directory: app/ui
+        working-directory: ui
         run: |
           set -euo pipefail
           deno install
@@ -171,7 +138,172 @@ jobs:
 
       - name: Build desktop app
         shell: bash
-        working-directory: app
+        run: |
+          set -euo pipefail
+          cargo tauri build --no-bundle ${{ matrix.cargo_features }}
+
+      - name: Run OCR smoke after build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            export LD_LIBRARY_PATH="$PWD/.cuda:$PWD/target/release:$PWD/target/release/deps:$PWD/.paddle_inference/lib:$PWD/.paddle_inference/third_party/opencv-sdk/linux-x86_64/install/lib:${LD_LIBRARY_PATH:-}"
+          fi
+          export OCR_SERVER_DEVICE=cpu
+          export BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1
+          cargo test --release ${{ matrix.cargo_features }} 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture
+
+  version:
+    name: Update release version
+    needs:
+      - prepare
+      - verify
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release_sha.outputs.value }}
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Ensure branch has not moved
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(git rev-parse HEAD)"
+          expected="${{ needs.prepare.outputs.base_sha }}"
+          if [ "$current" != "$expected" ]; then
+            echo "Branch moved during release: current=$current expected=$expected" >&2
+            exit 1
+          fi
+
+      - name: Update Cargo and Tauri versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/scripts/update_release_version.py "${{ inputs.version }}"
+
+      - name: Commit version update
+        id: release_sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock tauri.conf.json
+          if git diff --cached --quiet; then
+            echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: 릴리즈 버전 ${{ inputs.version }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build release asset ${{ matrix.label }}
+    needs:
+      - version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: windows
+            arch: amd64
+            flavor: cpu
+            label: windows-amd64-cpu
+            runner: windows-latest
+            archive_format: zip
+            app_binary: target/release/buzhidao.exe
+            cargo_features: ""
+          - os_name: windows
+            arch: amd64
+            flavor: gpu
+            label: windows-amd64-gpu
+            runner: windows-latest
+            archive_format: zip
+            app_binary: target/release/buzhidao.exe
+            cargo_features: "--features gpu"
+          - os_name: linux
+            arch: amd64
+            flavor: cpu
+            label: linux-amd64-cpu
+            runner: ubuntu-24.04
+            archive_format: tar.gz
+            app_binary: target/release/buzhidao
+            cargo_features: ""
+          - os_name: linux
+            arch: amd64
+            flavor: gpu
+            label: linux-amd64-gpu
+            runner: ubuntu-24.04
+            archive_format: tar.gz
+            app_binary: target/release/buzhidao
+            cargo_features: "--features gpu"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.release_sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/scripts/install_linux_build_deps.sh
+
+      - name: Prepare native SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          opencv_args=()
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            sdk="$PWD/.opencv-sdk-ci"
+            mkdir -p "$sdk/install/include" "$sdk/install/lib"
+            ln -s /usr/include/opencv4 "$sdk/install/include/opencv4"
+            for lib in opencv_core opencv_imgproc opencv_imgcodecs; do
+              cp -L "/usr/lib/x86_64-linux-gnu/lib${lib}.so" "$sdk/install/lib/"
+            done
+            opencv_args=(--opencv-sdk-dir "$sdk")
+          fi
+
+          paddle_args=(--destination-dir .paddle_inference)
+          if [ "${{ matrix.flavor }}" = "gpu" ]; then
+            paddle_args+=(--device gpu)
+          fi
+          python tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
+
+          if [ "${{ matrix.flavor }}" = "gpu" ]; then
+            python tools/scripts/setup_cuda_runtime.py --package-set paddle-cu126 --destination-dir .cuda
+          fi
+
+      - name: Build frontend
+        shell: bash
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          deno install
+          deno task build
+
+      - name: Install Tauri CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install tauri-cli --version '^2' --locked
+
+      - name: Build desktop app
+        shell: bash
         run: |
           set -euo pipefail
           cargo tauri build --no-bundle ${{ matrix.cargo_features }}
@@ -180,25 +312,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/release_helper.py make-archive \
+          python tools/scripts/release_helper.py make-archive \
             --version "${{ inputs.version }}" \
             --os "${{ matrix.os_name }}" \
             --arch "${{ matrix.arch }}" \
             --flavor "${{ matrix.flavor }}" \
             --app-binary "${{ matrix.app_binary }}" \
-            --ocr-server-dir "$(dirname "${{ matrix.ocr_binary }}")" \
             --dist-dir dist \
             --component app \
-            --format "${{ matrix.archive_format }}"
-          python scripts/release_helper.py make-archive \
-            --version "${{ inputs.version }}" \
-            --os "${{ matrix.os_name }}" \
-            --arch "${{ matrix.arch }}" \
-            --flavor "${{ matrix.flavor }}" \
-            --app-binary "${{ matrix.app_binary }}" \
-            --ocr-server-dir "$(dirname "${{ matrix.ocr_binary }}")" \
-            --dist-dir dist \
-            --component ocr-server \
             --format "${{ matrix.archive_format }}"
 
       - name: Upload app archive
@@ -210,19 +331,10 @@ jobs:
             dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.tar.gz*
           if-no-files-found: error
 
-      - name: Upload OCR server archive
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ matrix.label }}-ocr-server
-          path: |
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.zip*
-            dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-ocr-server.tar.gz*
-          if-no-files-found: error
-
   release:
     name: Create GitHub release
     needs:
-      - prepare
+      - version
       - build
     runs-on: ubuntu-latest
     steps:
@@ -230,7 +342,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.release_sha }}
+          ref: ${{ needs.version.outputs.release_sha }}
 
       - name: Download archives
         uses: actions/download-artifact@v6
@@ -248,27 +360,25 @@ jobs:
             echo
             echo "## 설치 방법"
             echo
-            echo "GitHub Release 자산은 파일 크기 제한 때문에 플랫폼별로 \`app\`과 \`ocr-server\` 두 개로 분리되어 있습니다."
+            echo "GitHub Release 자산은 플랫폼별 앱 아카이브 하나로 제공됩니다."
             echo
             echo "- \`buzhidao-${version}-<os>-<arch>-<flavor>-app.zip\` 또는 \`.tar.gz\`"
-            echo "- \`buzhidao-${version}-<os>-<arch>-<flavor>-ocr-server.zip\` 또는 \`.tar.gz\`"
             echo
-            echo "같은 OS, 같은 아키텍처, 같은 flavor(\`cpu\` 또는 \`gpu\`) 조합의 두 자산을 함께 내려받아 같은 디렉터리에 압축 해제하세요."
+            echo "같은 OS, 같은 아키텍처, 같은 flavor(\`cpu\` 또는 \`gpu\`) 조합의 앱 자산을 내려받아 압축 해제하세요."
             echo
-            echo "압축 해제 후 최종 구조는 아래와 같아야 합니다."
+            echo "압축 해제 후 실행 파일은 아래와 같습니다."
             echo
-            echo "- Windows: \`buzhidao.exe\` 와 \`ocr_server/\` 가 같은 상위 디렉터리에 위치"
-            echo "- Linux: \`buzhidao\` 와 \`ocr_server/\` 가 같은 상위 디렉터리에 위치"
+            echo "- Windows: \`buzhidao.exe\`"
+            echo "- Linux: \`buzhidao\`"
             echo
             echo "예시:"
             echo
             echo "- \`buzhidao-${version}-windows-amd64-gpu-app.zip\`"
-            echo "- \`buzhidao-${version}-windows-amd64-gpu-ocr-server.zip\`"
             echo
             echo "## 설치 스크립트"
             echo
             echo "각 플랫폼별 설치 스크립트가 릴리즈 자산으로 첨부되어 있습니다."
-            echo "압축 파일을 내려받은 디렉터리에서 해당 스크립트를 실행하면 분할 파일 합치기와 압축 해제를 자동으로 처리합니다."
+            echo "앱 압축 파일을 내려받은 디렉터리에서 해당 스크립트를 실행하면 분할 파일 합치기와 압축 해제를 자동으로 처리합니다."
             echo
             echo "| 스크립트 | 대상 | 실행 방법 |"
             echo "|---------|------|----------|"
@@ -318,16 +428,16 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.version }}"
-          python scripts/release_helper.py make-install-script --version "$version" --os windows --arch amd64 --flavor cpu
-          python scripts/release_helper.py make-install-script --version "$version" --os windows --arch amd64 --flavor gpu
-          python scripts/release_helper.py make-install-script --version "$version" --os linux --arch amd64 --flavor cpu
-          python scripts/release_helper.py make-install-script --version "$version" --os linux --arch amd64 --flavor gpu
+          python tools/scripts/release_helper.py make-install-script --version "$version" --os windows --arch amd64 --flavor cpu
+          python tools/scripts/release_helper.py make-install-script --version "$version" --os windows --arch amd64 --flavor gpu
+          python tools/scripts/release_helper.py make-install-script --version "$version" --os linux --arch amd64 --flavor cpu
+          python tools/scripts/release_helper.py make-install-script --version "$version" --os linux --arch amd64 --flavor gpu
 
       - name: Create tag
         shell: bash
         run: |
           set -euo pipefail
-          git tag "${{ inputs.version }}" "${{ needs.prepare.outputs.release_sha }}"
+          git tag "${{ inputs.version }}" "${{ needs.version.outputs.release_sha }}"
           git push origin "${{ inputs.version }}"
 
       - name: Create GitHub release

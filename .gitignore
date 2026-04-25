@@ -1,18 +1,18 @@
 .*
 target/
+app/target/
 gen/
 models/
 __pycache__/
 *.py[cod]
-scripts/_export_tmp/
+tools/scripts/_export_tmp/
 benchmarks/
 cuda/
 dist/
 wheelhouse/
-app/target/
-ocr_server/build/
-ocr_server/dist/
-ocr_server/*.spec
+tools/ocr_sidecar_compare/build/
+tools/ocr_sidecar_compare/dist/
+tools/ocr_sidecar_compare/*.spec
 
 !.gitignore
 !.dockerignore
