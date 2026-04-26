@@ -3,6 +3,7 @@ use crate::ocr::{ocr_stage_logging_enabled, OcrBackend};
 use crate::services::capture::CaptureInfo;
 use image::imageops::FilterType;
 use serde::Serialize;
+use std::path::PathBuf;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub(crate) struct OcrBoundsPayload {
@@ -521,14 +522,119 @@ pub(crate) fn run_ocr(
     Ok(payload)
 }
 
+#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+pub(crate) struct ReleaseOcrSmokeOptions {
+    source: String,
+    score_thresh: f32,
+    ocr_server_device: String,
+    image_path: PathBuf,
+}
+
+impl ReleaseOcrSmokeOptions {
+    #[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+    pub(crate) fn from_env() -> Self {
+        Self {
+            source: std::env::var("BUZHIDAO_RELEASE_OCR_SMOKE_SOURCE")
+                .unwrap_or_else(|_| "ch".to_string()),
+            score_thresh: std::env::var("BUZHIDAO_RELEASE_OCR_SMOKE_SCORE_THRESH")
+                .ok()
+                .and_then(|raw| raw.parse::<f32>().ok())
+                .unwrap_or(0.1),
+            ocr_server_device: std::env::var("OCR_SERVER_DEVICE")
+                .unwrap_or_else(|_| "cpu".to_string()),
+            image_path: std::env::var_os("BUZHIDAO_RELEASE_OCR_SMOKE_IMAGE")
+                .map(PathBuf::from)
+                .unwrap_or_else(default_release_ocr_smoke_image),
+        }
+    }
+}
+
+pub(crate) fn default_release_ocr_smoke_image() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("testdata")
+        .join("ocr")
+        .join("test.png")
+}
+
+#[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
+fn release_smoke_config(options: &ReleaseOcrSmokeOptions) -> Config {
+    Config {
+        source: options.source.clone(),
+        score_thresh: options.score_thresh,
+        ocr_debug_trace: false,
+        ocr_server_device: options.ocr_server_device.clone(),
+        ai_gateway_api_key: String::new(),
+        ai_gateway_model: String::new(),
+        system_prompt: String::new(),
+        word_gap: 20,
+        line_gap: 15,
+        capture_shortcut: "Ctrl+Alt+A".to_string(),
+    }
+}
+
+#[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
+pub(crate) fn run_release_ocr_smoke_from_env() -> Result<(), String> {
+    run_release_ocr_smoke(ReleaseOcrSmokeOptions::from_env())
+}
+
+#[cfg(not(all(feature = "paddle-ffi", has_paddle_inference)))]
+pub(crate) fn run_release_ocr_smoke_from_env() -> Result<(), String> {
+    Err("릴리즈 OCR smoke에는 paddle-ffi 빌드와 Paddle Inference 링크가 필요합니다.".to_string())
+}
+
+#[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
+fn run_release_ocr_smoke(options: ReleaseOcrSmokeOptions) -> Result<(), String> {
+    let model_dir = tauri::async_runtime::block_on(
+        crate::paddle_models::ensure_paddle_models_for_lang(&options.source),
+    )
+    .map_err(|e| format!("릴리즈 OCR smoke 모델 보장 실패: {e}"))?;
+    crate::paddle_models::validate_paddle_model_root_for_lang(&options.source, &model_dir)
+        .map_err(|e| format!("릴리즈 OCR smoke 모델 루트 검증 실패: {e}"))?;
+
+    let cfg = release_smoke_config(&options);
+    let engine = OcrBackend::new(&cfg, Some(model_dir.as_path()))
+        .map_err(|e| format!("릴리즈 OCR smoke 엔진 생성 실패: {e}"))?;
+    engine
+        .warmup()
+        .map_err(|e| format!("릴리즈 OCR smoke warmup 실패: {e}"))?;
+
+    let image = image::open(&options.image_path)
+        .map_err(|e| format!("릴리즈 OCR smoke 이미지 열기 실패: {e}"))?
+        .into_rgba8();
+    let payload = run_ocr(&cfg, &engine, &image, image.width(), image.height())
+        .map_err(|e| format!("릴리즈 OCR smoke 실행 실패: {e}"))?;
+    let recognized_texts = payload
+        .detections
+        .iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .count();
+    if recognized_texts == 0 {
+        return Err("릴리즈 OCR smoke 결과에 인식된 텍스트가 없습니다.".to_string());
+    }
+
+    println!(
+        "[RELEASE_OCR_SMOKE] {}",
+        serde_json::json!({
+            "source": payload.source,
+            "orig_width": payload.orig_width,
+            "orig_height": payload.orig_height,
+            "detections": payload.detections.len(),
+            "recognized_texts": recognized_texts,
+        })
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_overlay_groups, compute_resize_limits, offset_ocr_result, resize_image_to_fit,
-        run_ocr, scale_ocr_result, selection_rect_to_image_rect, OcrBoundsPayload,
-        OcrGroupPayload,
-        OcrResultPayload, ScreenshotResizeMode,
+        build_overlay_groups, compute_resize_limits, default_release_ocr_smoke_image,
+        offset_ocr_result, resize_image_to_fit, scale_ocr_result, selection_rect_to_image_rect,
+        OcrBoundsPayload, OcrGroupPayload, OcrResultPayload, ScreenshotResizeMode,
     };
+    #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
+    use super::{run_ocr, run_release_ocr_smoke_from_env};
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
     use crate::{config::Config, ocr::OcrBackend};
     use image::{Rgba, RgbaImage};
@@ -903,30 +1009,15 @@ mod tests {
             eprintln!("릴리즈 OCR smoke는 BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1일 때만 실행합니다.");
             return;
         }
-        let source = std::env::var("BUZHIDAO_RELEASE_OCR_SMOKE_SOURCE")
-            .unwrap_or_else(|_| "en".to_string());
-        let model_dir = tauri::async_runtime::block_on(
-            crate::paddle_models::ensure_paddle_models_for_lang(&source),
-        )
-        .expect("릴리즈 OCR smoke 모델 보장 실패");
-        crate::paddle_models::validate_paddle_model_root_for_lang(&source, &model_dir)
-            .expect("릴리즈 OCR smoke 모델 루트 검증 실패");
-        eprintln!("릴리즈 OCR smoke 모델 루트: {}", model_dir.display());
 
-        let mut cfg = bench_config(&source, 0.1);
-        cfg.ocr_server_device =
-            std::env::var("OCR_SERVER_DEVICE").unwrap_or_else(|_| "cpu".to_string());
-        let engine =
-            OcrBackend::new(&cfg, Some(model_dir.as_path())).expect("릴리즈 OCR smoke 엔진 생성 실패");
-        engine.warmup().expect("릴리즈 OCR smoke warmup 실패");
+        run_release_ocr_smoke_from_env().expect("릴리즈 OCR smoke 실패");
+    }
 
-        let image = RgbaImage::from_pixel(128, 64, Rgba([255, 255, 255, 255]));
-        let payload = run_ocr(&cfg, &engine, &image, image.width(), image.height())
-            .expect("릴리즈 OCR smoke 실행 실패");
+    #[test]
+    fn 릴리즈_ocr_smoke_기본_이미지는_testdata_fixture다() {
+        let path = default_release_ocr_smoke_image();
 
-        assert_eq!(payload.orig_width, 128);
-        assert_eq!(payload.orig_height, 64);
-        assert_eq!(payload.source, source);
+        assert!(path.ends_with(std::path::Path::new("testdata/ocr/test.png")));
     }
 
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]

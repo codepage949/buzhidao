@@ -34,6 +34,21 @@ use crate::window::{focus_active_window, focus_window, hide_window};
 type SharedConfig = Arc<RwLock<Config>>;
 type SharedOcrBackend = Arc<RwLock<Result<Arc<OcrBackend>, String>>>;
 
+pub const RELEASE_OCR_SMOKE_ARG: &str = "--release-ocr-smoke";
+
+pub fn is_release_ocr_smoke_requested<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|arg| arg.as_ref() == RELEASE_OCR_SMOKE_ARG)
+}
+
+pub fn run_release_ocr_smoke_from_env() -> Result<(), String> {
+    services::ocr_pipeline::run_release_ocr_smoke_from_env()
+}
+
 struct SettingsState {
     store: SettingsStore,
     prompt_path: PathBuf,
@@ -1186,7 +1201,7 @@ mod tests {
         missing_prtsc_required_setting_keys, missing_prtsc_required_settings,
         resolve_paddle_model_dir_with_roots, should_emit_ocr, show_ocr_device_setting,
         take_pending_settings_notice_slot, CaptureHotkeyAction, OcrAppStageLog,
-        SettingsNoticePayload,
+        SettingsNoticePayload, RELEASE_OCR_SMOKE_ARG, is_release_ocr_smoke_requested,
     };
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     use super::prepend_runtime_path_var;
@@ -1477,5 +1492,14 @@ mod tests {
             line,
             "[OCR_STAGE] app phase=capture_hotkey capture_ms=12 spawn_wait_ms=345 emit_ms=6"
         );
+    }
+
+    #[test]
+    fn 릴리즈_ocr_smoke_cli_인자를_판별한다() {
+        assert!(is_release_ocr_smoke_requested([
+            "--ignored",
+            RELEASE_OCR_SMOKE_ARG,
+        ]));
+        assert!(!is_release_ocr_smoke_requested(["--ignored"]));
     }
 }

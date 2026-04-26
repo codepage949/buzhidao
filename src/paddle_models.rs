@@ -104,7 +104,7 @@ pub(crate) async fn ensure_paddle_models_for_lang_in_root(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
 pub(crate) fn validate_paddle_model_root_for_lang(lang: &str, root: &Path) -> Result<(), String> {
     let spec = model_spec_for_lang(lang);
     let diagnostics = [
@@ -243,7 +243,7 @@ fn has_inference_files_in_dir(dir: &Path) -> bool {
     (infer_json.is_file() || infer_pdmodel.is_file()) && infer_params.is_file()
 }
 
-#[cfg(test)]
+#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
 struct ModelDirDiagnostic {
     role: &'static str,
     model_name: &'static str,
@@ -253,7 +253,7 @@ struct ModelDirDiagnostic {
     ok: bool,
 }
 
-#[cfg(test)]
+#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
 impl ModelDirDiagnostic {
     fn message(&self) -> String {
         format!(
@@ -263,7 +263,7 @@ impl ModelDirDiagnostic {
     }
 }
 
-#[cfg(test)]
+#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
 fn model_dir_diagnostic(
     root: &Path,
     role: &'static str,

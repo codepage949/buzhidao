@@ -237,19 +237,6 @@ jobs:
           set -euo pipefail
           cargo tauri build --no-bundle ${{ matrix.cargo_features }}
 
-      - name: Run OCR smoke after build
-        if: matrix.flavor == 'cpu'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.os_name }}" = "linux" ]; then
-            export LD_LIBRARY_PATH="$PWD/.cuda:$PWD/target/release:$PWD/target/release/deps:$PWD/.paddle_inference/lib:$PWD/.paddle_inference/third_party/opencv-sdk/linux-x86_64/install/lib:${LD_LIBRARY_PATH:-}"
-          fi
-          export BUZHIDAO_PADDLE_MODEL_ROOT="$PWD/.paddle_models"
-          export OCR_SERVER_DEVICE=cpu
-          export BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1
-          cargo test --release ${{ matrix.cargo_features }} 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture
-
       - name: Prepare archives
         shell: bash
         run: |
@@ -263,6 +250,20 @@ jobs:
             --dist-dir dist \
             --component app \
             --format "${{ matrix.archive_format }}"
+
+      - name: Run release binary OCR smoke
+        if: matrix.flavor == 'cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/buzhidao-${{ inputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}-${{ matrix.flavor }}-app.${{ matrix.archive_format }}"
+          python -u tools/scripts/release_binary_smoke.py \
+            --archive "$archive" \
+            --os "${{ matrix.os_name }}" \
+            --image testdata/ocr/test.png \
+            --model-root "$PWD/.paddle_models" \
+            --source ch \
+            --device cpu
 
       - name: Upload app archive
         uses: actions/upload-artifact@v6

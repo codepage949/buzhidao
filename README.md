@@ -82,14 +82,21 @@ python -m unittest \
   tools.scripts.test_release_helper \
   tools.scripts.test_update_release_version \
   tools.scripts.test_setup_cuda_runtime \
-  tools.scripts.test_setup_paddle_inference
+  tools.scripts.test_setup_paddle_inference \
+  tools.scripts.test_release_binary_smoke \
+  tools.scripts.test_release_workflow
 ```
 
-릴리즈 OCR smoke 테스트는 명시적으로 활성화해야 합니다.
+릴리즈 OCR smoke는 앱 아카이브를 만든 뒤 실제 실행 파일을 압축 해제해 실행합니다.
 
 ```bash
-BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1 OCR_SERVER_DEVICE=cpu \
-  cargo test --features gpu 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture
+python tools/scripts/release_binary_smoke.py \
+  --archive dist/buzhidao-v0.5.0-linux-amd64-cpu-app.tar.gz \
+  --os linux \
+  --image testdata/ocr/test.png \
+  --model-root .paddle_models \
+  --source ch \
+  --device cpu
 ```
 
 ## 릴리즈 배포 방법

@@ -6,14 +6,23 @@ RELEASE_WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
-    def test_ocr_smoke는_cpu_matrix에서만_실행하고_모델_루트를_고정한다(self):
+    def test_ocr_smoke는_cpu_matrix에서만_실행하고_실제_바이너리를_사용한다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("if: matrix.flavor == 'cpu'", workflow)
-        self.assertIn("export BUZHIDAO_PADDLE_MODEL_ROOT=\"$PWD/.paddle_models\"", workflow)
+        self.assertIn("python -u tools/scripts/release_binary_smoke.py", workflow)
+        self.assertIn("--model-root \"$PWD/.paddle_models\"", workflow)
+        self.assertIn("--image testdata/ocr/test.png", workflow)
+        self.assertIn("--source ch", workflow)
+        self.assertIn("--device cpu", workflow)
+        self.assertNotIn("cargo test --release", workflow)
         self.assertLess(
-            workflow.index("name: Run OCR smoke after build"),
             workflow.index("name: Prepare archives"),
+            workflow.index("name: Run release binary OCR smoke"),
+        )
+        self.assertLess(
+            workflow.index("name: Run release binary OCR smoke"),
+            workflow.index("name: Upload app archive"),
         )
 
     def test_release는_후보_커밋에서_한_번만_빌드한다(self):
