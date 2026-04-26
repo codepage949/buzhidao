@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -20,6 +21,19 @@ class SmokeResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+def configure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+
+        reconfigure(encoding="utf-8", errors="replace")
 
 
 def binary_name_for_os(os_name: str) -> str:
@@ -155,6 +169,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    configure_utf8_stdio()
     args = parse_args()
     try:
         result = run_archive_smoke(

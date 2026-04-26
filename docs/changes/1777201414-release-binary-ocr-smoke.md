@@ -98,6 +98,7 @@
   - 릴리즈 앱 아카이브를 임시 디렉터리에 압축 해제한다.
   - 압축 해제된 `buzhidao`/`buzhidao.exe`를 `--release-ocr-smoke`로 실행한다.
   - non-zero exit code와 timeout을 실패로 처리한다.
+  - Windows runner의 기본 cp1252 stdout/stderr에서도 한글 로그 출력이 실패하지 않도록 표준 입출력을 UTF-8로 재설정한다.
 - `.github/workflows/release.yml`
   - `cargo test --release ... 릴리즈_ocr_smoke...` 단계를 제거했다.
   - `Prepare archives` 뒤에 실제 앱 아카이브를 대상으로 하는 `Run release binary OCR smoke` 단계를 추가했다.
@@ -111,6 +112,7 @@
 - `cargo test --no-default-features 릴리즈_ocr_smoke_cli_인자를_판별한다 -- --nocapture` 통과.
 - `cargo test --no-default-features 릴리즈_ocr_smoke_기본_이미지는_testdata_fixture다 -- --nocapture` 통과.
 - `cargo test --no-default-features` 통과.
+- `python3 -m py_compile tools/scripts/release_binary_smoke.py tools/scripts/test_release_binary_smoke.py` 통과.
 - `cargo fmt --check`는 저장소 기존 포맷 차이를 함께 보고해 전체 적용하지 않았다.
 
 ## 마무리 기준

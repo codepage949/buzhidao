@@ -1,4 +1,5 @@
 import os
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from pathlib import Path
 from tools.scripts.release_binary_smoke import (
     SMOKE_ARG,
     binary_name_for_os,
+    configure_utf8_stdio,
     extract_archive,
     find_release_binary,
     run_archive_smoke,
@@ -22,6 +24,30 @@ def write_shell_binary(path: Path, body: str) -> None:
 
 
 class ReleaseBinarySmokeTest(unittest.TestCase):
+    def test_stdio를_utf8로_재설정한다(self):
+        class FakeStream:
+            def __init__(self):
+                self.calls = []
+
+            def reconfigure(self, **kwargs):
+                self.calls.append(kwargs)
+
+        stdout = FakeStream()
+        stderr = FakeStream()
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        try:
+            sys.stdout = stdout
+            sys.stderr = stderr
+
+            configure_utf8_stdio()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
+        self.assertEqual(stdout.calls, [{"encoding": "utf-8", "errors": "replace"}])
+        self.assertEqual(stderr.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
     def test_os별_실행파일명을_결정한다(self):
         self.assertEqual(binary_name_for_os("linux"), "buzhidao")
         self.assertEqual(binary_name_for_os("windows"), "buzhidao.exe")
