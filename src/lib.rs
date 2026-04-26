@@ -1072,6 +1072,8 @@ pub fn run() {
             handler: capture_shortcut_handler.clone(),
         })
         .setup(move |app| {
+            show_loading_window(app.handle());
+
             prepare_gpu_runtime_search_path(app, development_build);
 
             #[cfg(target_os = "linux")]
@@ -1195,16 +1197,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    use super::prepend_runtime_path_var;
     use super::{
         build_settings_notice_payload, clone_pending_capture, decide_capture_hotkey_action,
         default_env_example, format_ocr_app_stage_log, has_required_paddle_model_files,
-        missing_prtsc_required_setting_keys, missing_prtsc_required_settings,
-        resolve_paddle_model_dir_with_roots, should_emit_ocr, show_ocr_device_setting,
-        take_pending_settings_notice_slot, CaptureHotkeyAction, OcrAppStageLog,
-        SettingsNoticePayload, RELEASE_OCR_SMOKE_ARG, is_release_ocr_smoke_requested,
+        is_release_ocr_smoke_requested, missing_prtsc_required_setting_keys,
+        missing_prtsc_required_settings, resolve_paddle_model_dir_with_roots, should_emit_ocr,
+        show_ocr_device_setting, take_pending_settings_notice_slot, CaptureHotkeyAction,
+        OcrAppStageLog, SettingsNoticePayload, RELEASE_OCR_SMOKE_ARG,
     };
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    use super::prepend_runtime_path_var;
     use crate::config::Config;
     use crate::services::CaptureInfo;
     use image::{Rgba, RgbaImage};
@@ -1212,7 +1214,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
-
     fn temp_path(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1278,6 +1279,58 @@ mod tests {
         let action = decide_capture_hotkey_action(false, true, false);
 
         assert_eq!(action, CaptureHotkeyAction::Ignore);
+    }
+
+    #[test]
+    fn 로딩_창_크기_계약은_tauri_설정과_일치한다() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("Tauri 설정 JSON 파싱 실패");
+        let windows = config
+            .pointer("/app/windows")
+            .and_then(|value| value.as_array())
+            .expect("Tauri window 설정 배열 확인 실패");
+        let loading = windows
+            .iter()
+            .find(|window| window.get("label").and_then(|label| label.as_str()) == Some("loading"))
+            .expect("loading 창 설정 확인 실패");
+        assert_eq!(
+            loading.get("width").and_then(|value| value.as_f64()),
+            Some(300.0)
+        );
+        assert_eq!(
+            loading.get("height").and_then(|value| value.as_f64()),
+            Some(90.0)
+        );
+        assert_eq!(
+            loading.get("resizable").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            loading.get("visible").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            loading.get("transparent").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(loading.get("minWidth").is_none());
+        assert!(loading.get("minHeight").is_none());
+        assert!(loading.get("maxWidth").is_none());
+        assert!(loading.get("maxHeight").is_none());
+    }
+
+    #[test]
+    fn 로딩_html은_뷰포트_높이로_내용을_가운데_정렬한다() {
+        let html = include_str!("../ui/src/loading.html");
+
+        assert!(html.contains("height: 100%;"));
+        assert!(html.contains("align-items: center;"));
+        assert!(html.contains("justify-content: center;"));
+        assert!(html.contains("background: transparent;"));
+        assert!(html.contains(".panel"));
+        assert!(html.contains("width: 300px;"));
+        assert!(html.contains("height: 90px;"));
+        assert!(!html.contains("position: fixed;"));
     }
 
     #[test]

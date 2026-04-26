@@ -8,6 +8,10 @@ import {
   canSaveSettings,
   getSettingsFooterMessage,
 } from "./save_state";
+import {
+  buildLanguageSelectStyle,
+  languageSelectOptionStyle,
+} from "./language_select_style";
 
 type Device = "cpu" | "gpu";
 
@@ -291,10 +295,14 @@ function SettingsApp() {
               value={settings.source}
               onChange={(event) =>
                 setSettings({ ...settings, source: event.currentTarget.value })}
-              style={textInputStyle}
+              style={buildLanguageSelectStyle(textInputStyle)}
             >
               {SUPPORTED_LANGS.map((lang) => (
-                <option key={lang.code} value={lang.code}>
+                <option
+                  key={lang.code}
+                  value={lang.code}
+                  style={languageSelectOptionStyle}
+                >
                   {lang.label}
                 </option>
               ))}

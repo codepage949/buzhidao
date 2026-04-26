@@ -10,22 +10,32 @@
         padding: 0;
         box-sizing: border-box;
       }
-      html, body {
+      html,
+      body {
         height: 100%;
         width: 100%;
         overflow: hidden;
       }
       body {
-        background: #1e1e2e;
+        background: transparent;
         color: #cdd6f4;
         font-family: "Segoe UI", system-ui, sans-serif;
         font-size: 14px;
         display: flex;
         align-items: center;
-        gap: 14px;
-        padding: 0 20px;
+        justify-content: center;
         user-select: none;
         -webkit-user-select: none;
+      }
+      .panel {
+        width: 300px;
+        height: 90px;
+        background: #1e1e2e;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 20px;
+        overflow: hidden;
       }
       .spinner {
         width: 22px;
@@ -79,12 +89,14 @@
     </style>
   </head>
   <body>
-    <div id="spinner" class="spinner"></div>
-    <div id="error-icon" class="error-icon hidden">✕</div>
-    <div>
-      <div id="label" class="label">OCR 모델 로딩 중…</div>
-      <div id="sub" class="sub">잠시만 기다려 주세요</div>
-      <button id="quit-btn" class="quit-btn hidden" type="button">종료</button>
+    <div class="panel">
+      <div id="spinner" class="spinner"></div>
+      <div id="error-icon" class="error-icon hidden">✕</div>
+      <div>
+        <div id="label" class="label">OCR 모델 로딩 중…</div>
+        <div id="sub" class="sub">잠시만 기다려 주세요</div>
+        <button id="quit-btn" class="quit-btn hidden" type="button">종료</button>
+      </div>
     </div>
     <script type="module" src="./pages/loading/index.ts"></script>
   </body>
