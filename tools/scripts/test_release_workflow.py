@@ -40,7 +40,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         )
         self.assertIn('ci_retry git fetch origin "${{ github.ref_name }}"', workflow)
 
-    def test_release_빌드는_rust_중간_산출물_캐시를_재사용한다(self):
+    def test_release_빌드는_cargo_의존성_캐시만_재사용한다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertEqual(workflow.count("name: Restore Rust build cache"), 2)
@@ -55,7 +55,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(workflow.count("~/.cargo/registry"), 2)
         self.assertEqual(workflow.count("~/.cargo/git"), 2)
-        self.assertEqual(workflow.count("\n            target\n"), 2)
+        self.assertNotIn("\n            target\n", workflow)
 
     def test_node20_deprecated_action_버전을_사용하지_않는다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")

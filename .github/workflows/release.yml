@@ -95,7 +95,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: release-rust-${{ matrix.label }}-${{ github.run_id }}
           restore-keys: |
             release-rust-${{ matrix.label }}-
@@ -310,7 +309,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: release-rust-${{ matrix.label }}-${{ github.run_id }}
           restore-keys: |
             release-rust-${{ matrix.label }}-
