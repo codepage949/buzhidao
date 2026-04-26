@@ -58,6 +58,8 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("name: Upload release candidate", workflow)
         self.assertEqual(workflow.count("name: Download release candidate"), 2)
         self.assertEqual(workflow.count("git fetch release-candidate.bundle release-candidate"), 2)
+        self.assertEqual(workflow.count("git checkout --force --detach FETCH_HEAD"), 2)
+        self.assertNotIn("git checkout --detach FETCH_HEAD", workflow)
         self.assertEqual(workflow.count("Release candidate mismatch"), 2)
         self.assertIn("Branch moved before release publish", workflow)
         self.assertIn(

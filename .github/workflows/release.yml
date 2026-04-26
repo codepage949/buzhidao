@@ -287,7 +287,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch release-candidate.bundle release-candidate
-          git checkout --detach FETCH_HEAD
+          git checkout --force --detach FETCH_HEAD
           current="$(git rev-parse HEAD)"
           expected="${{ needs.version.outputs.release_sha }}"
           if [ "$current" != "$expected" ]; then
@@ -418,7 +418,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch release-candidate.bundle release-candidate
-          git checkout --detach FETCH_HEAD
+          git checkout --force --detach FETCH_HEAD
           current="$(git rev-parse HEAD)"
           expected="${{ needs.version.outputs.release_sha }}"
           if [ "$current" != "$expected" ]; then
