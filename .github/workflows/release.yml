@@ -200,22 +200,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          opencv_args=()
-          if [ "${{ matrix.os_name }}" = "linux" ]; then
-            sdk="$PWD/.opencv-sdk-ci"
-            mkdir -p "$sdk/install/include" "$sdk/install/lib"
-            ln -s /usr/include/opencv4 "$sdk/install/include/opencv4"
-            for lib in opencv_core opencv_imgproc opencv_imgcodecs; do
-              cp -L "/usr/lib/x86_64-linux-gnu/lib${lib}.so" "$sdk/install/lib/"
-            done
-            opencv_args=(--opencv-sdk-dir "$sdk")
-          fi
-
           paddle_args=(--destination-dir .paddle_inference)
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
             paddle_args+=(--device gpu)
           fi
-          python -u tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
+          python -u tools/scripts/setup_paddle_inference.py "${paddle_args[@]}"
 
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
             python tools/scripts/setup_cuda_runtime.py --package-set paddle-cu126 --destination-dir .cuda

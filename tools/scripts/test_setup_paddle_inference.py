@@ -374,6 +374,49 @@ class SetupPaddleInferenceTest(unittest.TestCase):
             self.assertEqual(result, opencv_root)
             urlopen_mock.assert_not_called()
 
+    @patch.object(setup_module, "resolve_platform_key", return_value=("linux", "x86_64"))
+    def test_linux_opencv_sdk는_시스템_헤더와_버전_so를_가져온다(self, _platform_key):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            include_root = root / "usr" / "include" / "opencv4"
+            lib_root = root / "usr" / "lib" / "x86_64-linux-gnu"
+            destination = root / ".paddle_inference"
+            (include_root / "opencv2").mkdir(parents=True)
+            lib_root.mkdir(parents=True)
+            (include_root / "opencv2" / "core.hpp").write_text("1")
+            for lib_name in ("opencv_core", "opencv_imgproc", "opencv_imgcodecs"):
+                (lib_root / f"lib{lib_name}.so").write_text("link")
+                (lib_root / f"lib{lib_name}.so.406").write_text("runtime")
+
+            with patch.object(
+                setup_module,
+                "linux_system_opencv_include_dirs",
+                return_value=[include_root],
+            ), patch.object(
+                setup_module,
+                "linux_system_opencv_library_dirs",
+                return_value=[lib_root],
+            ):
+                result = setup_module.setup_opencv_sdk(root / "downloads", destination)
+
+            expected = destination / "third_party" / "opencv-sdk" / "linux-x86_64"
+            self.assertEqual(result, expected)
+            self.assertTrue((expected / "install" / "include" / "opencv4" / "opencv2" / "core.hpp").exists())
+            self.assertTrue((expected / "install" / "lib" / "libopencv_core.so").exists())
+            self.assertTrue((expected / "install" / "lib" / "libopencv_core.so.406").exists())
+
+    @patch.object(setup_module, "resolve_platform_key", return_value=("linux", "x86_64"))
+    def test_linux_opencv_헤더가_없으면_명확한_오류를_낸다(self, _platform_key):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with patch.object(
+                setup_module,
+                "linux_system_opencv_include_dirs",
+                return_value=[root / "missing-include"],
+            ):
+                with self.assertRaisesRegex(RuntimeError, "install_linux_build_deps"):
+                    setup_module.setup_opencv_sdk(root / "downloads", root / ".paddle_inference")
+
     @patch.object(setup_module, "validate_opencv_sdk_dir")
     @patch.object(setup_module, "install_windows_opencv_sdk_from_staging")
     @patch.object(setup_module.subprocess, "run")

@@ -26,6 +26,7 @@ SHAPELY_VERSION = "2.1.2"
 DOWNLOAD_RETRY_COUNT = 3
 DOWNLOAD_RETRY_DELAY_SECONDS = 5
 OPENCV_EXTRACT_TIMEOUT_SECONDS = 600
+OPENCV_REQUIRED_LIBS = ("opencv_core", "opencv_imgproc", "opencv_imgcodecs")
 OPENCV_WINDOWS_URL = (
     "https://sourceforge.net/projects/opencvlibrary/files/4.10.0/"
     "opencv-4.10.0-windows.exe/download"
@@ -451,6 +452,85 @@ def validate_opencv_sdk_dir(root: Path) -> None:
         raise RuntimeError(f"OpenCV SDK 라이브러리 경로를 찾지 못했습니다: {root}")
 
 
+def linux_system_opencv_include_dirs() -> list[Path]:
+    return [
+        Path("/usr/include/opencv4"),
+        Path("/usr/local/include/opencv4"),
+        Path("/usr/include"),
+        Path("/usr/local/include"),
+    ]
+
+
+def linux_system_opencv_library_dirs(machine: str) -> list[Path]:
+    candidates = [
+        Path(f"/usr/lib/{machine}-linux-gnu"),
+        Path("/usr/lib/x86_64-linux-gnu"),
+        Path("/usr/lib/aarch64-linux-gnu"),
+        Path("/usr/lib64"),
+        Path("/usr/lib"),
+        Path("/usr/local/lib64"),
+        Path("/usr/local/lib"),
+    ]
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered.append(candidate)
+    return ordered
+
+
+def install_linux_opencv_sdk_from_system(opencv_root: Path, machine: str) -> None:
+    include_source = next(
+        (
+            candidate
+            for candidate in linux_system_opencv_include_dirs()
+            if (candidate / "opencv2").is_dir()
+        ),
+        None,
+    )
+    if include_source is None:
+        raise RuntimeError(
+            "Linux OpenCV 헤더를 찾지 못했습니다. "
+            "tools/scripts/install_linux_build_deps.sh를 먼저 실행하세요."
+        )
+
+    library_dirs = linux_system_opencv_library_dirs(machine)
+    library_sources: list[Path] = []
+    missing_libs: list[str] = []
+    for lib_name in OPENCV_REQUIRED_LIBS:
+        matches: list[Path] = []
+        for library_dir in library_dirs:
+            matches.extend(sorted(library_dir.glob(f"lib{lib_name}.so*")))
+        if matches:
+            library_sources.extend(matches)
+        else:
+            missing_libs.append(lib_name)
+
+    if missing_libs:
+        raise RuntimeError(
+            "Linux OpenCV 라이브러리를 찾지 못했습니다: "
+            + ", ".join(missing_libs)
+            + ". tools/scripts/install_linux_build_deps.sh를 먼저 실행하세요."
+        )
+
+    if opencv_root.exists():
+        shutil.rmtree(opencv_root)
+    include_target = opencv_root / "install" / "include" / "opencv4"
+    lib_target = opencv_root / "install" / "lib"
+    include_target.parent.mkdir(parents=True, exist_ok=True)
+    lib_target.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(include_source, include_target)
+
+    copied_names: set[str] = set()
+    for source in library_sources:
+        if source.name in copied_names:
+            continue
+        shutil.copy2(source, lib_target / source.name)
+        copied_names.add(source.name)
+
+
 def extract_windows_opencv_sdk_to_staging(
     archive_path: Path,
     staging_root: Path,
@@ -502,13 +582,6 @@ def setup_opencv_sdk(
         return import_opencv_sdk(source_dir, destination_dir)
 
     system, machine = resolve_platform_key()
-    if system != "windows":
-        log(
-            "OpenCV SDK 자동 다운로드는 현재 Windows만 지원합니다. "
-            "Linux/macOS는 --opencv-sdk-dir로 기존 SDK를 가져와 .paddle_inference 아래에 배치하세요."
-        )
-        return None
-
     opencv_root = (
         destination_dir
         / "third_party"
@@ -518,6 +591,19 @@ def setup_opencv_sdk(
     if path_has_opencv_headers(opencv_root) and path_has_opencv_libs(opencv_root) and not force:
         log(f"기존 OpenCV SDK 사용: {opencv_root}")
         return opencv_root
+
+    if system == "linux":
+        install_linux_opencv_sdk_from_system(opencv_root, machine)
+        validate_opencv_sdk_dir(opencv_root)
+        log(f"Linux 시스템 OpenCV SDK 배치 완료: {opencv_root}")
+        return opencv_root
+
+    if system != "windows":
+        log(
+            "OpenCV SDK 자동 다운로드는 현재 Windows만 지원합니다. "
+            "macOS는 --opencv-sdk-dir로 기존 SDK를 가져와 .paddle_inference 아래에 배치하세요."
+        )
+        return None
 
     archive_path = download_file(
         OPENCV_WINDOWS_URL,

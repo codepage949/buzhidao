@@ -1,5 +1,8 @@
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_paddle_inference)");
+    if cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    }
 
     if std::env::var_os("CARGO_FEATURE_GPU").is_some() {
         println!("cargo:rerun-if-changed=.cuda");
