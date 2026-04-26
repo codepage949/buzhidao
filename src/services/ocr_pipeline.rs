@@ -903,13 +903,15 @@ mod tests {
             eprintln!("릴리즈 OCR smoke는 BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1일 때만 실행합니다.");
             return;
         }
-
         let source = std::env::var("BUZHIDAO_RELEASE_OCR_SMOKE_SOURCE")
             .unwrap_or_else(|_| "en".to_string());
         let model_dir = tauri::async_runtime::block_on(
             crate::paddle_models::ensure_paddle_models_for_lang(&source),
         )
         .expect("릴리즈 OCR smoke 모델 보장 실패");
+        crate::paddle_models::validate_paddle_model_root_for_lang(&source, &model_dir)
+            .expect("릴리즈 OCR smoke 모델 루트 검증 실패");
+        eprintln!("릴리즈 OCR smoke 모델 루트: {}", model_dir.display());
 
         let mut cfg = bench_config(&source, 0.1);
         cfg.ocr_server_device =

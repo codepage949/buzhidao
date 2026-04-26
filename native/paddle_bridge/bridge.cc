@@ -27,6 +27,10 @@
 #include <utility>
 #include <vector>
 #include <filesystem>
+#if !defined(_WIN32)
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -438,6 +442,8 @@ uint8_t sample_channel_bilinear_replicate(const Image& img, float sx, float sy, 
 std::string normalize_hint(std::string value);
 std::string to_lower_ascii(std::string value);
 bool file_exists(const fs::path& path);
+bool directory_exists(const fs::path& path);
+std::vector<fs::path> list_direct_child_dirs(const fs::path& root);
 bool has_stem_files_in_dir(const fs::path& dir);
 std::string quote_polygon(const std::array<FloatPoint, 4>& pts);
 std::string quote_points(const std::vector<FloatPoint>& pts);
@@ -565,7 +571,11 @@ void debug_log(const std::string& message) {
         return;
     }
     std::cerr << "[buzhi_ocr] " << message << std::endl;
-    std::ofstream log_file(fs::temp_directory_path() / "buzhi-ocr-ffi-debug.log", std::ios::app);
+    const char* tmp_dir = std::getenv("TMPDIR");
+    const std::string log_path =
+        std::string((tmp_dir != nullptr && tmp_dir[0] != '\0') ? tmp_dir : "/tmp") +
+        "/buzhi-ocr-ffi-debug.log";
+    std::ofstream log_file(log_path, std::ios::app);
     if (log_file) {
         log_file << "[buzhi_ocr] " << message << std::endl;
     }
@@ -576,7 +586,11 @@ void profile_log(const std::string& message) {
         return;
     }
     std::cerr << "[buzhi_ocr_profile] " << message << std::endl;
-    std::ofstream log_file(fs::temp_directory_path() / "buzhi-ocr-ffi-profile.log", std::ios::app);
+    const char* tmp_dir = std::getenv("TMPDIR");
+    const std::string log_path =
+        std::string((tmp_dir != nullptr && tmp_dir[0] != '\0') ? tmp_dir : "/tmp") +
+        "/buzhi-ocr-ffi-profile.log";
+    std::ofstream log_file(log_path, std::ios::app);
     if (log_file) {
         log_file << "[buzhi_ocr_profile] " << message << std::endl;
     }
@@ -1594,18 +1608,15 @@ std::vector<fs::path> list_named_submodel_dirs(const fs::path& model_root, const
         debug_log("list_named_submodel_dirs: empty model_root, stem=" + stem);
         return paths;
     }
-    if (!fs::exists(model_root) || !fs::is_directory(model_root)) {
+    if (!directory_exists(model_root)) {
         debug_log("list_named_submodel_dirs: invalid model_root=" + model_root.string() + ", stem=" + stem);
         return paths;
     }
     const auto aliases = find_stem_aliases(stem);
 
     try {
-        for (const auto& entry : fs::directory_iterator(model_root)) {
-            if (!entry.is_directory()) {
-                continue;
-            }
-            const std::string name = to_lower_ascii(entry.path().filename().string());
+        for (const auto& path : list_direct_child_dirs(model_root)) {
+            const std::string name = to_lower_ascii(path.filename().string());
             const bool is_match = std::any_of(
                 aliases.begin(),
                 aliases.end(),
@@ -1614,7 +1625,7 @@ std::vector<fs::path> list_named_submodel_dirs(const fs::path& model_root, const
             if (!is_match) {
                 continue;
             }
-            paths.push_back(entry.path());
+            paths.push_back(path);
         }
     } catch (const std::exception& ex) {
         debug_log(
@@ -1751,7 +1762,7 @@ std::pair<fs::path, fs::path> resolve_candidate_model_pair(
 
     const fs::path direct_dir = model_dir / stem;
     std::vector<fs::path> candidates;
-    if (fs::is_directory(direct_dir) && has_stem_files_in_dir(direct_dir)) {
+    if (directory_exists(direct_dir) && has_stem_files_in_dir(direct_dir)) {
         candidates.push_back(direct_dir);
     }
 
@@ -1876,12 +1887,70 @@ bool file_exists(const fs::path& path) {
     if (path.empty()) {
         return false;
     }
+#if defined(_WIN32)
     try {
         return fs::exists(path) && fs::is_regular_file(path);
     } catch (const std::exception& ex) {
         debug_log(std::string("file_exists failed: ") + path.string() + ", error=" + ex.what());
         return false;
     }
+#else
+    struct stat st {};
+    return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+bool directory_exists(const fs::path& path) {
+    if (path.empty()) {
+        return false;
+    }
+#if defined(_WIN32)
+    try {
+        return fs::exists(path) && fs::is_directory(path);
+    } catch (const std::exception& ex) {
+        debug_log(std::string("directory_exists failed: ") + path.string() + ", error=" + ex.what());
+        return false;
+    }
+#else
+    struct stat st {};
+    return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+std::vector<fs::path> list_direct_child_dirs(const fs::path& root) {
+    std::vector<fs::path> dirs;
+    if (root.empty()) {
+        return dirs;
+    }
+#if defined(_WIN32)
+    try {
+        for (const auto& entry : fs::directory_iterator(root)) {
+            if (entry.is_directory()) {
+                dirs.push_back(entry.path());
+            }
+        }
+    } catch (const std::exception& ex) {
+        debug_log(std::string("list_direct_child_dirs failed: ") + root.string() + ", error=" + ex.what());
+        return {};
+    }
+#else
+    DIR* dir = ::opendir(root.c_str());
+    if (dir == nullptr) {
+        return dirs;
+    }
+    while (dirent* entry = ::readdir(dir)) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..") {
+            continue;
+        }
+        const fs::path child = root / name;
+        if (directory_exists(child)) {
+            dirs.push_back(child);
+        }
+    }
+    ::closedir(dir);
+#endif
+    return dirs;
 }
 
 std::vector<uint8_t> read_all_bytes(const fs::path& path) {
@@ -5867,15 +5936,21 @@ std::pair<fs::path, fs::path> resolve_model_pair(
         debug_log("resolve_model_pair: empty model_root");
         return {};
     }
-    const auto preferred_token = resolve_model_preference();
-    const auto resolved_lang = resolve_preferred_lang();
-    const auto resolved_token = preferred_model_hint.empty() ? preferred_token : preferred_model_hint;
-    const auto resolved_lang_value = preferred_lang.empty() ? resolved_lang : preferred_lang;
-    if (!fs::exists(model_root) || !fs::is_directory(model_root)) {
+    const auto resolved_token = preferred_model_hint;
+    const auto resolved_lang_value = preferred_lang.empty() ? std::string("en") : preferred_lang;
+    debug_log(
+        std::string("resolve_model_pair args resolved: stem=") + stem +
+        ", token=" + resolved_token +
+        ", lang=" + resolved_lang_value
+    );
+    debug_log(std::string("resolve_model_pair checking root: ") + model_root.string());
+    if (!directory_exists(model_root)) {
         debug_log(std::string("resolve_model_pair: model_root is not a directory: ") + model_root.string());
         return {};
     }
+    debug_log(std::string("resolve_model_pair root ok: ") + model_root.string());
     try {
+        debug_log(std::string("resolve_model_pair candidate search begin: ") + stem);
         const auto result = resolve_candidate_model_pair(
             model_root,
             stem,
@@ -7078,9 +7153,6 @@ extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_g
         ? source
         : std::getenv("BUZHIDAO_PADDLE_FFI_SOURCE");
 
-    auto* engine = new buzhi_ocr_engine();
-    engine->use_gpu = use_gpu;
-
 #if defined(BUZHIDAO_HAVE_PADDLE_INFERENCE)
     const std::string preferred_model_hint = resolve_model_preference();
     const std::string preferred_lang = resolve_preferred_lang();
@@ -7118,7 +7190,6 @@ extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_g
         return explicit_lang;
     }();
     const fs::path model_root(resolved_model_dir);
-    engine->model_dir = resolved_model_dir;
     const auto det_model = resolve_model_pair(
         model_root,
         "det",
@@ -7150,7 +7221,6 @@ extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_g
     );
     debug_log(std::string("model pair rec resolved: ") + rec_model.first.string() + " / " + rec_model.second.string());
     if (det_model.first.empty() || cls_model.first.empty() || rec_model.first.empty()) {
-        delete engine;
         set_error(
             err,
             "Paddle 모델 파일을 찾을 수 없습니다. 모델 루트 디렉터리 아래 det/cls/rec 추론 모델이 있어야 합니다."
@@ -7160,6 +7230,9 @@ extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_g
     debug_log(std::string("selected det=") + det_model.first.string() + ", cls=" + cls_model.first.string() +
               ", rec=" + rec_model.first.string());
 
+    auto* engine = new buzhi_ocr_engine();
+    engine->use_gpu = use_gpu;
+    engine->model_dir = resolved_model_dir;
     engine->rec_model_dir = rec_model.first.parent_path();
     engine->det_cfg = load_model_preprocess_cfg(det_model.first.parent_path());
     engine->cls_cfg = load_model_preprocess_cfg(cls_model.first.parent_path());
@@ -7202,6 +7275,9 @@ extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_g
         return nullptr;
     }
 #else
+    auto* engine = new buzhi_ocr_engine();
+    engine->use_gpu = use_gpu;
+    engine->model_dir = resolved_model_dir;
 #endif
     return engine;
 }

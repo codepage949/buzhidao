@@ -104,6 +104,32 @@ pub(crate) async fn ensure_paddle_models_for_lang_in_root(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn validate_paddle_model_root_for_lang(lang: &str, root: &Path) -> Result<(), String> {
+    let spec = model_spec_for_lang(lang);
+    let diagnostics = [
+        model_dir_diagnostic(root, "det", spec.det),
+        model_dir_diagnostic(root, "cls", spec.cls),
+        model_dir_diagnostic(root, "rec", spec.rec),
+    ];
+    let failures = diagnostics
+        .iter()
+        .filter(|diagnostic| !diagnostic.ok)
+        .map(ModelDirDiagnostic::message)
+        .collect::<Vec<_>>();
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Paddle 모델 루트 검증 실패: root={}, source={}, {}",
+        root.display(),
+        spec.source,
+        failures.join("; ")
+    ))
+}
+
 pub(crate) fn resolve_paddle_model_dir_for_lang(lang: &str) -> Option<PathBuf> {
     resolve_paddle_model_dir_for_lang_with_roots(lang, paddle_ocr_cache_roots())
 }
@@ -215,6 +241,47 @@ fn has_inference_files_in_dir(dir: &Path) -> bool {
     let infer_pdmodel = dir.join("inference.pdmodel");
     let infer_params = dir.join("inference.pdiparams");
     (infer_json.is_file() || infer_pdmodel.is_file()) && infer_params.is_file()
+}
+
+#[cfg(test)]
+struct ModelDirDiagnostic {
+    role: &'static str,
+    model_name: &'static str,
+    dir_exists: bool,
+    has_model_file: bool,
+    has_params_file: bool,
+    ok: bool,
+}
+
+#[cfg(test)]
+impl ModelDirDiagnostic {
+    fn message(&self) -> String {
+        format!(
+            "{}({}): dir={}, model_file={}, params={}",
+            self.role, self.model_name, self.dir_exists, self.has_model_file, self.has_params_file
+        )
+    }
+}
+
+#[cfg(test)]
+fn model_dir_diagnostic(
+    root: &Path,
+    role: &'static str,
+    model_name: &'static str,
+) -> ModelDirDiagnostic {
+    let dir = root.join(model_name);
+    let dir_exists = dir.is_dir();
+    let has_model_file =
+        dir.join("inference.json").is_file() || dir.join("inference.pdmodel").is_file();
+    let has_params_file = dir.join("inference.pdiparams").is_file();
+    ModelDirDiagnostic {
+        role,
+        model_name,
+        dir_exists,
+        has_model_file,
+        has_params_file,
+        ok: dir_exists && has_model_file && has_params_file,
+    }
 }
 
 async fn ensure_single_model(root: &Path, model_name: &str) -> Result<(), String> {
@@ -329,8 +396,8 @@ fn official_model_url(model_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        model_spec_for_lang, normalize_upstream_source, official_model_url,
-        paddle_ocr_cache_roots, resolve_paddle_model_dir_for_lang_with_roots,
+        model_spec_for_lang, normalize_upstream_source, official_model_url, paddle_ocr_cache_roots,
+        resolve_paddle_model_dir_for_lang_with_roots, validate_paddle_model_root_for_lang,
         PADDLE_MODEL_ROOT_ENV,
     };
     use std::fs;
@@ -410,6 +477,35 @@ mod tests {
         assert_eq!(unresolved, None);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn 모델_루트_검증은_필수_det_cls_rec_파일을_확인한다() {
+        let root = temp_path("buzhidao-paddle-model-validation");
+        fs::create_dir_all(&root).expect("캐시 루트 생성 실패");
+        write_model_dir(&root, "PP-OCRv5_server_det");
+        write_model_dir(&root, "PP-LCNet_x1_0_textline_ori");
+        write_model_dir(&root, "en_PP-OCRv5_mobile_rec");
+
+        let result = validate_paddle_model_root_for_lang("en", &root);
+
+        let _ = fs::remove_dir_all(root);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn 모델_루트_검증_실패는_누락된_역할을_알려준다() {
+        let root = temp_path("buzhidao-paddle-model-validation-missing");
+        fs::create_dir_all(&root).expect("캐시 루트 생성 실패");
+        write_model_dir(&root, "PP-OCRv5_server_det");
+        write_model_dir(&root, "en_PP-OCRv5_mobile_rec");
+
+        let error = validate_paddle_model_root_for_lang("en", &root)
+            .expect_err("cls 모델 누락은 오류여야 한다");
+
+        let _ = fs::remove_dir_all(root);
+        assert!(error.contains("cls(PP-LCNet_x1_0_textline_ori)"));
+        assert!(error.contains("dir=false"));
     }
 
     #[test]
