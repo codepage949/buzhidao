@@ -316,6 +316,26 @@ jobs:
             exit 1
           fi
 
+      - name: Ensure branch has not moved before publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/scripts/ci_retry.sh
+          ci_retry git fetch origin "${{ github.ref_name }}"
+          current="$(git rev-parse "origin/${{ github.ref_name }}")"
+          expected="${{ needs.prepare.outputs.base_sha }}"
+          release_sha="${{ needs.version.outputs.release_sha }}"
+          if [ "$current" != "$expected" ]; then
+            {
+              echo "Main branch moved after this release run started."
+              echo "current=${current}"
+              echo "expected=${expected}"
+              echo "release_candidate=${release_sha}"
+              echo "Nothing was published. Re-run the release workflow from the current main branch."
+            } >&2
+            exit 1
+          fi
+
       - name: Download archives
         uses: actions/download-artifact@v8
         with:
@@ -409,14 +429,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source tools/scripts/ci_retry.sh
-          ci_retry git fetch origin "${{ github.ref_name }}"
-          current="$(git rev-parse "origin/${{ github.ref_name }}")"
-          expected="${{ needs.prepare.outputs.base_sha }}"
-          if [ "$current" != "$expected" ]; then
-            echo "Branch moved before release publish: current=$current expected=$expected" >&2
-            exit 1
-          fi
           git push origin "${{ needs.version.outputs.release_sha }}:${{ github.ref_name }}"
           git tag "${{ inputs.version }}" "${{ needs.version.outputs.release_sha }}"
           git push origin "${{ inputs.version }}"

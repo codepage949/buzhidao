@@ -93,12 +93,26 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow.count("git checkout --force --detach FETCH_HEAD"), 2)
         self.assertNotIn("git checkout --detach FETCH_HEAD", workflow)
         self.assertEqual(workflow.count("Release candidate mismatch"), 2)
-        self.assertIn("Branch moved before release publish", workflow)
+        self.assertIn("name: Ensure branch has not moved before publish", workflow)
+        self.assertIn("Main branch moved after this release run started.", workflow)
+        self.assertIn("Nothing was published. Re-run the release workflow", workflow)
         self.assertIn(
             'git push origin "${{ needs.version.outputs.release_sha }}:${{ github.ref_name }}"',
             workflow,
         )
         self.assertNotIn('git push origin "HEAD:${{ github.ref_name }}"', workflow)
+
+    def test_main_이동_확인은_release_자산_처리보다_먼저_수행한다(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertLess(
+            workflow.index("name: Ensure branch has not moved before publish"),
+            workflow.index("name: Download archives"),
+        )
+        self.assertLess(
+            workflow.index("name: Ensure branch has not moved before publish"),
+            workflow.index("name: Create tag"),
+        )
 
 
 if __name__ == "__main__":
