@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import tools.scripts.setup_deno as setup_module
 from tools.scripts.setup_deno import (
+    configure_utf8_stdio,
     download_archive,
     install_deno_archive,
     resolve_asset_name,
@@ -26,6 +27,24 @@ def response(content: bytes):
 
 
 class SetupDenoTest(unittest.TestCase):
+    def test_stdio를_utf8로_재설정한다(self):
+        class FakeStream:
+            def __init__(self):
+                self.calls = []
+
+            def reconfigure(self, **kwargs):
+                self.calls.append(kwargs)
+
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        with patch.object(setup_module.sys, "stdout", stdout), \
+                patch.object(setup_module.sys, "stderr", stderr):
+            configure_utf8_stdio()
+
+        self.assertEqual(stdout.calls, [{"encoding": "utf-8", "errors": "replace"}])
+        self.assertEqual(stderr.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
     def test_exact_version은_v_prefix를_붙인다(self):
         self.assertEqual(resolve_deno_version("2.5.6"), "v2.5.6")
         self.assertEqual(resolve_deno_version("v2.5.6"), "v2.5.6")

@@ -24,6 +24,19 @@ DOWNLOAD_TIMEOUT_SECONDS = 120
 GITHUB_RELEASES_API = "https://api.github.com/repos/denoland/deno/releases?per_page=50"
 
 
+def configure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+
+        reconfigure(encoding="utf-8", errors="replace")
+
+
 def log(message: str) -> None:
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     print(f"[{timestamp}] {message}", flush=True)
@@ -197,6 +210,7 @@ def append_github_path(bin_dir: Path) -> None:
 
 
 def main() -> int:
+    configure_utf8_stdio()
     args = parse_args()
     tag = resolve_deno_version(
         args.version,
