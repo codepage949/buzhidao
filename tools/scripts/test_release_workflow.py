@@ -23,8 +23,22 @@ class ReleaseWorkflowTest(unittest.TestCase):
 
         self.assertIn("uses: cargo-bins/cargo-binstall@v1.18.1", workflow)
         self.assertIn('version: "1.18.1"', workflow)
-        self.assertIn("cargo binstall tauri-cli --version '^2' --no-confirm", workflow)
+        self.assertIn("ci_retry cargo binstall tauri-cli --version '^2' --no-confirm", workflow)
         self.assertNotIn("cargo install tauri-cli", workflow)
+
+    def test_네트워크성_명령은_재시도_보호를_사용한다(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn('CARGO_HTTP_TIMEOUT: "120"', workflow)
+        self.assertIn('CARGO_NET_RETRY: "5"', workflow)
+        self.assertEqual(workflow.count("source ../tools/scripts/ci_retry.sh"), 2)
+        self.assertEqual(workflow.count("source tools/scripts/ci_retry.sh"), 3)
+        self.assertEqual(workflow.count("ci_retry deno install"), 2)
+        self.assertEqual(
+            workflow.count("ci_retry cargo binstall tauri-cli --version '^2' --no-confirm"),
+            2,
+        )
+        self.assertIn('ci_retry git fetch origin "${{ github.ref_name }}"', workflow)
 
     def test_release_빌드는_rust_중간_산출물_캐시를_재사용한다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")

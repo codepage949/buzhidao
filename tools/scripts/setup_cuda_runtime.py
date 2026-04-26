@@ -4,12 +4,16 @@ import argparse
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 
 SUPPORTED_PLATFORMS = ("windows", "linux")
+PIP_DOWNLOAD_RETRY_COUNT = 3
+PIP_DOWNLOAD_RETRY_DELAY_SECONDS = 5
+PIP_DOWNLOAD_TIMEOUT_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,9 @@ def download_wheels(
     wheelhouse: Path,
     package_set: PackageSet,
     extra_index_urls: list[str],
+    retry_count: int = PIP_DOWNLOAD_RETRY_COUNT,
+    retry_delay_seconds: int = PIP_DOWNLOAD_RETRY_DELAY_SECONDS,
+    timeout_seconds: int = PIP_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> None:
     wheelhouse.mkdir(parents=True, exist_ok=True)
     command = [
@@ -140,6 +147,10 @@ def download_wheels(
         "-m",
         "pip",
         "download",
+        "--retries",
+        str(retry_count),
+        "--timeout",
+        str(timeout_seconds),
         "--only-binary",
         ":all:",
         "--dest",
@@ -148,7 +159,24 @@ def download_wheels(
     for url in (*package_set.extra_index_urls, *extra_index_urls):
         command.extend(["--extra-index-url", url])
     command.extend(package_set.packages)
-    subprocess.run(command, check=True)
+
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(1, retry_count + 1):
+        try:
+            subprocess.run(command, check=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if attempt >= retry_count:
+                raise
+            print(
+                f"pip download 재시도 예정 ({attempt}/{retry_count})",
+                file=sys.stderr,
+            )
+            time.sleep(retry_delay_seconds)
+
+    if last_error is not None:
+        raise last_error
 
 
 def parse_args() -> argparse.Namespace:
@@ -188,6 +216,24 @@ def parse_args() -> argparse.Namespace:
         help="pip download를 건너뛰고 wheelhouse의 기존 wheel만 추출합니다.",
     )
     parser.add_argument(
+        "--download-retries",
+        type=int,
+        default=PIP_DOWNLOAD_RETRY_COUNT,
+        help=f"pip download 외부 재시도 횟수입니다. 기본값: {PIP_DOWNLOAD_RETRY_COUNT}",
+    )
+    parser.add_argument(
+        "--download-retry-delay",
+        type=int,
+        default=PIP_DOWNLOAD_RETRY_DELAY_SECONDS,
+        help=f"pip download 재시도 대기 시간(초)입니다. 기본값: {PIP_DOWNLOAD_RETRY_DELAY_SECONDS}",
+    )
+    parser.add_argument(
+        "--pip-timeout",
+        type=int,
+        default=PIP_DOWNLOAD_TIMEOUT_SECONDS,
+        help=f"pip download timeout(초)입니다. 기본값: {PIP_DOWNLOAD_TIMEOUT_SECONDS}",
+    )
+    parser.add_argument(
         "--clean",
         action="store_true",
         help="destination-dir와 wheelhouse를 먼저 삭제하고 다시 구성합니다.",
@@ -212,7 +258,15 @@ def main() -> int:
             clean_directory(args.wheelhouse)
 
     if not args.no_download:
-        download_wheels(args.python, args.wheelhouse, package_set, args.extra_index_url)
+        download_wheels(
+            args.python,
+            args.wheelhouse,
+            package_set,
+            args.extra_index_url,
+            retry_count=args.download_retries,
+            retry_delay_seconds=args.download_retry_delay,
+            timeout_seconds=args.pip_timeout,
+        )
 
     extracted = extract_cuda_libraries(args.wheelhouse, args.destination_dir, platform)
     for path in extracted:

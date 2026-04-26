@@ -155,14 +155,48 @@ class SetupCudaRuntimeTest(unittest.TestCase):
 
             command = run_mock.call_args.args[0]
             self.assertEqual(
-                command[:6],
-                ["python", "-m", "pip", "download", "--only-binary", ":all:"],
+                command[:10],
+                [
+                    "python",
+                    "-m",
+                    "pip",
+                    "download",
+                    "--retries",
+                    "3",
+                    "--timeout",
+                    "120",
+                    "--only-binary",
+                    ":all:",
+                ],
             )
             self.assertIn(str(wheelhouse), command)
             self.assertIn("https://base.example/simple", command)
             self.assertIn("https://extra.example/simple", command)
             self.assertEqual(command[-2:], ["a==1", "b==2"])
             self.assertTrue(run_mock.call_args.kwargs["check"])
+
+    @patch.object(setup_module.time, "sleep")
+    @patch.object(setup_module.subprocess, "run")
+    def test_download_wheels는_pip_download_실패를_재시도한다(self, run_mock, sleep_mock):
+        with tempfile.TemporaryDirectory() as td:
+            wheelhouse = Path(td) / "wheelhouse"
+            package_set = PackageSet(packages=("a==1",))
+            run_mock.side_effect = [
+                setup_module.subprocess.CalledProcessError(1, ["pip"]),
+                None,
+            ]
+
+            download_wheels(
+                "python",
+                wheelhouse,
+                package_set,
+                [],
+                retry_count=2,
+                retry_delay_seconds=0,
+            )
+
+            self.assertEqual(run_mock.call_count, 2)
+            sleep_mock.assert_called_once_with(0)
 
     @patch.object(setup_module, "current_platform", return_value="windows")
     def test_auto_platform은_현재_platform으로_정규화한다(self, _current_platform):

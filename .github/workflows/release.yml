@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_HTTP_TIMEOUT: "120"
+  CARGO_NET_RETRY: "5"
+
 concurrency:
   group: release-${{ inputs.version }}
   cancel-in-progress: false
@@ -138,7 +142,8 @@ jobs:
         working-directory: ui
         run: |
           set -euo pipefail
-          deno install
+          source ../tools/scripts/ci_retry.sh
+          ci_retry deno install
           deno task build
 
       - name: Install cargo-binstall
@@ -150,7 +155,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo binstall tauri-cli --version '^2' --no-confirm
+          source tools/scripts/ci_retry.sh
+          ci_retry cargo binstall tauri-cli --version '^2' --no-confirm
 
       - name: Build desktop app
         shell: bash
@@ -351,7 +357,8 @@ jobs:
         working-directory: ui
         run: |
           set -euo pipefail
-          deno install
+          source ../tools/scripts/ci_retry.sh
+          ci_retry deno install
           deno task build
 
       - name: Install cargo-binstall
@@ -363,7 +370,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo binstall tauri-cli --version '^2' --no-confirm
+          source tools/scripts/ci_retry.sh
+          ci_retry cargo binstall tauri-cli --version '^2' --no-confirm
 
       - name: Build desktop app
         shell: bash
@@ -519,7 +527,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin "${{ github.ref_name }}"
+          source tools/scripts/ci_retry.sh
+          ci_retry git fetch origin "${{ github.ref_name }}"
           current="$(git rev-parse "origin/${{ github.ref_name }}")"
           expected="${{ needs.prepare.outputs.base_sha }}"
           if [ "$current" != "$expected" ]; then
