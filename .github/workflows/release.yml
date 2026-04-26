@@ -86,7 +86,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -278,7 +278,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.base_sha }}
 
       - name: Download release candidate
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: release-candidate
 
@@ -299,7 +299,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -409,7 +409,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.base_sha }}
 
       - name: Download release candidate
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: release-candidate
 
@@ -427,7 +427,7 @@ jobs:
           fi
 
       - name: Download archives
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
 

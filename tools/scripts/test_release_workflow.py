@@ -30,7 +30,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertEqual(workflow.count("name: Restore Rust build cache"), 2)
-        self.assertEqual(workflow.count("uses: actions/cache@v4"), 2)
+        self.assertEqual(workflow.count("uses: actions/cache@v5"), 2)
         self.assertEqual(
             workflow.count("key: release-rust-${{ matrix.label }}-${{ github.run_id }}"),
             2,
@@ -42,6 +42,14 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow.count("~/.cargo/registry"), 2)
         self.assertEqual(workflow.count("~/.cargo/git"), 2)
         self.assertEqual(workflow.count("\n            target\n"), 2)
+
+    def test_node20_deprecated_action_버전을_사용하지_않는다(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertNotIn("uses: actions/cache@v4", workflow)
+        self.assertNotIn("uses: actions/download-artifact@v6", workflow)
+        self.assertEqual(workflow.count("uses: actions/download-artifact@v8"), 3)
+        self.assertNotIn("ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION", workflow)
 
     def test_릴리스_버전_커밋은_빌드_통과_후에만_main에_push한다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
