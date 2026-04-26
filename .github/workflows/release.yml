@@ -116,7 +116,7 @@ jobs:
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
             paddle_args+=(--device gpu)
           fi
-          python tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
+          python -u tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
 
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
             python tools/scripts/setup_cuda_runtime.py --package-set paddle-cu126 --destination-dir .cuda
@@ -284,7 +284,7 @@ jobs:
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
             paddle_args+=(--device gpu)
           fi
-          python tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
+          python -u tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
 
           if [ "${{ matrix.flavor }}" = "gpu" ]; then
             python tools/scripts/setup_cuda_runtime.py --package-set paddle-cu126 --destination-dir .cuda

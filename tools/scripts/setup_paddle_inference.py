@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ PYCLIPPER_VERSION = "1.4.0"
 SHAPELY_VERSION = "2.1.2"
 DOWNLOAD_RETRY_COUNT = 3
 DOWNLOAD_RETRY_DELAY_SECONDS = 5
+OPENCV_EXTRACT_TIMEOUT_SECONDS = 600
 OPENCV_WINDOWS_URL = (
     "https://sourceforge.net/projects/opencvlibrary/files/4.10.0/"
     "opencv-4.10.0-windows.exe/download"
@@ -85,6 +87,11 @@ def configure_utf8_stdio() -> None:
         reconfigure(encoding="utf-8", errors="replace")
 
 
+def log(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"[{timestamp}] {message}", flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=f"Paddle Inference {PADDLE_INFERENCE_VERSION} 아카이브를 자동 다운로드 받아 .paddle_inference 레이아웃으로 정리합니다."
@@ -114,6 +121,12 @@ def parse_args() -> argparse.Namespace:
         "--opencv-sdk-dir",
         default=None,
         help="기존 OpenCV SDK 루트 경로. 지정하면 .paddle_inference/third_party/opencv-sdk/<platform> 아래로 복사합니다.",
+    )
+    parser.add_argument(
+        "--opencv-extract-timeout",
+        type=int,
+        default=int(os.environ.get("BUZHIDAO_OPENCV_EXTRACT_TIMEOUT_SECONDS", OPENCV_EXTRACT_TIMEOUT_SECONDS)),
+        help=f"Windows OpenCV SDK self-extract 제한 시간(초, 기본값: {OPENCV_EXTRACT_TIMEOUT_SECONDS})",
     )
     return parser.parse_args()
 
@@ -224,7 +237,7 @@ def download_paddle_inference_archive(
     destination = download_dir / filename
 
     if destination.exists() and destination.stat().st_size > 0 and not force:
-        print(f"기존 아카이브 사용: {destination}")
+        log(f"기존 아카이브 사용: {destination}")
         return destination
 
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -233,7 +246,7 @@ def download_paddle_inference_archive(
 
 def download_file(url: str, destination: Path, force: bool = False) -> Path:
     if destination.exists() and destination.stat().st_size > 0 and not force:
-        print(f"기존 아카이브 사용: {destination}")
+        log(f"기존 아카이브 사용: {destination}")
         return destination
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -254,7 +267,7 @@ def download_url_to_file(
 ) -> Path:
     last_error: urllib.error.URLError | None = None
     for attempt in range(1, retry_count + 1):
-        print(f"다운로드: {url}")
+        log(f"다운로드: {url}")
         try:
             with urllib.request.urlopen(url, timeout=120) as response:
                 with destination.open("wb") as target:
@@ -266,14 +279,14 @@ def download_url_to_file(
                 destination.unlink()
             if attempt >= retry_count or not is_retryable_download_error(exc):
                 raise RuntimeError(f"다운로드 실패: {url} ({exc})") from exc
-            print(
+            log(
                 f"다운로드 재시도 예정 ({attempt}/{retry_count}): {url} ({exc})"
             )
             time.sleep(retry_delay_seconds)
     else:
         raise RuntimeError(f"다운로드 실패: {url} ({last_error})")
 
-    print(f"저장: {destination}")
+    log(f"저장: {destination}")
     return destination
 
 
@@ -372,7 +385,7 @@ def write_sidecar_runtime_manifest(destination_dir: Path) -> Path:
         ),
         encoding="utf-8",
     )
-    print(f"sidecar 런타임 매니페스트 기록: {manifest_path}")
+    log(f"sidecar 런타임 매니페스트 기록: {manifest_path}")
     return manifest_path
 
 
@@ -385,7 +398,7 @@ def setup_pyclipper_cpp(download_dir: Path, destination_dir: Path, force: bool =
 
     with TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        print(f"pyclipper 아카이브 추출: {archive_path}")
+        log(f"pyclipper 아카이브 추출: {archive_path}")
         with tarfile.open(archive_path, "r:gz") as tf:
             tf.extractall(tmp_path)
 
@@ -405,7 +418,7 @@ def setup_pyclipper_cpp(download_dir: Path, destination_dir: Path, force: bool =
 
         pyclipper_dst = destination_dir / "third_party" / f"pyclipper-{PYCLIPPER_VERSION}"
         replace_directory(source_root, pyclipper_dst)
-        print(f"pyclipper C++ 소스 배치 완료: {pyclipper_dst}")
+        log(f"pyclipper C++ 소스 배치 완료: {pyclipper_dst}")
         return pyclipper_dst
 
 
@@ -438,6 +451,31 @@ def validate_opencv_sdk_dir(root: Path) -> None:
         raise RuntimeError(f"OpenCV SDK 라이브러리 경로를 찾지 못했습니다: {root}")
 
 
+def extract_windows_opencv_sdk_to_staging(
+    archive_path: Path,
+    staging_root: Path,
+    extract_timeout_seconds: int,
+) -> None:
+    log(f"OpenCV SDK staging 추출: {archive_path} -> {staging_root}")
+    subprocess.run(
+        [str(archive_path), f"-o{staging_root}", "-y"],
+        check=True,
+        timeout=extract_timeout_seconds,
+    )
+
+
+def install_windows_opencv_sdk_from_staging(staging_root: Path, opencv_root: Path) -> None:
+    build_root = staging_root / "opencv" / "build"
+    if not build_root.is_dir():
+        raise RuntimeError(f"OpenCV staging build 디렉터리를 찾지 못했습니다: {build_root}")
+
+    if opencv_root.exists():
+        shutil.rmtree(opencv_root)
+    build_target = opencv_root / "opencv" / "build"
+    build_target.parent.mkdir(parents=True, exist_ok=True)
+    replace_directory(build_root, build_target)
+
+
 def import_opencv_sdk(source_dir: Path, destination_dir: Path) -> Path:
     system, machine = resolve_platform_key()
     platform_dir = (
@@ -449,7 +487,7 @@ def import_opencv_sdk(source_dir: Path, destination_dir: Path) -> Path:
     validate_opencv_sdk_dir(source_dir)
     platform_dir.parent.mkdir(parents=True, exist_ok=True)
     replace_directory(source_dir, platform_dir)
-    print(f"OpenCV SDK 배치 완료: {platform_dir}")
+    log(f"OpenCV SDK 배치 완료: {platform_dir}")
     return platform_dir
 
 
@@ -458,23 +496,19 @@ def setup_opencv_sdk(
     destination_dir: Path,
     force: bool = False,
     source_dir: Path | None = None,
+    extract_timeout_seconds: int = OPENCV_EXTRACT_TIMEOUT_SECONDS,
 ) -> Path | None:
     if source_dir is not None:
         return import_opencv_sdk(source_dir, destination_dir)
 
     system, machine = resolve_platform_key()
     if system != "windows":
-        print(
+        log(
             "OpenCV SDK 자동 다운로드는 현재 Windows만 지원합니다. "
             "Linux/macOS는 --opencv-sdk-dir로 기존 SDK를 가져와 .paddle_inference 아래에 배치하세요."
         )
         return None
 
-    archive_path = download_file(
-        OPENCV_WINDOWS_URL,
-        download_dir / f"opencv-{OPENCV_VERSION}-windows.exe",
-        force=force,
-    )
     opencv_root = (
         destination_dir
         / "third_party"
@@ -482,31 +516,33 @@ def setup_opencv_sdk(
         / opencv_platform_dirname(system, machine)
     )
     if path_has_opencv_headers(opencv_root) and path_has_opencv_libs(opencv_root) and not force:
-        print(f"기존 OpenCV SDK 사용: {opencv_root}")
+        log(f"기존 OpenCV SDK 사용: {opencv_root}")
         return opencv_root
 
-    if opencv_root.exists():
-        shutil.rmtree(opencv_root)
+    archive_path = download_file(
+        OPENCV_WINDOWS_URL,
+        download_dir / f"opencv-{OPENCV_VERSION}-windows.exe",
+        force=force,
+    )
+
     opencv_root.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"OpenCV SDK 추출: {archive_path} -> {opencv_root}")
-    subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            (
-                "Start-Process "
-                f"-FilePath '{archive_path}' "
-                f"-ArgumentList '-o{opencv_root}','-y' "
-                "-WindowStyle Hidden -Wait"
-            ),
-        ],
-        check=True,
-    )
+    with TemporaryDirectory(prefix="buzhidao-opencv-") as tmp:
+        staging_root = Path(tmp) / "opencv-sdk"
+        try:
+            extract_windows_opencv_sdk_to_staging(
+                archive_path,
+                staging_root,
+                extract_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"OpenCV SDK 추출 시간 초과: {extract_timeout_seconds}s, archive={archive_path}"
+            ) from exc
+        validate_opencv_sdk_dir(staging_root)
+        install_windows_opencv_sdk_from_staging(staging_root, opencv_root)
     validate_opencv_sdk_dir(opencv_root)
-    print(f"OpenCV SDK 배치 완료: {opencv_root}")
+    log(f"OpenCV SDK 배치 완료: {opencv_root}")
     return opencv_root
 
 
@@ -516,7 +552,7 @@ def setup_paddle_inference(archive_path: Path, destination_dir: Path) -> Path:
 
     with TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        print(f"아카이브 추출: {archive_path}")
+        log(f"아카이브 추출: {archive_path}")
         extract_archive(archive_path, tmp_path)
 
         layout_root = resolve_layout_root(tmp_path)
@@ -541,9 +577,9 @@ def setup_paddle_inference(archive_path: Path, destination_dir: Path) -> Path:
         if source_third_party is not None:
             merge_directory(source_third_party, destination_dir / "third_party")
 
-        print(f"Paddle Inference 배치 완료: {destination_dir}")
-        print(f"감지된 배치: {layout_root}")
-        print(f"권장 설치 경로: {destination_dir}")
+        log(f"Paddle Inference 배치 완료: {destination_dir}")
+        log(f"감지된 배치: {layout_root}")
+        log(f"권장 설치 경로: {destination_dir}")
         return destination_dir
 
 
@@ -564,6 +600,7 @@ def main() -> int:
         destination_dir,
         force=args.force_download,
         source_dir=Path(args.opencv_sdk_dir) if args.opencv_sdk_dir else None,
+        extract_timeout_seconds=args.opencv_extract_timeout,
     )
     setup_pyclipper_cpp(download_dir, destination_dir, force=args.force_download)
     return 0

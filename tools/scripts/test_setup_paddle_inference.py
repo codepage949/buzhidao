@@ -1,4 +1,4 @@
-﻿import zipfile
+import zipfile
 import tarfile
 import tempfile
 import unittest
@@ -355,6 +355,108 @@ class SetupPaddleInferenceTest(unittest.TestCase):
             self.assertEqual(result, expected)
             self.assertTrue((expected / "install" / "include" / "opencv4" / "opencv2" / "core.hpp").exists())
             self.assertTrue((expected / "install" / "lib" / "libopencv_core.so").exists())
+
+    @patch("tools.scripts.setup_paddle_inference.urllib.request.urlopen")
+    @patch.object(setup_module, "resolve_platform_key", return_value=("windows", "x86_64"))
+    def test_기존_windows_opencv_sdk는_다운로드_전에_재사용한다(
+        self,
+        _platform_key,
+        urlopen_mock: MagicMock,
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            destination = root / ".paddle_inference"
+            opencv_root = destination / "third_party" / "opencv-sdk" / "windows-x86_64"
+            write_mock_opencv_sdk(opencv_root)
+
+            result = setup_module.setup_opencv_sdk(root / "downloads", destination)
+
+            self.assertEqual(result, opencv_root)
+            urlopen_mock.assert_not_called()
+
+    @patch.object(setup_module, "validate_opencv_sdk_dir")
+    @patch.object(setup_module, "install_windows_opencv_sdk_from_staging")
+    @patch.object(setup_module.subprocess, "run")
+    @patch.object(setup_module, "download_file")
+    @patch.object(setup_module, "resolve_platform_key", return_value=("windows", "x86_64"))
+    def test_windows_opencv_추출은_짧은_staging_경로를_거친다(
+        self,
+        _platform_key,
+        download_file_mock: MagicMock,
+        run_mock: MagicMock,
+        install_mock: MagicMock,
+        validate_mock: MagicMock,
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            download_dir = root / "downloads"
+            destination = root / ".paddle_inference"
+            archive = download_dir / "opencv.exe"
+            download_file_mock.return_value = archive
+
+            result = setup_module.setup_opencv_sdk(
+                download_dir,
+                destination,
+                extract_timeout_seconds=123,
+            )
+
+            expected_root = destination / "third_party" / "opencv-sdk" / "windows-x86_64"
+            self.assertEqual(result, expected_root)
+            run_args = run_mock.call_args.args[0]
+            self.assertEqual(run_args[0], str(archive))
+            self.assertEqual(run_args[2], "-y")
+            self.assertTrue(run_args[1].startswith("-o"))
+            staging_root = Path(run_args[1][2:])
+            self.assertEqual(staging_root.name, "opencv-sdk")
+            self.assertLess(len(str(staging_root)), len(str(expected_root)))
+            self.assertEqual(run_mock.call_args.kwargs["timeout"], 123)
+            install_mock.assert_called_once_with(staging_root, expected_root)
+            self.assertEqual(validate_mock.call_args_list[0].args[0], staging_root)
+            self.assertEqual(validate_mock.call_args_list[1].args[0], expected_root)
+
+    def test_windows_opencv_staging_설치는_build_디렉터리만_복사한다(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            staging = root / "staging"
+            destination = root / "opencv-sdk"
+            build = staging / "opencv" / "build"
+            (build / "include" / "opencv2").mkdir(parents=True)
+            (build / "x64" / "vc16" / "lib").mkdir(parents=True)
+            (staging / "opencv" / "sources" / "samples" / "very-long-path").mkdir(parents=True)
+            (build / "include" / "opencv2" / "core.hpp").write_text("1")
+            (build / "x64" / "vc16" / "lib" / "opencv_world4100.lib").write_text("1")
+            (staging / "opencv" / "sources" / "samples" / "very-long-path" / "sample.cpp").write_text("1")
+
+            setup_module.install_windows_opencv_sdk_from_staging(staging, destination)
+
+            self.assertTrue((destination / "opencv" / "build" / "include" / "opencv2" / "core.hpp").exists())
+            self.assertTrue((destination / "opencv" / "build" / "x64" / "vc16" / "lib" / "opencv_world4100.lib").exists())
+            self.assertFalse((destination / "opencv" / "sources").exists())
+
+    @patch.object(setup_module.subprocess, "run")
+    @patch.object(setup_module, "download_file")
+    @patch.object(setup_module, "resolve_platform_key", return_value=("windows", "x86_64"))
+    def test_windows_opencv_추출_timeout은_명확한_오류로_변환한다(
+        self,
+        _platform_key,
+        download_file_mock: MagicMock,
+        run_mock: MagicMock,
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            archive = root / "downloads" / "opencv.exe"
+            download_file_mock.return_value = archive
+            run_mock.side_effect = setup_module.subprocess.TimeoutExpired(
+                cmd=[str(archive)],
+                timeout=7,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "OpenCV SDK 추출 시간 초과"):
+                setup_module.setup_opencv_sdk(
+                    root / "downloads",
+                    root / ".paddle_inference",
+                    extract_timeout_seconds=7,
+                )
 
 
 if __name__ == "__main__":

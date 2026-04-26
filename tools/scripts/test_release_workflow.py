@@ -12,6 +12,12 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("if: matrix.flavor == 'cpu'", workflow)
         self.assertIn("export BUZHIDAO_PADDLE_MODEL_ROOT=\"$PWD/.paddle_models\"", workflow)
 
+    def test_native_sdk_준비는_python_unbuffered로_실행한다(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("python -u tools/scripts/setup_paddle_inference.py", workflow)
+        self.assertNotIn("python tools/scripts/setup_paddle_inference.py", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
