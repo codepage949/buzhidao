@@ -31,6 +31,11 @@ class ReleaseWorkflowTest(unittest.TestCase):
 
         self.assertIn('CARGO_HTTP_TIMEOUT: "120"', workflow)
         self.assertIn('CARGO_NET_RETRY: "5"', workflow)
+        self.assertNotIn("uses: denoland/setup-deno", workflow)
+        self.assertEqual(
+            workflow.count("python -u tools/scripts/setup_deno.py --version v2.x --install-dir .deno"),
+            2,
+        )
         self.assertEqual(workflow.count("source ../tools/scripts/ci_retry.sh"), 2)
         self.assertEqual(workflow.count("source tools/scripts/ci_retry.sh"), 3)
         self.assertEqual(workflow.count("ci_retry deno install"), 2)

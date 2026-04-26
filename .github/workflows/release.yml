@@ -100,9 +100,10 @@ jobs:
             release-rust-${{ matrix.label }}-
 
       - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/scripts/setup_deno.py --version v2.x --install-dir .deno
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -314,9 +315,10 @@ jobs:
             release-rust-${{ matrix.label }}-
 
       - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/scripts/setup_deno.py --version v2.x --install-dir .deno
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
