@@ -1,6 +1,6 @@
 {
   "productName": "buzhidao",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "identifier": "com.buzhidao.desktop",
   "build": {
     "beforeDevCommand": {
