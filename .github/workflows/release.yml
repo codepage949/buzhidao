@@ -130,11 +130,16 @@ jobs:
           deno install
           deno task build
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.18.1
+        with:
+          version: "1.18.1"
+
       - name: Install Tauri CLI
         shell: bash
         run: |
           set -euo pipefail
-          cargo install tauri-cli --version '^2' --locked
+          cargo binstall tauri-cli --version '^2' --no-confirm
 
       - name: Build desktop app
         shell: bash
@@ -298,11 +303,16 @@ jobs:
           deno install
           deno task build
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.18.1
+        with:
+          version: "1.18.1"
+
       - name: Install Tauri CLI
         shell: bash
         run: |
           set -euo pipefail
-          cargo install tauri-cli --version '^2' --locked
+          cargo binstall tauri-cli --version '^2' --no-confirm
 
       - name: Build desktop app
         shell: bash

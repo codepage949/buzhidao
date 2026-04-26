@@ -18,6 +18,14 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("python -u tools/scripts/setup_paddle_inference.py", workflow)
         self.assertNotIn("python tools/scripts/setup_paddle_inference.py", workflow)
 
+    def test_tauri_cli는_binstall로_설치한다(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("uses: cargo-bins/cargo-binstall@v1.18.1", workflow)
+        self.assertIn('version: "1.18.1"', workflow)
+        self.assertIn("cargo binstall tauri-cli --version '^2' --no-confirm", workflow)
+        self.assertNotIn("cargo install tauri-cli", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
