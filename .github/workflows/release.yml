@@ -85,6 +85,17 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-rust-${{ matrix.label }}-${{ github.run_id }}
+          restore-keys: |
+            release-rust-${{ matrix.label }}-
+
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
@@ -161,7 +172,7 @@ jobs:
           cargo test --release ${{ matrix.cargo_features }} 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture
 
   version:
-    name: Update release version
+    name: Prepare release version
     needs:
       - prepare
       - verify
@@ -192,7 +203,7 @@ jobs:
           set -euo pipefail
           python tools/scripts/update_release_version.py "${{ inputs.version }}"
 
-      - name: Commit version update
+      - name: Create release candidate commit
         id: release_sha
         shell: bash
         run: |
@@ -201,16 +212,26 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock tauri.conf.json
           if git diff --cached --quiet; then
-            echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "Release version update produced no changes" >&2
+            exit 1
           fi
           git commit -m "chore: 릴리즈 버전 ${{ inputs.version }}"
-          git push origin "HEAD:${{ github.ref_name }}"
-          echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          release_sha="$(git rev-parse HEAD)"
+          git branch release-candidate "$release_sha"
+          git bundle create release-candidate.bundle release-candidate ^"${{ needs.prepare.outputs.base_sha }}"
+          echo "value=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-candidate
+          path: release-candidate.bundle
+          if-no-files-found: error
 
   build:
     name: Build release asset ${{ matrix.label }}
     needs:
+      - prepare
       - version
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -253,10 +274,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.version.outputs.release_sha }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.base_sha }}
+
+      - name: Download release candidate
+        uses: actions/download-artifact@v6
+        with:
+          name: release-candidate
+
+      - name: Checkout release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch release-candidate.bundle release-candidate
+          git checkout --detach FETCH_HEAD
+          current="$(git rev-parse HEAD)"
+          expected="${{ needs.version.outputs.release_sha }}"
+          if [ "$current" != "$expected" ]; then
+            echo "Release candidate mismatch: current=$current expected=$expected" >&2
+            exit 1
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-rust-${{ matrix.label }}-${{ github.run_id }}
+          restore-keys: |
+            release-rust-${{ matrix.label }}-
 
       - name: Setup Deno
         uses: denoland/setup-deno@v2
@@ -348,13 +399,32 @@ jobs:
     needs:
       - version
       - build
+      - prepare
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ needs.version.outputs.release_sha }}
+          ref: ${{ needs.prepare.outputs.base_sha }}
+
+      - name: Download release candidate
+        uses: actions/download-artifact@v6
+        with:
+          name: release-candidate
+
+      - name: Checkout release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch release-candidate.bundle release-candidate
+          git checkout --detach FETCH_HEAD
+          current="$(git rev-parse HEAD)"
+          expected="${{ needs.version.outputs.release_sha }}"
+          if [ "$current" != "$expected" ]; then
+            echo "Release candidate mismatch: current=$current expected=$expected" >&2
+            exit 1
+          fi
 
       - name: Download archives
         uses: actions/download-artifact@v6
@@ -449,6 +519,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin "${{ github.ref_name }}"
+          current="$(git rev-parse "origin/${{ github.ref_name }}")"
+          expected="${{ needs.prepare.outputs.base_sha }}"
+          if [ "$current" != "$expected" ]; then
+            echo "Branch moved before release publish: current=$current expected=$expected" >&2
+            exit 1
+          fi
+          git push origin "${{ needs.version.outputs.release_sha }}:${{ github.ref_name }}"
           git tag "${{ inputs.version }}" "${{ needs.version.outputs.release_sha }}"
           git push origin "${{ inputs.version }}"
 
