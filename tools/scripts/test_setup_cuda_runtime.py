@@ -7,6 +7,7 @@ from unittest.mock import patch
 from tools.scripts.setup_cuda_runtime import (
     PackageSet,
     clean_directory,
+    configure_utf8_stdio,
     download_wheels,
     extract_cuda_libraries,
     is_cuda_library_member,
@@ -23,6 +24,24 @@ def write_wheel(path: Path, members: dict[str, bytes]) -> None:
 
 
 class SetupCudaRuntimeTest(unittest.TestCase):
+    def test_stdio를_utf8로_재설정한다(self):
+        class FakeStream:
+            def __init__(self):
+                self.calls = []
+
+            def reconfigure(self, **kwargs):
+                self.calls.append(kwargs)
+
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        with patch.object(setup_module.sys, "stdout", stdout), \
+                patch.object(setup_module.sys, "stderr", stderr):
+            configure_utf8_stdio()
+
+        self.assertEqual(stdout.calls, [{"encoding": "utf-8", "errors": "replace"}])
+        self.assertEqual(stderr.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
     def test_windows는_nvidia_bin_dll만_대상으로_본다(self):
         self.assertTrue(is_cuda_library_member("nvidia/cublas/bin/cublas64_12.dll", "windows"))
         self.assertFalse(is_cuda_library_member("nvidia/cublas/lib/libcublas.so.12", "windows"))

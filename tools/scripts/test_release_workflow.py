@@ -11,6 +11,19 @@ class ReleaseWorkflowTest(unittest.TestCase):
 
         self.assertIn("if: matrix.flavor == 'cpu'", workflow)
         self.assertIn("export BUZHIDAO_PADDLE_MODEL_ROOT=\"$PWD/.paddle_models\"", workflow)
+        self.assertLess(
+            workflow.index("name: Run OCR smoke after build"),
+            workflow.index("name: Prepare archives"),
+        )
+
+    def test_release는_후보_커밋에서_한_번만_빌드한다(self):
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertNotIn("  verify:", workflow)
+        self.assertNotIn("- verify", workflow)
+        self.assertNotIn("needs.prepare.outputs.base_sha }}\n\n      - name: Setup Rust", workflow)
+        self.assertIn("version:\n    name: Prepare release version\n    needs: prepare", workflow)
+        self.assertIn("build:\n    name: Build release asset", workflow)
 
     def test_native_sdk_준비는_python_unbuffered로_실행한다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -34,32 +47,32 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertNotIn("uses: denoland/setup-deno", workflow)
         self.assertEqual(
             workflow.count("python -u tools/scripts/setup_deno.py --version v2.x --install-dir .deno"),
-            2,
+            1,
         )
-        self.assertEqual(workflow.count("source ../tools/scripts/ci_retry.sh"), 2)
-        self.assertEqual(workflow.count("source tools/scripts/ci_retry.sh"), 3)
-        self.assertEqual(workflow.count("ci_retry deno install"), 2)
+        self.assertEqual(workflow.count("source ../tools/scripts/ci_retry.sh"), 1)
+        self.assertEqual(workflow.count("source tools/scripts/ci_retry.sh"), 2)
+        self.assertEqual(workflow.count("ci_retry deno install"), 1)
         self.assertEqual(
             workflow.count("ci_retry cargo binstall tauri-cli --version '^2' --no-confirm"),
-            2,
+            1,
         )
         self.assertIn('ci_retry git fetch origin "${{ github.ref_name }}"', workflow)
 
     def test_release_빌드는_cargo_의존성_캐시만_재사용한다(self):
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("name: Restore Rust build cache"), 2)
-        self.assertEqual(workflow.count("uses: actions/cache@v5"), 2)
+        self.assertEqual(workflow.count("name: Restore Rust build cache"), 1)
+        self.assertEqual(workflow.count("uses: actions/cache@v5"), 1)
         self.assertEqual(
             workflow.count("key: release-rust-${{ matrix.label }}-${{ github.run_id }}"),
-            2,
+            1,
         )
         self.assertEqual(
             workflow.count("release-rust-${{ matrix.label }}-"),
-            4,
+            2,
         )
-        self.assertEqual(workflow.count("~/.cargo/registry"), 2)
-        self.assertEqual(workflow.count("~/.cargo/git"), 2)
+        self.assertEqual(workflow.count("~/.cargo/registry"), 1)
+        self.assertEqual(workflow.count("~/.cargo/git"), 1)
         self.assertNotIn("\n            target\n", workflow)
 
     def test_node20_deprecated_action_버전을_사용하지_않는다(self):

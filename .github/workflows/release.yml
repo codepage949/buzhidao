@@ -48,140 +48,9 @@ jobs:
           set -euo pipefail
           echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  verify:
-    name: Verify build and OCR ${{ matrix.label }}
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os_name: windows
-            arch: amd64
-            flavor: cpu
-            label: windows-amd64-cpu
-            runner: windows-latest
-            cargo_features: ""
-          - os_name: windows
-            arch: amd64
-            flavor: gpu
-            label: windows-amd64-gpu
-            runner: windows-latest
-            cargo_features: "--features gpu"
-          - os_name: linux
-            arch: amd64
-            flavor: cpu
-            label: linux-amd64-cpu
-            runner: ubuntu-24.04
-            cargo_features: ""
-          - os_name: linux
-            arch: amd64
-            flavor: gpu
-            label: linux-amd64-gpu
-            runner: ubuntu-24.04
-            cargo_features: "--features gpu"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.prepare.outputs.base_sha }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Rust build cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: release-rust-${{ matrix.label }}-${{ github.run_id }}
-          restore-keys: |
-            release-rust-${{ matrix.label }}-
-
-      - name: Setup Deno
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -u tools/scripts/setup_deno.py --version v2.x --install-dir .deno
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash tools/scripts/install_linux_build_deps.sh
-
-      - name: Prepare native SDKs
-        shell: bash
-        run: |
-          set -euo pipefail
-          opencv_args=()
-          if [ "${{ matrix.os_name }}" = "linux" ]; then
-            sdk="$PWD/.opencv-sdk-ci"
-            mkdir -p "$sdk/install/include" "$sdk/install/lib"
-            ln -s /usr/include/opencv4 "$sdk/install/include/opencv4"
-            for lib in opencv_core opencv_imgproc opencv_imgcodecs; do
-              cp -L "/usr/lib/x86_64-linux-gnu/lib${lib}.so" "$sdk/install/lib/"
-            done
-            opencv_args=(--opencv-sdk-dir "$sdk")
-          fi
-
-          paddle_args=(--destination-dir .paddle_inference)
-          if [ "${{ matrix.flavor }}" = "gpu" ]; then
-            paddle_args+=(--device gpu)
-          fi
-          python -u tools/scripts/setup_paddle_inference.py "${paddle_args[@]}" "${opencv_args[@]}"
-
-          if [ "${{ matrix.flavor }}" = "gpu" ]; then
-            python tools/scripts/setup_cuda_runtime.py --package-set paddle-cu126 --destination-dir .cuda
-          fi
-
-      - name: Build frontend
-        shell: bash
-        working-directory: ui
-        run: |
-          set -euo pipefail
-          source ../tools/scripts/ci_retry.sh
-          ci_retry deno install
-          deno task build
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.18.1
-        with:
-          version: "1.18.1"
-
-      - name: Install Tauri CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          source tools/scripts/ci_retry.sh
-          ci_retry cargo binstall tauri-cli --version '^2' --no-confirm
-
-      - name: Build desktop app
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo tauri build --no-bundle ${{ matrix.cargo_features }}
-
-      - name: Run OCR smoke after build
-        if: matrix.flavor == 'cpu'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.os_name }}" = "linux" ]; then
-            export LD_LIBRARY_PATH="$PWD/.cuda:$PWD/target/release:$PWD/target/release/deps:$PWD/.paddle_inference/lib:$PWD/.paddle_inference/third_party/opencv-sdk/linux-x86_64/install/lib:${LD_LIBRARY_PATH:-}"
-          fi
-          export BUZHIDAO_PADDLE_MODEL_ROOT="$PWD/.paddle_models"
-          export OCR_SERVER_DEVICE=cpu
-          export BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1
-          cargo test --release ${{ matrix.cargo_features }} 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture
-
   version:
     name: Prepare release version
-    needs:
-      - prepare
-      - verify
+    needs: prepare
     runs-on: ubuntu-latest
     outputs:
       release_sha: ${{ steps.release_sha.outputs.value }}
@@ -378,6 +247,19 @@ jobs:
         run: |
           set -euo pipefail
           cargo tauri build --no-bundle ${{ matrix.cargo_features }}
+
+      - name: Run OCR smoke after build
+        if: matrix.flavor == 'cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os_name }}" = "linux" ]; then
+            export LD_LIBRARY_PATH="$PWD/.cuda:$PWD/target/release:$PWD/target/release/deps:$PWD/.paddle_inference/lib:$PWD/.paddle_inference/third_party/opencv-sdk/linux-x86_64/install/lib:${LD_LIBRARY_PATH:-}"
+          fi
+          export BUZHIDAO_PADDLE_MODEL_ROOT="$PWD/.paddle_models"
+          export OCR_SERVER_DEVICE=cpu
+          export BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1
+          cargo test --release ${{ matrix.cargo_features }} 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다 -- --nocapture
 
       - name: Prepare archives
         shell: bash

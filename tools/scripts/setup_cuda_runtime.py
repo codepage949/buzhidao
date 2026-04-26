@@ -16,6 +16,19 @@ PIP_DOWNLOAD_RETRY_DELAY_SECONDS = 5
 PIP_DOWNLOAD_TIMEOUT_SECONDS = 120
 
 
+def configure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+
+        reconfigure(encoding="utf-8", errors="replace")
+
+
 @dataclass(frozen=True)
 class PackageSet:
     packages: tuple[str, ...]
@@ -242,6 +255,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    configure_utf8_stdio()
     args = parse_args()
     platform = normalize_platform(args.platform)
     if args.platform != "auto" and platform != current_platform() and not args.no_download:
