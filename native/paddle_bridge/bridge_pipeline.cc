@@ -120,16 +120,24 @@ bool run_cls_batches_into(
     const bool profile_stages = profile_stages_enabled();
     cls_results->assign(cls_inputs.size(), {0, 0.0f});
     constexpr size_t kClsBatchSize = 6;
+    ClsBatchScratch scratch;
+    std::vector<const Image*> batch_images;
+    batch_images.reserve(kClsBatchSize);
     for (size_t start = 0; start < cls_inputs.size(); start += kClsBatchSize) {
         const size_t end = std::min(cls_inputs.size(), start + kClsBatchSize);
-        std::vector<const Image*> batch_images;
-        batch_images.reserve(end - start);
+        batch_images.clear();
         for (size_t i = start; i < end; ++i) {
             batch_images.push_back(&cls_inputs[i].cropped);
         }
         std::string cls_err;
         const auto cls_started = std::chrono::steady_clock::now();
-        const auto batch_results = run_cls_batch(engine->cls_predictor, batch_images, engine->cls_cfg, &cls_err);
+        const auto batch_results = run_cls_batch(
+            engine->cls_predictor,
+            batch_images,
+            engine->cls_cfg,
+            &scratch,
+            &cls_err
+        );
         if (profile_stages && cls_ms != nullptr) {
             *cls_ms += elapsed_ms_since(cls_started);
         }
@@ -221,15 +229,17 @@ bool run_rec_batches_into(
     }
     const bool profile_stages = profile_stages_enabled();
     RecBatchScratch scratch;
+    std::vector<const Image*> batch_images;
+    batch_images.reserve(6);
+    std::vector<RecDebugMeta> batch_meta;
+    if (need_rec_debug_meta) {
+        batch_meta.reserve(6);
+    }
     for (const auto& batch : rec_batches) {
         const size_t start = batch.first;
         const size_t end = batch.second;
-        std::vector<const Image*> batch_images;
-        batch_images.reserve(end - start);
-        std::vector<RecDebugMeta> batch_meta;
-        if (need_rec_debug_meta) {
-            batch_meta.reserve(end - start);
-        }
+        batch_images.clear();
+        batch_meta.clear();
         for (size_t pos = start; pos < end; ++pos) {
             const size_t original_index = rec_order[pos];
             const auto& candidate = rec_candidates[original_index];

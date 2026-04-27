@@ -20,9 +20,10 @@ std::pair<std::string, float> decode_ctc(
     double score_sum = 0.0;
     int score_count = 0;
     std::string text;
+    const bool debug = debug_enabled();
     std::vector<int> best_indices;
     std::vector<float> best_scores;
-    if (debug_enabled()) {
+    if (debug) {
         best_indices.reserve(static_cast<size_t>(time_steps));
         best_scores.reserve(static_cast<size_t>(time_steps));
     }
@@ -38,7 +39,7 @@ std::pair<std::string, float> decode_ctc(
                 best = c;
             }
         }
-        if (debug_enabled()) {
+        if (debug) {
             best_indices.push_back(best);
             best_scores.push_back(best_score);
         }
@@ -54,14 +55,17 @@ std::pair<std::string, float> decode_ctc(
     }
 
     const float score = score_count > 0 ? static_cast<float>(score_sum / score_count) : 0.0f;
-    const char* dump_all_ctc_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DEBUG_CTC_ALL");
-    const bool dump_all_ctc =
-        dump_all_ctc_raw != nullptr &&
-        dump_all_ctc_raw[0] != '\0' &&
-        std::strcmp(dump_all_ctc_raw, "0") != 0 &&
-        std::strcmp(dump_all_ctc_raw, "false") != 0 &&
-        std::strcmp(dump_all_ctc_raw, "FALSE") != 0;
-    if (debug_enabled() && (text.empty() || dump_all_ctc)) {
+    bool dump_all_ctc = false;
+    if (debug) {
+        const char* dump_all_ctc_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DEBUG_CTC_ALL");
+        dump_all_ctc =
+            dump_all_ctc_raw != nullptr &&
+            dump_all_ctc_raw[0] != '\0' &&
+            std::strcmp(dump_all_ctc_raw, "0") != 0 &&
+            std::strcmp(dump_all_ctc_raw, "false") != 0 &&
+            std::strcmp(dump_all_ctc_raw, "FALSE") != 0;
+    }
+    if (debug && (text.empty() || dump_all_ctc)) {
         std::ostringstream os;
         os << "decode_ctc text='" << text << "' top_idx=";
         for (size_t i = 0; i < best_indices.size() && i < 24; ++i) {

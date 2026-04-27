@@ -70,6 +70,12 @@ struct RecBatchScratch {
     std::vector<int> output_shape;
 };
 
+struct ClsBatchScratch {
+    FloatScratchBuffer input;
+    FloatScratchBuffer output;
+    std::vector<int> output_shape;
+};
+
 struct PredictorIoNames {
     std::string input_name;
     std::string output_name;

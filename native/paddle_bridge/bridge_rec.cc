@@ -187,9 +187,6 @@ std::vector<std::pair<std::string, float>> run_rec_batch(
     if (imgs.empty()) {
         return {};
     }
-    if (imgs.size() == 1) {
-        return {run_rec(predictor, *imgs[0], dict, rec_cfg, err)};
-    }
 
     const bool profile_stages = profile_stages_enabled();
     const auto rec_started = std::chrono::steady_clock::now();
