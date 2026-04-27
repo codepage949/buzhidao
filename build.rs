@@ -1,3 +1,5 @@
+const PADDLE_BRIDGE_DIR: &str = "native/paddle_bridge";
+
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_paddle_inference)");
     if cfg!(target_os = "linux") {
@@ -10,8 +12,11 @@ fn main() {
     }
 
     if std::env::var_os("CARGO_FEATURE_PADDLE_FFI").is_some() {
-        println!("cargo:rerun-if-changed=native/paddle_bridge/bridge.cc");
-        println!("cargo:rerun-if-changed=native/paddle_bridge/bridge.h");
+        let bridge_files = collect_paddle_bridge_files();
+        println!("cargo:rerun-if-changed={PADDLE_BRIDGE_DIR}");
+        for path in &bridge_files {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PADDLE_FFI");
 
@@ -19,13 +24,15 @@ fn main() {
         build
             .cpp(true)
             .opt_level(3)
-            .file("native/paddle_bridge/bridge.cc")
             .include("native/paddle_bridge")
             .flag(if cfg!(target_env = "msvc") {
                 "/std:c++17"
             } else {
                 "-std=c++17"
             });
+        for file in bridge_files.iter().filter(|path| path.extension().is_some_and(|ext| ext == "cc")) {
+            build.file(file);
+        }
         if cfg!(target_env = "msvc") {
             build.flag("/utf-8");
             build.flag("/O2");
@@ -126,6 +133,24 @@ fn main() {
     }
 
     tauri_build::build()
+}
+
+fn collect_paddle_bridge_files() -> Vec<std::path::PathBuf> {
+    let mut files = std::fs::read_dir(PADDLE_BRIDGE_DIR)
+        .unwrap_or_else(|error| {
+            panic!("BUZHIDAO: {PADDLE_BRIDGE_DIR} 디렉터리를 읽지 못했습니다: {error}")
+        })
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext == "cc" || ext == "h")
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
 }
 
 fn stage_cuda_runtime_shared_libs() {
