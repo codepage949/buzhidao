@@ -29,13 +29,27 @@ def is_runtime_library(path: Path) -> bool:
     return name.endswith(RUNTIME_LIBRARY_SUFFIXES) or ".so." in name
 
 
+def is_excluded_runtime_library(path: Path) -> bool:
+    name = path.name.lower()
+    if not (name.startswith("opencv_") or name.startswith("libopencv_")):
+        return False
+    stem = name.removesuffix(".dll")
+    if name.endswith(".dll") and (stem.endswith("d") or stem.endswith("_64d")):
+        return True
+    if name.startswith(("opencv_java", "libopencv_java")):
+        return True
+    if name.startswith(("opencv_videoio_", "libopencv_videoio")):
+        return True
+    return False
+
+
 def copy_runtime_libraries(source_dir: Path, output_dir: Path) -> list[Path]:
     copied: list[Path] = []
     if not source_dir.is_dir():
         return copied
 
     for path in sorted(source_dir.iterdir()):
-        if not path.is_file() or not is_runtime_library(path):
+        if not path.is_file() or not is_runtime_library(path) or is_excluded_runtime_library(path):
             continue
         target = output_dir / path.name
         if target.exists():

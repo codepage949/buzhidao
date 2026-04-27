@@ -71,9 +71,7 @@ fn main() {
             println!("cargo:rustc-link-lib={}", lib_name);
         }
         build.define("BUZHIDAO_HAVE_OPENCV", Some("1"));
-        for runtime_dir in &opencv.runtime_dirs {
-            stage_runtime_shared_libs_from_dir(runtime_dir);
-        }
+        stage_opencv_runtime_shared_libs(&opencv);
 
         let mut has_inference_support = false;
         let candidate_dirs = default_paddle_inference_roots();
@@ -234,6 +232,42 @@ fn stage_runtime_shared_libs_from_dir(runtime_dir: &std::path::Path) {
     }
 }
 
+fn stage_opencv_runtime_shared_libs(opencv: &OpenCvSdk) {
+    let Some(profile_dir) = cargo_profile_dir() else {
+        return;
+    };
+    let destinations = [profile_dir.clone(), profile_dir.join("deps")];
+    for runtime_dir in &opencv.runtime_dirs {
+        for file in shared_library_files(runtime_dir) {
+            if !is_opencv_linked_runtime_library(&file, &opencv.libs) {
+                continue;
+            }
+            let Some(file_name) = file.file_name() else {
+                continue;
+            };
+            for destination in &destinations {
+                if let Err(error) = std::fs::create_dir_all(destination) {
+                    println!(
+                        "cargo:warning=BUZHIDAO: {} 디렉터리 생성 실패: {}",
+                        destination.display(),
+                        error
+                    );
+                    continue;
+                }
+                let target = destination.join(file_name);
+                if let Err(error) = std::fs::copy(&file, &target) {
+                    println!(
+                        "cargo:warning=BUZHIDAO: {} -> {} 복사 실패: {}",
+                        file.display(),
+                        target.display(),
+                        error
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn cargo_profile_dir() -> Option<std::path::PathBuf> {
     let out_dir = std::env::var_os("OUT_DIR").map(std::path::PathBuf::from)?;
     out_dir.ancestors().nth(3).map(std::path::Path::to_path_buf)
@@ -301,6 +335,32 @@ fn is_shared_library_file(path: &std::path::Path) -> bool {
         || name.ends_with(".dylib")
         || name.ends_with(".so")
         || name.contains(".so.")
+}
+
+fn is_opencv_linked_runtime_library(path: &std::path::Path, linked_libs: &[String]) -> bool {
+    let Some(name) = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if !name.contains("opencv") || is_windows_opencv_debug_runtime_name(&name) {
+        return false;
+    }
+    linked_libs.iter().any(|lib| {
+        let linked = lib.to_ascii_lowercase();
+        name.starts_with(&linked)
+            || name.starts_with(&format!("lib{linked}.so"))
+            || name.starts_with(&format!("lib{linked}.dylib"))
+    })
+}
+
+fn is_windows_opencv_debug_runtime_name(name: &str) -> bool {
+    if !name.ends_with(".dll") {
+        return false;
+    }
+    let stem = name.trim_end_matches(".dll");
+    stem.ends_with('d') || stem.ends_with("_64d")
 }
 
 fn add_unique_path(paths: &mut Vec<std::path::PathBuf>, candidate: std::path::PathBuf) {
