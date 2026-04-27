@@ -9,6 +9,7 @@ from tools.scripts.release_helper import (
     archive_basename,
     copy_runtime_libraries,
     create_archive,
+    is_excluded_runtime_library,
     is_runtime_library,
     make_install_script,
     prepare_app_layout,
@@ -61,6 +62,17 @@ class ReleaseHelperTest(unittest.TestCase):
         self.assertTrue(is_runtime_library(Path("liba.dylib")))
         self.assertFalse(is_runtime_library(Path("a.txt")))
 
+    def test_opencv_debug와_plugin_runtime은_제외한다(self):
+        self.assertTrue(is_excluded_runtime_library(Path("opencv_world4100d.dll")))
+        self.assertTrue(is_excluded_runtime_library(Path("opencv_videoio_msmf4100_64d.dll")))
+        self.assertTrue(is_excluded_runtime_library(Path("opencv_videoio_ffmpeg4100_64.dll")))
+        self.assertTrue(is_excluded_runtime_library(Path("opencv_java4100.dll")))
+        self.assertTrue(is_excluded_runtime_library(Path("libopencv_videoio.so.410")))
+        self.assertTrue(is_excluded_runtime_library(Path("libopencv_java4100.so")))
+        self.assertFalse(is_excluded_runtime_library(Path("opencv_world4100.dll")))
+        self.assertFalse(is_excluded_runtime_library(Path("libopencv_core.so.410")))
+        self.assertFalse(is_excluded_runtime_library(Path("paddle_inference.dll")))
+
     def test_runtime_library만_복사한다(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -76,6 +88,34 @@ class ReleaseHelperTest(unittest.TestCase):
             self.assertEqual([path.name for path in copied], ["a.dll"])
             self.assertTrue((output / "a.dll").exists())
             self.assertFalse((output / "a.txt").exists())
+
+    def test_runtime_복사는_opencv_debug와_plugin을_제외한다(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source"
+            output = root / "output"
+            source.mkdir()
+            output.mkdir()
+            for name in [
+                "opencv_world4100.dll",
+                "opencv_world4100d.dll",
+                "opencv_videoio_ffmpeg4100_64.dll",
+                "libopencv_videoio.so.410",
+                "opencv_java4100.dll",
+                "paddle_inference.dll",
+            ]:
+                (source / name).write_bytes(name.encode("utf-8"))
+
+            copied = copy_runtime_libraries(source, output)
+
+            self.assertEqual(
+                sorted(path.name for path in copied),
+                ["opencv_world4100.dll", "paddle_inference.dll"],
+            )
+            self.assertFalse((output / "opencv_world4100d.dll").exists())
+            self.assertFalse((output / "opencv_videoio_ffmpeg4100_64.dll").exists())
+            self.assertFalse((output / "libopencv_videoio.so.410").exists())
+            self.assertFalse((output / "opencv_java4100.dll").exists())
 
     def test_zip_아카이브를_생성한다(self):
         with tempfile.TemporaryDirectory() as td:
