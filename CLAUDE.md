@@ -1,5 +1,14 @@
 ## 회고
 
+### Windows junction worktree 정리 주의
+
+임시 git worktree에 저장소 내부 SDK 디렉터리를 junction으로 연결한 뒤
+worktree를 재귀 삭제하면 junction 대상의 실제 내용까지 삭제될 수 있다.
+
+→ 임시 worktree에는 저장소 내부 중요 디렉터리를 junction으로 연결하지 말고,
+필요하면 별도 복사나 환경변수로 참조한다. junction을 삭제할 때는 링크 자체만 제거되는지
+먼저 확인하고, 대상 SDK는 삭제 대상 경로 검증에서 제외한다.
+
 ### Tauri ACL 권한 누락
 
 Tauri에서 JS API(`window.close()`, `window.hide()` 등)를 사용하려면

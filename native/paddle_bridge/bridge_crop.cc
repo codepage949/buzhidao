@@ -22,13 +22,24 @@ Image crop_to_bbox(const cv::Mat& img_bgr, const std::array<FloatPoint, 4>& pts,
         }
         return {0, 0, 0, {}};
     }
-    std::vector<FloatPoint> crop_points(pts.begin(), pts.end());
-    for (auto& point : crop_points) {
-        point.x = static_cast<float>(static_cast<int>(point.x));
-        point.y = static_cast<float>(static_cast<int>(point.y));
+    std::vector<cv::Point2f> crop_points;
+    crop_points.reserve(pts.size());
+    for (const auto& point : pts) {
+        crop_points.emplace_back(
+            static_cast<float>(static_cast<int>(point.x)),
+            static_cast<float>(static_cast<int>(point.y))
+        );
     }
-    const auto crop_box = min_area_rect_box_like_opencv(crop_points);
-    const auto quad = order_crop_box_like_sidecar(crop_box.corners);
+    const cv::RotatedRect crop_box = cv::minAreaRect(crop_points);
+    cv::Point2f box_points[4];
+    crop_box.points(box_points);
+    const std::array<FloatPoint, 4> crop_corners{{
+        {box_points[0].x, box_points[0].y},
+        {box_points[1].x, box_points[1].y},
+        {box_points[2].x, box_points[2].y},
+        {box_points[3].x, box_points[3].y},
+    }};
+    const auto quad = order_crop_box_like_sidecar(crop_corners);
     const float top_w = point_distance(quad[0], quad[1]);
     const float bottom_w = point_distance(quad[3], quad[2]);
     const float left_h = point_distance(quad[0], quad[3]);

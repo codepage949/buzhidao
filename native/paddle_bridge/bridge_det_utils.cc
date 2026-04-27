@@ -24,6 +24,17 @@ namespace fs = std::filesystem;
 #define BUZHIDAO_HAVE_OPENCV 1
 #endif
 
+float round_half_to_even(float value) {
+    const double floor_value = std::floor(value);
+    const double fraction = value - floor_value;
+    constexpr double kEpsilon = 1e-6;
+    if (std::fabs(fraction - 0.5) <= kEpsilon) {
+        const auto floor_int = static_cast<long long>(floor_value);
+        return static_cast<float>((floor_int % 2 == 0) ? floor_value : floor_value + 1.0);
+    }
+    return static_cast<float>(std::floor(value + 0.5));
+}
+
 void sort_quad_boxes_like_sidecar(std::vector<BBox>* boxes) {
     if (boxes == nullptr || boxes->size() <= 1) {
         return;
@@ -375,12 +386,12 @@ std::vector<BBox> db_postprocess(
         std::array<FloatPoint, 4> scaled{};
         for (int i = 0; i < 4; ++i) {
             scaled[i].x = std::clamp(
-                std::round(unclipped_mini.first[i].x * x_scale),
+                round_half_to_even(unclipped_mini.first[i].x * x_scale),
                 0.0f,
                 static_cast<float>(src_w)
             );
             scaled[i].y = std::clamp(
-                std::round(unclipped_mini.first[i].y * y_scale),
+                round_half_to_even(unclipped_mini.first[i].y * y_scale),
                 0.0f,
                 static_cast<float>(src_h)
             );
@@ -635,12 +646,12 @@ std::vector<BBox> db_postprocess(
             std::array<FloatPoint, 4> pts{};
             for (int i = 0; i < 4; ++i) {
                 pts[i].x = std::clamp(
-                    std::round(unclipped_mini.first[i].x * x_scale),
+                    round_half_to_even(unclipped_mini.first[i].x * x_scale),
                     0.0f,
                     static_cast<float>(src_w)
                 );
                 pts[i].y = std::clamp(
-                    std::round(unclipped_mini.first[i].y * y_scale),
+                    round_half_to_even(unclipped_mini.first[i].y * y_scale),
                     0.0f,
                     static_cast<float>(src_h)
                 );
