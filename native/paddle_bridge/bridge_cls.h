@@ -23,6 +23,7 @@ std::vector<std::pair<int, float>> run_cls_batch(
     const std::shared_ptr<paddle_infer::Predictor>& predictor,
     const std::vector<const Image*>& imgs,
     const ModelPreprocessCfg& cls_cfg,
+    ClsBatchScratch* scratch,
     std::string* err
 );
 

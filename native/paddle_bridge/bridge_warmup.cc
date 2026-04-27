@@ -27,6 +27,7 @@ std::vector<std::pair<int, float>> run_cls_batch(
     const std::shared_ptr<paddle_infer::Predictor>& predictor,
     const std::vector<const Image*>& imgs,
     const ModelPreprocessCfg& cls_cfg,
+    ClsBatchScratch* scratch,
     std::string* err
 );
 
@@ -81,6 +82,7 @@ bool warmup_cls_predictor(buzhi_ocr_engine* engine, std::string* err) {
         engine->cls_predictor,
         cls_ptrs,
         engine->cls_cfg,
+        nullptr,
         &cls_err);
     if (!cls_err.empty()) {
         set_warmup_error_if_empty(err, cls_err);

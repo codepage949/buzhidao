@@ -52,52 +52,64 @@ std::vector<std::pair<int, float>> run_cls_batch(
     const std::shared_ptr<paddle_infer::Predictor>& predictor,
     const std::vector<const Image*>& imgs,
     const ModelPreprocessCfg& cls_cfg,
+    ClsBatchScratch* scratch,
     std::string* err
 ) {
     if (imgs.empty()) {
         return {};
-    }
-    if (imgs.size() == 1) {
-        return {run_cls(predictor, *imgs[0], cls_cfg, err)};
     }
 
     const int batch_n = static_cast<int>(imgs.size());
     const int target_h = cls_cfg.cls_target_h;
     const int target_w = cls_cfg.cls_target_w;
     const size_t per_item = static_cast<size_t>(3 * target_h * target_w);
-    std::vector<float> batch_input(static_cast<size_t>(batch_n) * per_item, 0.0f);
+    const size_t batch_input_len = static_cast<size_t>(batch_n) * per_item;
+    ClsBatchScratch local_scratch;
+    ClsBatchScratch& buffers = scratch != nullptr ? *scratch : local_scratch;
+    if (!buffers.input.ensure(batch_input_len, err)) {
+        return std::vector<std::pair<int, float>>(imgs.size(), {0, 0.0f});
+    }
+    float* batch_input = buffers.input.get();
     for (int i = 0; i < batch_n; ++i) {
         const auto* image = imgs[static_cast<size_t>(i)];
         const Image resized = resize_bilinear(*image, target_w, target_h);
         fill_cls_tensor(
             resized,
             cls_cfg.cls_norm,
-            batch_input.data() + static_cast<size_t>(i) * per_item
+            batch_input + static_cast<size_t>(i) * per_item
         );
     }
 
-    std::vector<float> out;
-    std::vector<int> out_shape;
     std::vector<int> shape{batch_n, 3, target_h, target_w};
-    if (!run_predictor(predictor, batch_input, shape, out, out_shape, err)) {
+    size_t out_len = 0;
+    if (!run_predictor_into_buffer(
+            predictor,
+            batch_input,
+            batch_input_len,
+            shape,
+            &buffers.output,
+            &out_len,
+            buffers.output_shape,
+            err)) {
         set_cls_error_if_empty(err, "cls batch predictor 실행 실패");
         return std::vector<std::pair<int, float>>(imgs.size(), {0, 0.0f});
     }
-    if (out.empty()) {
+    if (out_len == 0) {
         return std::vector<std::pair<int, float>>(imgs.size(), {0, 0.0f});
     }
+    const float* out = buffers.output.get();
 
     int num_classes = 0;
-    if (out_shape.size() == 2) {
-        if (out_shape[0] != batch_n) {
+    if (buffers.output_shape.size() == 2) {
+        if (buffers.output_shape[0] != batch_n) {
             if (err != nullptr) {
                 *err = "cls batch 출력 shape 파싱 실패";
             }
             return std::vector<std::pair<int, float>>(imgs.size(), {0, 0.0f});
         }
-        num_classes = out_shape[1];
-    } else if (out_shape.size() == 1 && batch_n == 1) {
-        num_classes = out_shape[0];
+        num_classes = buffers.output_shape[1];
+    } else if (buffers.output_shape.size() == 1 && batch_n == 1) {
+        num_classes = buffers.output_shape[0];
     } else {
         if (err != nullptr) {
             *err = "cls batch 출력 shape 파싱 실패";
@@ -111,7 +123,7 @@ std::vector<std::pair<int, float>> run_cls_batch(
         return std::vector<std::pair<int, float>>(imgs.size(), {0, 0.0f});
     }
     const size_t expected_values = static_cast<size_t>(batch_n) * static_cast<size_t>(num_classes);
-    if (out.size() < expected_values) {
+    if (out_len < expected_values) {
         if (err != nullptr) {
             *err = "cls batch 출력 길이가 shape보다 짧습니다";
         }
