@@ -294,26 +294,6 @@ std::pair<fs::path, fs::path> resolve_candidate_model_pair(
         }
     }
 
-    for (const auto& path : candidates) {
-        if (!has_stem_files_in_dir(path)) {
-            continue;
-        }
-        const auto name = to_lower_ascii(path.filename().string());
-        if (prefer_model_by_lang(name, preferred_lang)) {
-            const auto model_json = path / "inference.json";
-            const auto model_params = path / "inference.pdiparams";
-            const auto model_model = path / "inference.pdmodel";
-            if (file_exists(model_json) && file_exists(model_params)) {
-                debug_log("candidate selected by lang: " + name + ", " + model_json.string());
-                return {model_json, model_params};
-            }
-            if (file_exists(model_model) && file_exists(model_params)) {
-                debug_log("candidate selected by lang: " + name + ", " + model_model.string());
-                return {model_model, model_params};
-            }
-        }
-    }
-
     if (!preferred_family.empty()) {
         for (const auto& path : candidates) {
             if (!has_stem_files_in_dir(path)) {
@@ -332,6 +312,26 @@ std::pair<fs::path, fs::path> resolve_candidate_model_pair(
                     debug_log("candidate selected by family: " + name + ", " + family_model.string());
                     return {family_model, family_params};
                 }
+            }
+        }
+    }
+
+    for (const auto& path : candidates) {
+        if (!has_stem_files_in_dir(path)) {
+            continue;
+        }
+        const auto name = to_lower_ascii(path.filename().string());
+        if (prefer_model_by_lang(name, preferred_lang)) {
+            const auto model_json = path / "inference.json";
+            const auto model_params = path / "inference.pdiparams";
+            const auto model_model = path / "inference.pdmodel";
+            if (file_exists(model_json) && file_exists(model_params)) {
+                debug_log("candidate selected by lang: " + name + ", " + model_json.string());
+                return {model_json, model_params};
+            }
+            if (file_exists(model_model) && file_exists(model_params)) {
+                debug_log("candidate selected by lang: " + name + ", " + model_model.string());
+                return {model_model, model_params};
             }
         }
     }
