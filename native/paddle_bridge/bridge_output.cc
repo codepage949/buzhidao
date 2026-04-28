@@ -1,12 +1,8 @@
 #include "bridge_output.h"
 
-#include "bridge_utils.h"
-
 #include <cstring>
-#include <iomanip>
 #include <limits>
 #include <new>
-#include <sstream>
 
 char* dup_string(const std::string& value) {
     char* out = new (std::nothrow) char[value.size() + 1];
@@ -123,54 +119,6 @@ void free_pipeline_output(PipelineOutput* output) {
         delete[] output->debug_detections;
     }
     reset_pipeline_output(output);
-}
-
-std::string serialize_pipeline_output_json(const PipelineOutput& output, bool include_debug) {
-    std::ostringstream os;
-    os << "{\"detections\":[";
-    for (int i = 0; i < output.detection_count; ++i) {
-        if (i > 0) {
-            os << ",";
-        }
-        os << "{\"polygon\":[";
-        for (int p = 0; p < 4; ++p) {
-            if (p > 0) {
-                os << ",";
-            }
-            os << "[" << std::fixed << std::setprecision(6)
-               << output.detections[i].polygon[p].x << ","
-               << output.detections[i].polygon[p].y << "]";
-        }
-        os << "],\"text\":\""
-           << json_escape(output.detections[i].text != nullptr ? output.detections[i].text : "")
-           << "\"}";
-    }
-    os << "]";
-    if (include_debug && output.debug_detections != nullptr) {
-        os << ",\"debug_detections\":[";
-        for (int i = 0; i < output.debug_detection_count; ++i) {
-            const auto& d = output.debug_detections[i];
-            if (i > 0) {
-                os << ",";
-            }
-            os << "{\"polygon\":[";
-            for (int p = 0; p < 4; ++p) {
-                if (p > 0) {
-                    os << ",";
-                }
-                os << "[" << std::fixed << std::setprecision(6)
-                   << d.polygon[p].x << "," << d.polygon[p].y << "]";
-            }
-            os << "],\"text\":\"" << json_escape(d.text != nullptr ? d.text : "")
-               << "\",\"score\":" << std::fixed << std::setprecision(6)
-               << d.score
-               << ",\"accepted\":" << (d.accepted != 0 ? "true" : "false")
-               << "}";
-        }
-        os << "]";
-    }
-    os << "}";
-    return os.str();
 }
 
 buzhi_ocr_result_t* build_native_result(PipelineOutput&& output, bool include_debug) {

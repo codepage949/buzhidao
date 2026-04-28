@@ -1,4 +1,5 @@
 #include "bridge.h"
+#include "bridge_env.h"
 
 #include "bridge_config.h"
 #include "bridge_dict.h"
@@ -33,14 +34,14 @@ void set_create_error(char** err, const std::string& message) {
 extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_gpu, const char* source, char** err) {
     const char* resolved_model_dir = (model_dir != nullptr && model_dir[0] != '\0')
         ? model_dir
-        : std::getenv("BUZHIDAO_PADDLE_FFI_MODEL_DIR");
+        : std::getenv(buzhidao_env::kFfiModelDir);
     if (resolved_model_dir == nullptr || resolved_model_dir[0] == '\0') {
         set_create_error(err, "model_dir is empty");
         return nullptr;
     }
     const char* resolved_source = (source != nullptr && source[0] != '\0')
         ? source
-        : std::getenv("BUZHIDAO_PADDLE_FFI_SOURCE");
+        : std::getenv(buzhidao_env::kFfiSource);
 
 #if defined(BUZHIDAO_HAVE_PADDLE_INFERENCE)
     const std::string preferred_model_hint = resolve_model_preference();
@@ -127,7 +128,7 @@ extern "C" buzhi_ocr_engine_t* buzhi_ocr_create(const char* model_dir, int use_g
     engine->cls_cfg = load_model_preprocess_cfg(cls_model.first.parent_path());
     engine->rec_cfg = load_model_preprocess_cfg(rec_model.first.parent_path());
     int env_rec_max_w = 0;
-    if (parse_env_int(std::getenv("BUZHIDAO_PADDLE_FFI_REC_MAX_W"), &env_rec_max_w) &&
+    if (parse_env_int(std::getenv(buzhidao_env::kFfiRecMaxW), &env_rec_max_w) &&
         env_rec_max_w > 0) {
         engine->rec_cfg.rec_max_w = std::max(engine->rec_cfg.rec_target_w, env_rec_max_w);
     }

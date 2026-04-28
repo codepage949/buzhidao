@@ -1,4 +1,5 @@
 #include "bridge_rec_decode.h"
+#include "bridge_env.h"
 
 #include "bridge_utils.h"
 
@@ -57,7 +58,7 @@ std::pair<std::string, float> decode_ctc(
     const float score = score_count > 0 ? static_cast<float>(score_sum / score_count) : 0.0f;
     bool dump_all_ctc = false;
     if (debug) {
-        const char* dump_all_ctc_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DEBUG_CTC_ALL");
+        const char* dump_all_ctc_raw = std::getenv(buzhidao_env::kFfiDebugCtcAll);
         dump_all_ctc =
             dump_all_ctc_raw != nullptr &&
             dump_all_ctc_raw[0] != '\0' &&

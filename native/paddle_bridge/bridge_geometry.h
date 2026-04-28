@@ -14,7 +14,7 @@ float cross(const FloatPoint& o, const FloatPoint& a, const FloatPoint& b);
 std::vector<FloatPoint> convex_hull(std::vector<FloatPoint> points);
 std::array<FloatPoint, 4> rect_to_points(const OrientedRect& rect);
 std::array<FloatPoint, 4> order_clockwise(const std::array<FloatPoint, 4>& pts);
-std::array<FloatPoint, 4> order_crop_box_like_sidecar(const std::array<FloatPoint, 4>& pts);
+std::array<FloatPoint, 4> order_crop_box_for_perspective_crop(const std::array<FloatPoint, 4>& pts);
 std::tuple<std::array<FloatPoint, 4>, int, int> describe_crop_to_bbox(
     const std::array<FloatPoint, 4>& pts
 );

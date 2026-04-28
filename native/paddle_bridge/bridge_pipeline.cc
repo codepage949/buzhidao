@@ -1,4 +1,5 @@
 #include "bridge_pipeline.h"
+#include "bridge_env.h"
 
 #include "bridge_cls.h"
 #include "bridge_crop.h"
@@ -360,7 +361,7 @@ PipelineOutput run_pipeline(
     double rec_ms = 0.0;
     double post_ms = 0.0;
     size_t rotated_count = 0;
-    const char* dump_rec_logits_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_REC_LOGITS");
+    const char* dump_rec_logits_raw = std::getenv(buzhidao_env::kFfiDumpRecLogits);
     const bool dump_rec_logits =
         dump_rec_logits_raw != nullptr &&
         dump_rec_logits_raw[0] != '\0' &&

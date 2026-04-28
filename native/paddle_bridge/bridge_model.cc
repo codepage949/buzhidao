@@ -1,4 +1,5 @@
 #include "bridge_model.h"
+#include "bridge_env.h"
 
 #include "bridge_fs.h"
 #include "bridge_utils.h"
@@ -75,7 +76,7 @@ std::vector<std::string> find_stem_family_suffixes(const std::string& stem) {
 }
 
 std::string resolve_preferred_lang() {
-    const char* raw = std::getenv("BUZHIDAO_PADDLE_FFI_SOURCE");
+    const char* raw = std::getenv(buzhidao_env::kFfiSource);
     if (raw == nullptr) {
         return "en";
     }
@@ -102,7 +103,7 @@ std::string resolve_preferred_lang() {
 }
 
 std::string resolve_model_preference() {
-    const char* raw = std::getenv("BUZHIDAO_PADDLE_FFI_MODEL_HINT");
+    const char* raw = std::getenv(buzhidao_env::kFfiModelHint);
     return normalize_hint(raw == nullptr ? "" : raw);
 }
 

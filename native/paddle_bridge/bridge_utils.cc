@@ -1,4 +1,5 @@
 #include "bridge_utils.h"
+#include "bridge_env.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -14,7 +15,7 @@
 namespace fs = std::filesystem;
 
 bool debug_enabled() {
-    const char* raw = std::getenv("BUZHIDAO_PADDLE_FFI_TRACE");
+    const char* raw = std::getenv(buzhidao_env::kFfiTrace);
     if (raw == nullptr || raw[0] == '\0') {
         return false;
     }
@@ -23,7 +24,7 @@ bool debug_enabled() {
 }
 
 bool profile_stages_enabled() {
-    const char* raw = std::getenv("BUZHIDAO_PADDLE_FFI_PROFILE_STAGES");
+    const char* raw = std::getenv(buzhidao_env::kFfiProfileStages);
     if (raw == nullptr || raw[0] == '\0') {
         return false;
     }
@@ -38,7 +39,7 @@ double elapsed_ms_since(const std::chrono::steady_clock::time_point& started) {
 }
 
 std::string debug_dump_dir() {
-    const char* raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_DIR");
+    const char* raw = std::getenv(buzhidao_env::kFfiDumpDir);
     if (raw == nullptr || raw[0] == '\0') {
         return {};
     }

@@ -1,8 +1,11 @@
 mod config;
+mod env_keys;
+mod language;
 mod ocr;
 mod paddle_models;
 mod platform;
 mod popup;
+mod runtime_setup;
 mod services;
 mod settings;
 mod window;
@@ -794,250 +797,7 @@ fn take_pending_retry(app: &AppHandle) -> bool {
         .swap(false, Ordering::SeqCst)
 }
 
-#[cfg(test)]
-fn resolve_paddle_model_dir_with_roots<I>(roots: I) -> Option<PathBuf>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    roots
-        .into_iter()
-        .find(|root| has_required_paddle_model_files(root))
-}
-
-#[cfg(test)]
-fn has_required_paddle_model_files(dir: &PathBuf) -> bool {
-    has_stem_files(dir, "det") && has_stem_files(dir, "cls") && has_stem_files(dir, "rec")
-}
-
-#[cfg(test)]
-fn find_named_submodel_dir(model_root: &PathBuf, stem: &str) -> Option<PathBuf> {
-    use std::fs;
-    use std::path::PathBuf;
-
-    let stem_aliases: &[&str] = match stem {
-        "det" => &[
-            "det",
-            "textdet",
-            "text_det",
-            "detection",
-            "textdetv",
-            "text_detection",
-        ],
-        "rec" => &[
-            "rec",
-            "textrec",
-            "text_rec",
-            "recognition",
-            "textrecg",
-            "text_recog",
-        ],
-        "cls" => &[
-            "cls",
-            "textcls",
-            "textline",
-            "orientation",
-            "angle",
-            "textorientation",
-        ],
-        _ => &[],
-    };
-
-    let entries = match fs::read_dir(model_root) {
-        Ok(entries) => entries,
-        Err(_) => return None,
-    };
-    let mut candidates = Vec::<PathBuf>::new();
-
-    for entry in entries.flatten() {
-        let candidate = entry.path();
-        if !candidate.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        let is_match = stem_aliases.iter().any(|alias| name.contains(*alias));
-        if !is_match {
-            continue;
-        }
-        candidates.push(candidate);
-    }
-
-    candidates.sort_by(|a, b| {
-        let an = a
-            .file_name()
-            .map(|name| name.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        let bn = b
-            .file_name()
-            .map(|name| name.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        an.cmp(&bn)
-    });
-
-    for candidate in candidates {
-        if has_stem_files_in_dir(&candidate) {
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
-#[cfg(test)]
-fn has_stem_files_in_dir(dir: &PathBuf) -> bool {
-    let infer_json = dir.join("inference.json");
-    let infer_pdmodel = dir.join("inference.pdmodel");
-    let infer_params = dir.join("inference.pdiparams");
-    (infer_json.is_file() && infer_params.is_file())
-        || (infer_pdmodel.is_file() && infer_params.is_file())
-}
-
-#[cfg(test)]
-fn has_stem_files(model_root: &PathBuf, stem: &str) -> bool {
-    let direct_json = model_root.join(format!("{stem}.json"));
-    let direct_params = model_root.join(format!("{stem}.pdiparams"));
-    let direct_dir = model_root.join(stem);
-
-    (direct_json.is_file() && direct_params.is_file())
-        || has_stem_files_in_dir(&direct_dir)
-        || find_named_submodel_dir(model_root, stem).is_some()
-}
-
-#[cfg(target_os = "linux")]
-const PORTAL_APP_ID: &str = "com.buzhidao.desktop";
-
-#[cfg(target_os = "linux")]
-fn ensure_linux_desktop_entry() -> Result<PathBuf, String> {
-    use std::fs;
-
-    let apps_dir = dirs::home_dir()
-        .ok_or("HOME 디렉토리를 찾을 수 없음".to_string())?
-        .join(".local/share/applications");
-    fs::create_dir_all(&apps_dir).map_err(|e| format!("desktop 디렉토리 생성 실패: {e}"))?;
-
-    let desktop_path = apps_dir.join(format!("{PORTAL_APP_ID}.desktop"));
-    if desktop_path.exists() {
-        return Ok(desktop_path);
-    }
-
-    let exe = env::current_exe().map_err(|e| format!("실행 파일 경로 확인 실패: {e}"))?;
-    let content = format!(
-        "[Desktop Entry]\nType=Application\nName=buzhidao\nExec={}\nTerminal=false\nCategories=Utility;\nStartupNotify=false\n",
-        exe.display()
-    );
-    fs::write(&desktop_path, content)
-        .map_err(|e| format!("desktop 파일 생성 실패 ({}): {e}", desktop_path.display()))?;
-
-    Ok(desktop_path)
-}
-
-#[cfg(target_os = "linux")]
-fn register_linux_portal_host_app() -> Result<(), String> {
-    use ashpd::zbus::blocking::{Connection, Proxy};
-    use ashpd::zvariant::Value;
-    use std::collections::HashMap;
-
-    let _desktop_path = ensure_linux_desktop_entry()?;
-    let connection = Connection::session().map_err(|e| format!("D-Bus 세션 연결 실패: {e}"))?;
-    let proxy = Proxy::new(
-        &connection,
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.host.portal.Registry",
-    )
-    .map_err(|e| format!("포털 registry 프록시 생성 실패: {e}"))?;
-    let options = HashMap::<&str, Value<'_>>::new();
-
-    proxy
-        .call_method("Register", &(PORTAL_APP_ID, options))
-        .map_err(|e| format!("포털 host app 등록 실패: {e}"))?;
-
-    Ok(())
-}
-
 // ── 앱 진입점 ─────────────────────────────────────────────────────────────────
-
-/// GPU 빌드에서는 `.env` 최초 생성 시 `OCR_SERVER_DEVICE` 기본값이 `gpu`가 되도록 치환한다.
-fn default_env_example() -> std::borrow::Cow<'static, str> {
-    const BASE: &str = include_str!("../.env.example");
-    #[cfg(feature = "gpu")]
-    {
-        std::borrow::Cow::Owned(BASE.replace("OCR_SERVER_DEVICE=cpu", "OCR_SERVER_DEVICE=gpu"))
-    }
-    #[cfg(not(feature = "gpu"))]
-    {
-        std::borrow::Cow::Borrowed(BASE)
-    }
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn prepend_runtime_path_var(name: &str, dirs: impl IntoIterator<Item = PathBuf>) {
-    let separator = if cfg!(target_os = "windows") {
-        ";"
-    } else {
-        ":"
-    };
-    let mut entries: Vec<String> = dirs
-        .into_iter()
-        .filter(|dir| dir.is_dir())
-        .map(|dir| dir.to_string_lossy().to_string())
-        .collect();
-    if entries.is_empty() {
-        return;
-    }
-
-    if let Some(current) = env::var_os(name) {
-        let current = current.to_string_lossy();
-        if !current.is_empty() {
-            entries.push(current.to_string());
-        }
-    }
-    env::set_var(name, entries.join(separator));
-}
-
-#[cfg(target_os = "windows")]
-fn prepare_gpu_runtime_search_path(app: &tauri::App, development_build: bool) {
-    if !cfg!(feature = "gpu") {
-        return;
-    }
-
-    let mut dirs = Vec::new();
-    if development_build {
-        dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cuda"));
-    }
-    if let Ok(exe) = env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            dirs.push(parent.join(".cuda"));
-        }
-    }
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        dirs.push(resource_dir.join(".cuda"));
-    }
-    prepend_runtime_path_var("PATH", dirs);
-}
-
-#[cfg(target_os = "linux")]
-fn prepare_gpu_runtime_search_path(app: &tauri::App, development_build: bool) {
-    if !cfg!(feature = "gpu") {
-        return;
-    }
-
-    let mut dirs = Vec::new();
-    if development_build {
-        dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cuda"));
-    }
-    if let Ok(exe) = env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            dirs.push(parent.join(".cuda"));
-        }
-    }
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        dirs.push(resource_dir.join(".cuda"));
-    }
-    prepend_runtime_path_var("LD_LIBRARY_PATH", dirs);
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn prepare_gpu_runtime_search_path(_app: &tauri::App, _development_build: bool) {}
 
 pub fn run() {
     let development_build = is_development_build();
@@ -1074,10 +834,10 @@ pub fn run() {
         .setup(move |app| {
             show_loading_window(app.handle());
 
-            prepare_gpu_runtime_search_path(app, development_build);
+            runtime_setup::prepare_gpu_runtime_search_path(app, development_build);
 
             #[cfg(target_os = "linux")]
-            let _ = register_linux_portal_host_app();
+            let _ = runtime_setup::register_linux_portal_host_app();
 
             let (env_path, prompt_path) = if development_build {
                 let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1089,7 +849,7 @@ pub fn run() {
                     .map_err(|e| format!("앱 데이터 경로 확인 실패: {e}"))?;
                 (dir.join(".env"), dir.join(".prompt"))
             };
-            settings::materialize_env_file(&env_path, &default_env_example())?;
+            settings::materialize_env_file(&env_path, &runtime_setup::default_env_example())?;
             config::materialize_prompt_file(&prompt_path)?;
             app.manage(SettingsState {
                 store: SettingsStore::Env(env_path.clone()),
@@ -1197,17 +957,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    use super::prepend_runtime_path_var;
     use super::{
         build_settings_notice_payload, clone_pending_capture, decide_capture_hotkey_action,
-        default_env_example, format_ocr_app_stage_log, has_required_paddle_model_files,
-        is_release_ocr_smoke_requested, missing_prtsc_required_setting_keys,
-        missing_prtsc_required_settings, resolve_paddle_model_dir_with_roots, should_emit_ocr,
+        format_ocr_app_stage_log, is_release_ocr_smoke_requested,
+        missing_prtsc_required_setting_keys, missing_prtsc_required_settings, should_emit_ocr,
         show_ocr_device_setting, take_pending_settings_notice_slot, CaptureHotkeyAction,
         OcrAppStageLog, SettingsNoticePayload, RELEASE_OCR_SMOKE_ARG,
     };
     use crate::config::Config;
+    use crate::paddle_models::{
+        resolve_paddle_model_dir_for_lang_with_roots, validate_paddle_model_root_for_lang,
+    };
+    use crate::runtime_setup::default_env_example;
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    use crate::runtime_setup::prepend_runtime_path_var;
     use crate::services::CaptureInfo;
     use image::{Rgba, RgbaImage};
     use std::fs;
@@ -1220,6 +983,14 @@ mod tests {
             .expect("시계가 UNIX_EPOCH 이전입니다")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+    }
+
+    fn create_paddle_model_dir(root: &PathBuf, model_name: &str) {
+        let dir = root.join(model_name);
+        fs::create_dir_all(&dir).expect("Paddle 모델 디렉토리 생성 실패");
+        fs::write(dir.join("inference.pdiparams"), b"param")
+            .expect("inference.pdiparams 생성 실패");
+        fs::write(dir.join("inference.json"), b"{}").expect("inference.json 생성 실패");
     }
 
     #[test]
@@ -1349,7 +1120,7 @@ mod tests {
     fn 모델_루트가_없으면_필수_모델_파일_검사를_실패한다() {
         let root = temp_path("buzhidao-paddle-model-missing");
         fs::create_dir_all(&root).expect("paddle 모델 루트 생성 실패");
-        assert!(!has_required_paddle_model_files(&root));
+        assert!(validate_paddle_model_root_for_lang("en", &root).is_err());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1357,16 +1128,14 @@ mod tests {
     #[test]
     fn 구성한_모델_루트_경로_는_탐색_대상이_아님() {
         let configured_root = temp_path("buzhidao-paddle-model-configured");
-        fs::create_dir_all(&configured_root).expect("configured 모델 루트 생성 실패");
-        for stem in ["det", "cls", "rec"] {
-            fs::write(configured_root.join(format!("{stem}.json")), b"{}")
-                .expect("모델 파일 생성 실패");
-            fs::write(configured_root.join(format!("{stem}.pdiparams")), b"param")
-                .expect("파라미터 파일 생성 실패");
-        }
+        create_paddle_model_dir(&configured_root, "PP-OCRv5_server_det");
+        create_paddle_model_dir(&configured_root, "PP-LCNet_x1_0_textline_ori");
+        create_paddle_model_dir(&configured_root, "en_PP-OCRv5_mobile_rec");
 
-        let resolved =
-            resolve_paddle_model_dir_with_roots([PathBuf::from("definitely-not-a-valid-cache")]);
+        let resolved = resolve_paddle_model_dir_for_lang_with_roots(
+            "en",
+            [PathBuf::from("definitely-not-a-valid-cache")],
+        );
 
         assert_eq!(resolved, None);
         let _ = fs::remove_dir_all(configured_root);
@@ -1375,15 +1144,10 @@ mod tests {
     #[test]
     fn paddle_모델_검색은_캐시_경로_에서_탐색한다() {
         let cache_dir = temp_path("buzhidao-paddle-cache-dir");
-        fs::create_dir_all(&cache_dir).expect("cache 모델 디렉토리 생성 실패");
-        for stem in ["det", "cls", "rec"] {
-            let stem_dir = cache_dir.join(stem);
-            fs::create_dir_all(&stem_dir).expect("stem 하위 디렉토리 생성 실패");
-            fs::write(stem_dir.join("inference.pdiparams"), b"param")
-                .expect("inference.pdiparams 생성 실패");
-            fs::write(stem_dir.join("inference.json"), b"{}").expect("inference.json 생성 실패");
-        }
-        let resolved = resolve_paddle_model_dir_with_roots(vec![cache_dir.clone()]);
+        create_paddle_model_dir(&cache_dir, "PP-OCRv5_server_det");
+        create_paddle_model_dir(&cache_dir, "PP-LCNet_x1_0_textline_ori");
+        create_paddle_model_dir(&cache_dir, "en_PP-OCRv5_mobile_rec");
+        let resolved = resolve_paddle_model_dir_for_lang_with_roots("en", vec![cache_dir.clone()]);
 
         assert_eq!(resolved, Some(cache_dir.clone()));
 
@@ -1393,20 +1157,11 @@ mod tests {
     #[test]
     fn paddle_모델_검색은_공식_모델_하위_폴더도_인식한다() {
         let cache_dir = temp_path("buzhidao-paddle-official-cache-dir");
-        let det_dir = cache_dir.join("PP-OCRv5_server_det");
-        let rec_dir = cache_dir.join("PP-OCRv5_server_rec");
-        let cls_dir = cache_dir.join("PP-LCNet_x1_0_textline_ori");
-        fs::create_dir_all(&det_dir).expect("det 폴더 생성 실패");
-        fs::create_dir_all(&rec_dir).expect("rec 폴더 생성 실패");
-        fs::create_dir_all(&cls_dir).expect("cls 폴더 생성 실패");
+        create_paddle_model_dir(&cache_dir, "PP-OCRv5_server_det");
+        create_paddle_model_dir(&cache_dir, "PP-LCNet_x1_0_textline_ori");
+        create_paddle_model_dir(&cache_dir, "PP-OCRv5_server_rec");
 
-        for dir in [&det_dir, &rec_dir, &cls_dir] {
-            fs::write(dir.join("inference.pdiparams"), b"param")
-                .expect("inference.pdiparams 생성 실패");
-            fs::write(dir.join("inference.json"), b"{}").expect("inference.json 생성 실패");
-        }
-
-        let resolved = resolve_paddle_model_dir_with_roots(vec![cache_dir.clone()]);
+        let resolved = resolve_paddle_model_dir_for_lang_with_roots("ch", vec![cache_dir.clone()]);
 
         assert_eq!(resolved, Some(cache_dir.clone()));
 
@@ -1468,7 +1223,11 @@ mod tests {
 
         prepend_runtime_path_var(&env_name, [missing_dir, existing_dir.clone()]);
 
-        let separator = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let separator = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
         let expected = format!("{}{}previous", existing_dir.to_string_lossy(), separator);
         assert_eq!(std::env::var(&env_name).as_deref(), Ok(expected.as_str()));
 

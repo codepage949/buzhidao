@@ -35,7 +35,6 @@ bool append_debug_detection(
 );
 void reset_pipeline_output(PipelineOutput* output);
 void free_pipeline_output(PipelineOutput* output);
-std::string serialize_pipeline_output_json(const PipelineOutput& output, bool include_debug);
 buzhi_ocr_result_t* build_native_result(PipelineOutput&& output, bool include_debug);
 
 #endif

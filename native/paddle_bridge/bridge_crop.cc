@@ -44,7 +44,7 @@ Image crop_to_bbox(const cv::Mat& img_bgr, const std::array<FloatPoint, 4>& pts,
         {box_points[2].x, box_points[2].y},
         {box_points[3].x, box_points[3].y},
     }};
-    const auto quad = order_crop_box_like_sidecar(crop_corners);
+    const auto quad = order_crop_box_for_perspective_crop(crop_corners);
     const float top_w = point_distance(quad[0], quad[1]);
     const float bottom_w = point_distance(quad[3], quad[2]);
     const float left_h = point_distance(quad[0], quad[3]);
@@ -112,7 +112,7 @@ Image crop_to_bbox(const Image& img, const std::array<FloatPoint, 4>& pts, std::
         point.y = static_cast<float>(static_cast<int>(point.y));
     }
     const auto crop_box = min_area_rect_box_like_opencv(crop_points);
-    const auto quad = order_crop_box_like_sidecar(crop_box.corners);
+    const auto quad = order_crop_box_for_perspective_crop(crop_box.corners);
     const float top_w = point_distance(quad[0], quad[1]);
     const float bottom_w = point_distance(quad[3], quad[2]);
     const float left_h = point_distance(quad[0], quad[3]);

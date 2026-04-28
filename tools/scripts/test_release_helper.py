@@ -1,4 +1,4 @@
-﻿import tarfile
+import tarfile
 import tempfile
 import unittest
 import zipfile

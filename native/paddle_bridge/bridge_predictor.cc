@@ -296,7 +296,7 @@ int find_rec_layout(const std::vector<int>& shape, int& time_steps, int& num_cla
         }
     }
     if (shape.size() == 3) {
-        // sidecar CTCLabelDecode uses preds.argmax(axis=-1), so class axis must be the last axis.
+        // PaddleOCR CTCLabelDecode uses preds.argmax(axis=-1), so class axis must be the last axis.
         time_steps = shape[1];
         num_classes = shape[2];
         return 2; // [N,T,C]

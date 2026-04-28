@@ -1,4 +1,5 @@
 #include "bridge_det.h"
+#include "bridge_env.h"
 
 #include "bridge_debug_dump.h"
 #include "bridge_det_utils.h"
@@ -53,7 +54,7 @@ std::vector<BBox> run_det(
     int env_det_resize_long = 0;
     const int effective_det_resize_long =
         det_resize_long > 0 ? det_resize_long
-        : (parse_env_int(std::getenv("BUZHIDAO_PADDLE_FFI_DET_RESIZE_LONG"), &env_det_resize_long) &&
+        : (parse_env_int(std::getenv(buzhidao_env::kFfiDetResizeLong), &env_det_resize_long) &&
            env_det_resize_long > 0
            ? env_det_resize_long
            : 0);
@@ -90,7 +91,7 @@ std::vector<BBox> run_det(
         return {};
     }
     buffers.input_shape.assign({1, 3, resized_h, resized_w});
-    const char* dump_det_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_DET");
+    const char* dump_det_raw = std::getenv(buzhidao_env::kFfiDumpDet);
     const bool dump_det =
         dump_det_raw != nullptr &&
         dump_det_raw[0] != '\0' &&

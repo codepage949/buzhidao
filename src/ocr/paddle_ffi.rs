@@ -1,13 +1,12 @@
 #![allow(dead_code)]
 
+use crate::language::normalize_app_source;
 use crate::services::{OcrBoundsPayload, OcrDebugDetection, OcrDetection};
-use serde::Deserialize;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_float, c_int};
 use std::path::Path;
 use std::path::PathBuf;
 use std::ptr::NonNull;
-use std::sync::LazyLock;
 use std::sync::Mutex;
 
 #[repr(C)]
@@ -24,14 +23,6 @@ unsafe extern "C" {
     ) -> *mut BuzhiOcrEngine;
     fn buzhi_ocr_destroy(engine: *mut BuzhiOcrEngine);
     fn buzhi_ocr_warmup_predictors(engine: *mut BuzhiOcrEngine, err: *mut *mut c_char) -> c_int;
-    fn buzhi_ocr_run_image_file(
-        engine: *mut BuzhiOcrEngine,
-        image_path: *const c_char,
-        det_resize_long: c_int,
-        score_thresh: c_float,
-        debug_trace: c_int,
-        err: *mut *mut c_char,
-    ) -> *mut c_char;
     fn buzhi_ocr_run_image_file_result(
         engine: *mut BuzhiOcrEngine,
         image_path: *const c_char,
@@ -82,17 +73,6 @@ struct BuzhiOcrResult {
     debug_detections: *mut BuzhiOcrDebugDetection,
     debug_detection_count: c_int,
 }
-
-#[derive(Deserialize)]
-struct LangEntry {
-    code: String,
-}
-
-static SUPPORTED_LANG_CODES: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let entries: Vec<LangEntry> = serde_json::from_str(include_str!("../../shared/langs.json"))
-        .expect("shared/langs.json 파싱 실패");
-    entries.into_iter().map(|entry| entry.code).collect()
-});
 
 pub(crate) struct PaddleFfiEngine {
     model_dir: PathBuf,
@@ -271,10 +251,8 @@ impl PaddleFfiEngine {
         let mut err: *mut c_char = std::ptr::null_mut();
         let ok = unsafe { buzhi_ocr_warmup_predictors(raw_engine.as_ptr(), &mut err) };
         if ok == 0 {
-            return Err(
-                take_ffi_string(err)
-                    .unwrap_or_else(|| "Paddle FFI predictor warmup 실행 실패".to_string())
-            );
+            return Err(take_ffi_string(err)
+                .unwrap_or_else(|| "Paddle FFI predictor warmup 실행 실패".to_string()));
         }
         Ok(())
     }
@@ -311,23 +289,7 @@ impl Drop for PaddleFfiEngine {
 }
 
 fn normalize_source(source: &str) -> String {
-    let source = source.trim().to_ascii_lowercase();
-    if source.is_empty() {
-        return "en".to_string();
-    }
-    if SUPPORTED_LANG_CODES.iter().any(|code| code == &source) {
-        return source;
-    }
-    if source == "en" || source == "eng" || source == "english" {
-        return "en".to_string();
-    }
-    if source == "cn" || source == "zh" || source == "chi" || source == "chinese" {
-        return "ch".to_string();
-    }
-    if source.starts_with("ch_") || source.starts_with("zh-") || source.starts_with("zh_") {
-        return "ch".to_string();
-    }
-    "en".to_string()
+    normalize_app_source(source)
 }
 
 fn shutdown_state(state: &mut EngineState) {
@@ -584,7 +546,7 @@ mod tests {
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
     #[test]
     fn _1_png를_ffi로_실행해서_결과를_출력한다() {
-        if std::env::var("BUZHIDAO_RUN_FFI_SAMPLE_TEST").unwrap_or_default() != "1" {
+        if std::env::var(crate::env_keys::RUN_FFI_SAMPLE_TEST).unwrap_or_default() != "1" {
             eprintln!("샘플 FFI OCR 테스트는 BUZHIDAO_RUN_FFI_SAMPLE_TEST=1일 때만 실행합니다.");
             return;
         }
@@ -598,13 +560,15 @@ mod tests {
         let engine =
             PaddleFfiEngine::new(&model_dir, false, "zh").expect("Paddle FFI 엔진 생성 실패");
 
-        let source_image = std::env::var("BUZHIDAO_FFI_TEST_IMAGE").ok().map_or_else(
-            || {
-                PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("MANIFEST_DIR 없음"))
-                    .join("1.png")
-            },
-            PathBuf::from,
-        );
+        let source_image = std::env::var(crate::env_keys::FFI_TEST_IMAGE)
+            .ok()
+            .map_or_else(
+                || {
+                    PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("MANIFEST_DIR 없음"))
+                        .join("1.png")
+                },
+                PathBuf::from,
+            );
         if !source_image.exists() {
             eprintln!("테스트 이미지가 없어 스킵합니다: {:?}", source_image);
             return;
@@ -648,7 +612,7 @@ mod tests {
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
     #[test]
     fn 지정한_이미지들로_ffi_ocr_지연시간을_측정한다() {
-        if std::env::var("BUZHIDAO_RUN_FFI_BENCH").unwrap_or_default() != "1" {
+        if std::env::var(crate::env_keys::RUN_FFI_BENCH).unwrap_or_default() != "1" {
             eprintln!("FFI OCR 벤치는 BUZHIDAO_RUN_FFI_BENCH=1일 때만 실행합니다.");
             return;
         }
@@ -660,21 +624,21 @@ mod tests {
             return;
         };
 
-        let images_json = std::env::var("BUZHIDAO_FFI_BENCH_IMAGES_JSON")
+        let images_json = std::env::var(crate::env_keys::FFI_BENCH_IMAGES_JSON)
             .expect("BUZHIDAO_FFI_BENCH_IMAGES_JSON 없음");
         let image_paths: Vec<String> =
             serde_json::from_str(&images_json).expect("이미지 목록 JSON 파싱 실패");
         let source =
-            std::env::var("BUZHIDAO_FFI_BENCH_SOURCE").unwrap_or_else(|_| "ch".to_string());
-        let score_thresh = std::env::var("BUZHIDAO_FFI_BENCH_SCORE_THRESH")
+            std::env::var(crate::env_keys::FFI_BENCH_SOURCE).unwrap_or_else(|_| "ch".to_string());
+        let score_thresh = std::env::var(crate::env_keys::FFI_BENCH_SCORE_THRESH)
             .ok()
             .and_then(|raw| raw.parse::<f32>().ok())
             .unwrap_or(0.1);
-        let warmups = std::env::var("BUZHIDAO_FFI_BENCH_WARMUPS")
+        let warmups = std::env::var(crate::env_keys::FFI_BENCH_WARMUPS)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(3);
-        let iterations = std::env::var("BUZHIDAO_FFI_BENCH_ITERATIONS")
+        let iterations = std::env::var(crate::env_keys::FFI_BENCH_ITERATIONS)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(10);

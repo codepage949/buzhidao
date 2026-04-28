@@ -1,4 +1,4 @@
-﻿#ifndef BUZHIDAO_PADDLE_BRIDGE_H
+#ifndef BUZHIDAO_PADDLE_BRIDGE_H
 #define BUZHIDAO_PADDLE_BRIDGE_H
 
 #ifdef __cplusplus
@@ -41,15 +41,6 @@ void buzhi_ocr_destroy(buzhi_ocr_engine_t* engine);
 
 int buzhi_ocr_warmup_predictors(
     buzhi_ocr_engine_t* engine,
-    char** err
-);
-
-char* buzhi_ocr_run_image_file(
-    buzhi_ocr_engine_t* engine,
-    const char* image_path,
-    int det_resize_long,
-    float score_thresh,
-    int debug_trace,
     char** err
 );
 

@@ -1,4 +1,5 @@
 #include "bridge_rec_pipeline.h"
+#include "bridge_env.h"
 
 #include "bridge_utils.h"
 
@@ -65,7 +66,7 @@ std::vector<std::pair<size_t, size_t>> plan_rec_batches(
     rec_batches.reserve((rec_order.size() + 5) / 6);
     constexpr size_t kRecBatchSize = 6;
     int width_budget = 0;
-    parse_env_int(std::getenv("BUZHIDAO_PADDLE_FFI_REC_BATCH_WIDTH_BUDGET"), &width_budget);
+    parse_env_int(std::getenv(buzhidao_env::kFfiRecBatchWidthBudget), &width_budget);
     size_t batch_start = 0;
     while (batch_start < rec_order.size()) {
         if (width_budget > 0) {

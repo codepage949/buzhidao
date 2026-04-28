@@ -48,13 +48,15 @@ impl Config {
             ocr_debug_trace: env_or("OCR_DEBUG_TRACE", "false")
                 .parse()
                 .unwrap_or(DEFAULT_OCR_DEBUG_TRACE),
-            ocr_server_device: parse_ocr_server_device(optional_env("OCR_SERVER_DEVICE"))?,
+            ocr_server_device: parse_ocr_server_device(optional_env(
+                crate::env_keys::OCR_SERVER_DEVICE,
+            ))?,
             ai_gateway_api_key: optional_env("AI_GATEWAY_API_KEY").unwrap_or_default(),
             ai_gateway_model: optional_env("AI_GATEWAY_MODEL").unwrap_or_default(),
             system_prompt: load_system_prompt(prompt_path)?,
             word_gap: env_or("WORD_GAP", "20").parse().unwrap_or(DEFAULT_WORD_GAP),
             line_gap: env_or("LINE_GAP", "15").parse().unwrap_or(DEFAULT_LINE_GAP),
-            capture_shortcut: optional_env("CAPTURE_SHORTCUT")
+            capture_shortcut: optional_env(crate::env_keys::CAPTURE_SHORTCUT)
                 .unwrap_or_else(|| default_capture_shortcut().to_string()),
         })
     }
@@ -184,7 +186,7 @@ mod tests {
     fn ocr_server_device가_잘못되면_실패한다() {
         let err = parse_ocr_server_device(Some("cuda".to_string()))
             .expect_err("잘못된 장치는 실패해야 한다");
-        assert!(err.contains("OCR_SERVER_DEVICE"));
+        assert!(err.contains(crate::env_keys::OCR_SERVER_DEVICE));
     }
 
     #[test]

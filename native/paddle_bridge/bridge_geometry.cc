@@ -122,7 +122,7 @@ std::array<FloatPoint, 4> order_clockwise(const std::array<FloatPoint, 4>& pts) 
     return rotated;
 }
 
-std::array<FloatPoint, 4> order_crop_box_like_sidecar(const std::array<FloatPoint, 4>& pts) {
+std::array<FloatPoint, 4> order_crop_box_for_perspective_crop(const std::array<FloatPoint, 4>& pts) {
     std::array<FloatPoint, 4> sorted = pts;
     std::sort(sorted.begin(), sorted.end(), [](const FloatPoint& a, const FloatPoint& b) {
         if (std::fabs(a.x - b.x) > 1e-4f) {
@@ -166,7 +166,7 @@ std::tuple<std::array<FloatPoint, 4>, int, int> describe_crop_to_bbox(
         point.y = static_cast<float>(static_cast<int>(point.y));
     }
     const auto crop_box = min_area_rect_box_like_opencv(crop_points);
-    const auto quad = order_crop_box_like_sidecar(crop_box.corners);
+    const auto quad = order_crop_box_for_perspective_crop(crop_box.corners);
     const float top_w = point_distance(quad[0], quad[1]);
     const float bottom_w = point_distance(quad[3], quad[2]);
     const float left_h = point_distance(quad[0], quad[3]);

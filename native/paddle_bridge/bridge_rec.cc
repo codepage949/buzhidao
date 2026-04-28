@@ -1,4 +1,5 @@
 #include "bridge_rec.h"
+#include "bridge_env.h"
 
 #include "bridge_fs.h"
 #include "bridge_image.h"
@@ -122,7 +123,7 @@ std::pair<std::string, float> run_rec(
                   ", num_classes=" + std::to_string(num_classes) +
                   ", dict_size=" + std::to_string(dict.size()));
     }
-    const char* dump_logits_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_REC_LOGITS");
+    const char* dump_logits_raw = std::getenv(buzhidao_env::kFfiDumpRecLogits);
     const bool dump_logits =
         dump_logits_raw != nullptr &&
         dump_logits_raw[0] != '\0' &&
@@ -312,7 +313,7 @@ std::vector<std::pair<std::string, float>> run_rec_batch(
         debug_log(os.str());
     }
 
-    const char* dump_logits_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_REC_LOGITS");
+    const char* dump_logits_raw = std::getenv(buzhidao_env::kFfiDumpRecLogits);
     const bool dump_logits =
         dump_logits_raw != nullptr &&
         dump_logits_raw[0] != '\0' &&

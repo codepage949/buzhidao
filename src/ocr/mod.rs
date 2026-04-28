@@ -11,7 +11,9 @@ use std::time::Instant;
 
 static OCR_STAGE_LOGGING_ENABLED: LazyLock<bool> = LazyLock::new(|| {
     matches!(
-        std::env::var("BUZHIDAO_OCR_STAGE_LOG").ok().as_deref(),
+        std::env::var(crate::env_keys::OCR_STAGE_LOG)
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("TRUE") | Some("True")
     )
 });
@@ -25,10 +27,7 @@ pub(crate) fn ocr_stage_logging_enabled() -> bool {
     *OCR_STAGE_LOGGING_ENABLED
 }
 
-pub(crate) fn format_ocr_stage_log(
-    kind: OcrStageLogKind,
-    fields: &[(&str, String)],
-) -> String {
+pub(crate) fn format_ocr_stage_log(kind: OcrStageLogKind, fields: &[(&str, String)]) -> String {
     let mut message = match kind {
         OcrStageLogKind::Backend => "[OCR_STAGE] backend".to_string(),
     };
@@ -207,10 +206,12 @@ mod tests {
     fn ocr_stage_로그를_일관된_형식으로_만든다() {
         let line = format_ocr_stage_log(
             OcrStageLogKind::Backend,
-            &[("image", "1919x1024".to_string()), ("ffi_ms", "1234".to_string())],
+            &[
+                ("image", "1919x1024".to_string()),
+                ("ffi_ms", "1234".to_string()),
+            ],
         );
 
         assert_eq!(line, "[OCR_STAGE] backend image=1919x1024 ffi_ms=1234");
     }
-
 }

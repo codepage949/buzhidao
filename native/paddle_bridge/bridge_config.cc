@@ -1,4 +1,5 @@
 #include "bridge_config.h"
+#include "bridge_env.h"
 
 #include "bridge_utils.h"
 
@@ -330,20 +331,20 @@ DetOptions resolve_det_options(const ModelPreprocessCfg& model_cfg) {
     opts.max_candidates = std::max(1, model_cfg.det_max_candidates);
 
     float env_float = 0.0f;
-    if (parse_env_float(std::getenv("BUZHIDAO_PADDLE_FFI_DET_THRESH"), &env_float)) {
+    if (parse_env_float(std::getenv(buzhidao_env::kFfiDetThresh), &env_float)) {
         opts.threshold = clamp01(env_float);
     }
-    if (parse_env_float(std::getenv("BUZHIDAO_PADDLE_FFI_DET_BOX_THRESH"), &env_float)) {
+    if (parse_env_float(std::getenv(buzhidao_env::kFfiDetBoxThresh), &env_float)) {
         opts.box_threshold = clamp01(env_float);
     }
-    if (parse_env_float(std::getenv("BUZHIDAO_PADDLE_FFI_DET_MIN_SIDE"), &env_float)) {
+    if (parse_env_float(std::getenv(buzhidao_env::kFfiDetMinSide), &env_float)) {
         opts.min_side = clamp_min(env_float, 0.0f);
     }
-    if (parse_env_float(std::getenv("BUZHIDAO_PADDLE_FFI_DET_UNCLIP"), &env_float)) {
+    if (parse_env_float(std::getenv(buzhidao_env::kFfiDetUnclip), &env_float)) {
         opts.unclip_ratio = clamp_min(env_float, 0.0f);
     }
     int env_candidates = 0;
-    if (parse_env_int(std::getenv("BUZHIDAO_PADDLE_FFI_DET_MAX_CANDIDATES"), &env_candidates) &&
+    if (parse_env_int(std::getenv(buzhidao_env::kFfiDetMaxCandidates), &env_candidates) &&
         env_candidates > 0) {
         opts.max_candidates = env_candidates;
     }

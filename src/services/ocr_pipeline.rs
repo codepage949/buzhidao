@@ -39,7 +39,7 @@ enum ScreenshotResizeMode {
 
 impl ScreenshotResizeMode {
     fn from_env() -> Self {
-        match std::env::var("BUZHIDAO_APP_OCR_RESIZE_MODE")
+        match std::env::var(crate::env_keys::APP_OCR_RESIZE_MODE)
             .ok()
             .as_deref()
         {
@@ -248,7 +248,8 @@ fn deduplicate_groups(groups: Vec<GroupState>) -> Vec<GroupState> {
     'outer: for group in sorted {
         for kept in &result {
             let overlap = overlap_ratio_of_smaller(&group.bounds, &kept.bounds);
-            if overlap >= 0.9 && (kept.text.contains(&group.text) || group.text.contains(&kept.text))
+            if overlap >= 0.9
+                && (kept.text.contains(&group.text) || group.text.contains(&kept.text))
             {
                 continue 'outer;
             }
@@ -336,7 +337,11 @@ fn build_overlay_groups(
                 text: build_group_text_from_sorted_members(&group.members, source),
                 bounds: group.bounds,
                 members: if include_members {
-                    group.members.into_iter().map(|member| member.text).collect()
+                    group
+                        .members
+                        .into_iter()
+                        .map(|member| member.text)
+                        .collect()
                 } else {
                     Vec::new()
                 },
@@ -447,8 +452,10 @@ fn compute_resize_limits(
         }
         ScreenshotResizeMode::LongSide => {
             if image_width >= image_height {
-                let max_width = match (backend_max_width > 0, SCREENSHOT_MAX_LONG_SIDE_BEFORE_OCR > 0)
-                {
+                let max_width = match (
+                    backend_max_width > 0,
+                    SCREENSHOT_MAX_LONG_SIDE_BEFORE_OCR > 0,
+                ) {
                     (true, true) => backend_max_width.min(SCREENSHOT_MAX_LONG_SIDE_BEFORE_OCR),
                     (true, false) => backend_max_width,
                     (false, true) => SCREENSHOT_MAX_LONG_SIDE_BEFORE_OCR,
@@ -522,7 +529,10 @@ pub(crate) fn run_ocr(
     Ok(payload)
 }
 
-#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "paddle-ffi", has_paddle_inference)),
+    allow(dead_code)
+)]
 pub(crate) struct ReleaseOcrSmokeOptions {
     source: String,
     score_thresh: f32,
@@ -531,18 +541,21 @@ pub(crate) struct ReleaseOcrSmokeOptions {
 }
 
 impl ReleaseOcrSmokeOptions {
-    #[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+    #[cfg_attr(
+        not(all(feature = "paddle-ffi", has_paddle_inference)),
+        allow(dead_code)
+    )]
     pub(crate) fn from_env() -> Self {
         Self {
-            source: std::env::var("BUZHIDAO_RELEASE_OCR_SMOKE_SOURCE")
+            source: std::env::var(crate::env_keys::RELEASE_OCR_SMOKE_SOURCE)
                 .unwrap_or_else(|_| "ch".to_string()),
-            score_thresh: std::env::var("BUZHIDAO_RELEASE_OCR_SMOKE_SCORE_THRESH")
+            score_thresh: std::env::var(crate::env_keys::RELEASE_OCR_SMOKE_SCORE_THRESH)
                 .ok()
                 .and_then(|raw| raw.parse::<f32>().ok())
                 .unwrap_or(0.1),
-            ocr_server_device: std::env::var("OCR_SERVER_DEVICE")
+            ocr_server_device: std::env::var(crate::env_keys::OCR_SERVER_DEVICE)
                 .unwrap_or_else(|_| "cpu".to_string()),
-            image_path: std::env::var_os("BUZHIDAO_RELEASE_OCR_SMOKE_IMAGE")
+            image_path: std::env::var_os(crate::env_keys::RELEASE_OCR_SMOKE_IMAGE)
                 .map(PathBuf::from)
                 .unwrap_or_else(default_release_ocr_smoke_image),
         }
@@ -947,32 +960,34 @@ mod tests {
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
     #[test]
     fn _1_png를_앱_ocr_경로로_실행해서_결과를_출력한다() {
-        if std::env::var("BUZHIDAO_RUN_APP_OCR_SAMPLE_TEST").unwrap_or_default() != "1" {
-            eprintln!(
-                "앱 OCR 샘플 테스트는 BUZHIDAO_RUN_APP_OCR_SAMPLE_TEST=1일 때만 실행합니다."
-            );
+        if std::env::var(crate::env_keys::RUN_APP_OCR_SAMPLE_TEST).unwrap_or_default() != "1" {
+            eprintln!("앱 OCR 샘플 테스트는 BUZHIDAO_RUN_APP_OCR_SAMPLE_TEST=1일 때만 실행합니다.");
             return;
         }
 
-        let model_dir = paddle_ocr_cache_roots().into_iter().find(|path| path.exists());
+        let model_dir = paddle_ocr_cache_roots()
+            .into_iter()
+            .find(|path| path.exists());
         let Some(model_dir) = model_dir else {
             eprintln!("기본 PaddleOCR 캐시 경로에 모델이 없어 앱 OCR 샘플 테스트를 스킵합니다.");
             return;
         };
 
-        let source =
-            std::env::var("BUZHIDAO_APP_OCR_TEST_SOURCE").unwrap_or_else(|_| "ch".to_string());
-        let score_thresh = std::env::var("BUZHIDAO_APP_OCR_TEST_SCORE_THRESH")
+        let source = std::env::var(crate::env_keys::APP_OCR_TEST_SOURCE)
+            .unwrap_or_else(|_| "ch".to_string());
+        let score_thresh = std::env::var(crate::env_keys::APP_OCR_TEST_SCORE_THRESH)
             .ok()
             .and_then(|raw| raw.parse::<f32>().ok())
             .unwrap_or(0.1);
-        let source_image = std::env::var("BUZHIDAO_APP_OCR_TEST_IMAGE").ok().map_or_else(
-            || {
-                PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("MANIFEST_DIR 없음"))
-                    .join("1.png")
-            },
-            PathBuf::from,
-        );
+        let source_image = std::env::var(crate::env_keys::APP_OCR_TEST_IMAGE)
+            .ok()
+            .map_or_else(
+                || {
+                    PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("MANIFEST_DIR 없음"))
+                        .join("1.png")
+                },
+                PathBuf::from,
+            );
         if !source_image.exists() {
             eprintln!("테스트 이미지가 없어 스킵합니다: {:?}", source_image);
             return;
@@ -986,8 +1001,14 @@ mod tests {
         let rgba_img = image::open(&source_image)
             .expect("테스트 이미지 열기 실패")
             .into_rgba8();
-        let payload = run_ocr(&cfg, &engine, &rgba_img, rgba_img.width(), rgba_img.height())
-            .expect("앱 OCR 실행 실패");
+        let payload = run_ocr(
+            &cfg,
+            &engine,
+            &rgba_img,
+            rgba_img.width(),
+            rgba_img.height(),
+        )
+        .expect("앱 OCR 실행 실패");
 
         println!(
             "[APP_OCR] {}",
@@ -1005,7 +1026,7 @@ mod tests {
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
     #[test]
     fn 릴리즈_ocr_smoke는_모델_보장후_1회_ocr를_성공한다() {
-        if std::env::var("BUZHIDAO_RUN_RELEASE_OCR_SMOKE").unwrap_or_default() != "1" {
+        if std::env::var(crate::env_keys::RUN_RELEASE_OCR_SMOKE).unwrap_or_default() != "1" {
             eprintln!("릴리즈 OCR smoke는 BUZHIDAO_RUN_RELEASE_OCR_SMOKE=1일 때만 실행합니다.");
             return;
         }
@@ -1023,32 +1044,34 @@ mod tests {
     #[cfg(all(feature = "paddle-ffi", has_paddle_inference))]
     #[test]
     fn 지정한_이미지들로_앱_ocr_경로_지연시간을_측정한다() {
-        if std::env::var("BUZHIDAO_RUN_APP_OCR_BENCH").unwrap_or_default() != "1" {
+        if std::env::var(crate::env_keys::RUN_APP_OCR_BENCH).unwrap_or_default() != "1" {
             eprintln!("앱 OCR 벤치는 BUZHIDAO_RUN_APP_OCR_BENCH=1일 때만 실행합니다.");
             return;
         }
 
-        let model_dir = paddle_ocr_cache_roots().into_iter().find(|path| path.exists());
+        let model_dir = paddle_ocr_cache_roots()
+            .into_iter()
+            .find(|path| path.exists());
         let Some(model_dir) = model_dir else {
             eprintln!("기본 PaddleOCR 캐시 경로에 모델이 없어 앱 OCR 벤치를 스킵합니다.");
             return;
         };
 
-        let images_json = std::env::var("BUZHIDAO_APP_OCR_BENCH_IMAGES_JSON")
+        let images_json = std::env::var(crate::env_keys::APP_OCR_BENCH_IMAGES_JSON)
             .expect("BUZHIDAO_APP_OCR_BENCH_IMAGES_JSON 없음");
         let image_paths: Vec<String> =
             serde_json::from_str(&images_json).expect("이미지 목록 JSON 파싱 실패");
-        let source =
-            std::env::var("BUZHIDAO_APP_OCR_BENCH_SOURCE").unwrap_or_else(|_| "ch".to_string());
-        let score_thresh = std::env::var("BUZHIDAO_APP_OCR_BENCH_SCORE_THRESH")
+        let source = std::env::var(crate::env_keys::APP_OCR_BENCH_SOURCE)
+            .unwrap_or_else(|_| "ch".to_string());
+        let score_thresh = std::env::var(crate::env_keys::APP_OCR_BENCH_SCORE_THRESH)
             .ok()
             .and_then(|raw| raw.parse::<f32>().ok())
             .unwrap_or(0.1);
-        let warmups = std::env::var("BUZHIDAO_APP_OCR_BENCH_WARMUPS")
+        let warmups = std::env::var(crate::env_keys::APP_OCR_BENCH_WARMUPS)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(3);
-        let iterations = std::env::var("BUZHIDAO_APP_OCR_BENCH_ITERATIONS")
+        let iterations = std::env::var(crate::env_keys::APP_OCR_BENCH_ITERATIONS)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(10);
@@ -1064,7 +1087,9 @@ mod tests {
                 panic!("벤치 이미지가 없습니다: {}", image_path);
             }
 
-            let rgba_img = image::open(&path).expect("벤치 이미지 열기 실패").into_rgba8();
+            let rgba_img = image::open(&path)
+                .expect("벤치 이미지 열기 실패")
+                .into_rgba8();
             let (orig_width, orig_height) = (rgba_img.width(), rgba_img.height());
 
             for _ in 0..warmups {

@@ -78,7 +78,9 @@ pub(crate) fn replace_capture_shortcut(
 
 fn shortcut_debug_enabled() -> bool {
     matches!(
-        std::env::var("SHORTCUT_DEBUG").ok().as_deref(),
+        std::env::var(crate::env_keys::SHORTCUT_DEBUG)
+            .ok()
+            .as_deref(),
         Some("1" | "true" | "TRUE" | "yes" | "YES")
     )
 }

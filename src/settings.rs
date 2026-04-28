@@ -1,22 +1,9 @@
 use crate::config::{default_capture_shortcut, Config};
+use crate::language::normalize_app_source;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::LazyLock;
 use tauri_plugin_global_shortcut::Shortcut;
-
-const LANGS_JSON: &str = include_str!("../shared/langs.json");
-
-#[derive(Deserialize)]
-struct LangEntry {
-    code: String,
-}
-
-static SUPPORTED_LANG_CODES: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let entries: Vec<LangEntry> =
-        serde_json::from_str(LANGS_JSON).expect("shared/langs.json 파싱 실패");
-    entries.into_iter().map(|e| e.code).collect()
-});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct UserSettings {
@@ -95,12 +82,7 @@ pub(crate) fn missing_required_field_keys(api_key: &str, model: &str) -> Vec<&'s
 }
 
 fn normalize_source(value: &str) -> String {
-    let v = value.trim().to_ascii_lowercase();
-    if SUPPORTED_LANG_CODES.iter().any(|code| code == &v) {
-        v
-    } else {
-        "en".to_string()
-    }
+    normalize_app_source(value)
 }
 
 fn normalize_device(value: &str) -> String {
@@ -217,12 +199,18 @@ fn managed_env_entries(settings: &UserSettings) -> [(&'static str, String); 8] {
     [
         ("SOURCE", settings.source.clone()),
         ("SCORE_THRESH", settings.score_thresh.to_string()),
-        ("OCR_SERVER_DEVICE", settings.ocr_server_device.clone()),
+        (
+            crate::env_keys::OCR_SERVER_DEVICE,
+            settings.ocr_server_device.clone(),
+        ),
         ("AI_GATEWAY_API_KEY", settings.ai_gateway_api_key.clone()),
         ("AI_GATEWAY_MODEL", settings.ai_gateway_model.clone()),
         ("WORD_GAP", settings.word_gap.to_string()),
         ("LINE_GAP", settings.line_gap.to_string()),
-        ("CAPTURE_SHORTCUT", settings.capture_shortcut.clone()),
+        (
+            crate::env_keys::CAPTURE_SHORTCUT,
+            settings.capture_shortcut.clone(),
+        ),
     ]
 }
 

@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-void sort_quad_boxes_like_sidecar(std::vector<BBox>* boxes);
+void sort_quad_boxes_reading_order(std::vector<BBox>* boxes);
 void ensure_probability_map(std::vector<float>& map);
 void ensure_probability_map(float* map, size_t len);
 std::vector<std::vector<int>> neighbors4();

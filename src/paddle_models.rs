@@ -1,12 +1,12 @@
+use crate::language::normalize_upstream_source;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PADDLE_MODEL_BASE_URL: &str =
     "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0";
-const PADDLE_MODEL_ROOT_ENV: &str = "BUZHIDAO_PADDLE_MODEL_ROOT";
+const PADDLE_MODEL_ROOT_ENV: &str = crate::env_keys::PADDLE_MODEL_ROOT;
 const DET_MODEL_NAME: &str = "PP-OCRv5_server_det";
 const CLS_MODEL_NAME: &str = "PP-LCNet_x1_0_textline_ori";
 
@@ -56,17 +56,6 @@ static CYRILLIC_LANGS: &[&str] = &[
 static DEVANAGARI_LANGS: &[&str] = &[
     "hi", "mr", "ne", "bh", "mai", "ang", "bho", "mah", "sck", "new", "gom", "sa", "bgc",
 ];
-static SUPPORTED_LANG_CODES: LazyLock<Vec<String>> = LazyLock::new(|| {
-    #[derive(serde::Deserialize)]
-    struct LangEntry {
-        code: String,
-    }
-
-    let entries: Vec<LangEntry> = serde_json::from_str(include_str!("../shared/langs.json"))
-        .expect("shared/langs.json 파싱 실패");
-    entries.into_iter().map(|entry| entry.code).collect()
-});
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaddleModelSpec {
     pub(crate) det: &'static str,
@@ -104,7 +93,10 @@ pub(crate) async fn ensure_paddle_models_for_lang_in_root(
     Ok(())
 }
 
-#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "paddle-ffi", has_paddle_inference)),
+    allow(dead_code)
+)]
 pub(crate) fn validate_paddle_model_root_for_lang(lang: &str, root: &Path) -> Result<(), String> {
     let spec = model_spec_for_lang(lang);
     let diagnostics = [
@@ -199,35 +191,6 @@ pub(crate) fn model_spec_for_lang(lang: &str) -> PaddleModelSpec {
     }
 }
 
-pub(crate) fn normalize_upstream_source(source: &str) -> String {
-    let normalized = source.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return "en".to_string();
-    }
-    if normalized == "cn" || normalized == "zh" || normalized == "chi" || normalized == "chinese" {
-        return "ch".to_string();
-    }
-    if normalized == "ch_tra"
-        || normalized == "chinese_cht"
-        || normalized == "zh-tw"
-        || normalized == "zh_tw"
-        || normalized == "zh-hant"
-        || normalized == "zh_hant"
-    {
-        return "chinese_cht".to_string();
-    }
-    if normalized.starts_with("zh-") || normalized.starts_with("zh_") {
-        return "ch".to_string();
-    }
-    if normalized == "en" || normalized == "eng" || normalized == "english" {
-        return "en".to_string();
-    }
-    if SUPPORTED_LANG_CODES.iter().any(|code| code == &normalized) {
-        return normalized;
-    }
-    "en".to_string()
-}
-
 fn has_model_dir(root: &Path, model_name: &str) -> bool {
     let model_dir = root.join(model_name);
     has_inference_files_in_dir(&model_dir)
@@ -243,7 +206,10 @@ fn has_inference_files_in_dir(dir: &Path) -> bool {
     (infer_json.is_file() || infer_pdmodel.is_file()) && infer_params.is_file()
 }
 
-#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "paddle-ffi", has_paddle_inference)),
+    allow(dead_code)
+)]
 struct ModelDirDiagnostic {
     role: &'static str,
     model_name: &'static str,
@@ -253,7 +219,10 @@ struct ModelDirDiagnostic {
     ok: bool,
 }
 
-#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "paddle-ffi", has_paddle_inference)),
+    allow(dead_code)
+)]
 impl ModelDirDiagnostic {
     fn message(&self) -> String {
         format!(
@@ -263,7 +232,10 @@ impl ModelDirDiagnostic {
     }
 }
 
-#[cfg_attr(not(all(feature = "paddle-ffi", has_paddle_inference)), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "paddle-ffi", has_paddle_inference)),
+    allow(dead_code)
+)]
 fn model_dir_diagnostic(
     root: &Path,
     role: &'static str,

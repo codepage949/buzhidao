@@ -64,42 +64,6 @@ extern "C" int buzhi_ocr_warmup_predictors(
 #endif
 }
 
-extern "C" char* buzhi_ocr_run_image_file(
-    buzhi_ocr_engine_t* engine,
-    const char* image_path,
-    int det_resize_long,
-    float score_thresh,
-    int debug_trace,
-    char** err
-) {
-    if (engine == nullptr) {
-        set_api_error(err, "engine is null");
-        return nullptr;
-    }
-    if (image_path == nullptr || image_path[0] == '\0') {
-        set_api_error(err, "image_path is empty");
-        return nullptr;
-    }
-    score_thresh = clamp_score_threshold(score_thresh);
-
-#if defined(BUZHIDAO_HAVE_PADDLE_INFERENCE)
-    PipelineOutput result = run_pipeline_from_path(
-        engine,
-        fs::path(image_path),
-        det_resize_long,
-        score_thresh,
-        debug_trace,
-        err
-    );
-    std::string json = serialize_pipeline_output_json(result, debug_trace != 0);
-    free_pipeline_output(&result);
-    return dup_string(json);
-#else
-    set_api_error(err, kPaddleNotLinkedMessage);
-    return nullptr;
-#endif
-}
-
 extern "C" buzhi_ocr_result_t* buzhi_ocr_run_image_file_result(
     buzhi_ocr_engine_t* engine,
     const char* image_path,

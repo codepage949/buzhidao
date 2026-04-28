@@ -1,4 +1,5 @@
 #include "bridge_det_utils.h"
+#include "bridge_env.h"
 
 #include "bridge_debug_format.h"
 #include "bridge_geometry.h"
@@ -35,7 +36,7 @@ float round_half_to_even(float value) {
     return static_cast<float>(std::floor(value + 0.5));
 }
 
-void sort_quad_boxes_like_sidecar(std::vector<BBox>* boxes) {
+void sort_quad_boxes_reading_order(std::vector<BBox>* boxes) {
     if (boxes == nullptr || boxes->size() <= 1) {
         return;
     }
@@ -425,8 +426,8 @@ std::vector<BBox> db_postprocess(
             break;
         }
     }
-    sort_quad_boxes_like_sidecar(&boxes);
-    const char* dump_det_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_DET");
+    sort_quad_boxes_reading_order(&boxes);
+    const char* dump_det_raw = std::getenv(buzhidao_env::kFfiDumpDet);
     const bool dump_det =
         dump_det_raw != nullptr &&
         dump_det_raw[0] != '\0' &&
@@ -709,7 +710,7 @@ std::vector<BBox> db_postprocess(
                std::to_string(options.min_side) + ", unclip=" +
                std::to_string(options.unclip_ratio);
     });
-    const char* dump_det_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_DET");
+    const char* dump_det_raw = std::getenv(buzhidao_env::kFfiDumpDet);
     const bool dump_det =
         dump_det_raw != nullptr &&
         dump_det_raw[0] != '\0' &&
@@ -821,7 +822,7 @@ std::vector<BBox> db_postprocess(
             }
         }
     }
-    sort_quad_boxes_like_sidecar(&boxes);
+    sort_quad_boxes_reading_order(&boxes);
     return boxes;
 #endif
 }
