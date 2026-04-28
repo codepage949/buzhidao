@@ -68,12 +68,25 @@ struct RecBatchScratch {
     FloatScratchBuffer input;
     FloatScratchBuffer output;
     std::vector<int> output_shape;
+    std::vector<Image> prepared_inputs;
+    std::vector<int> prepared_widths;
+    std::vector<int> input_shape;
 };
 
 struct ClsBatchScratch {
     FloatScratchBuffer input;
     FloatScratchBuffer output;
+    std::vector<int> input_shape;
     std::vector<int> output_shape;
+    std::vector<const Image*> batch_images;
+};
+
+struct DetScratch {
+    FloatScratchBuffer input;
+    FloatScratchBuffer output;
+    std::vector<int> input_shape;
+    std::vector<int> output_shape;
+    std::vector<float> single_channel;
 };
 
 struct PredictorIoNames {

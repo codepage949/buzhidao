@@ -2,6 +2,7 @@
 #define BUZHIDAO_PADDLE_BRIDGE_ENGINE_H
 
 #include "bridge_config.h"
+#include "bridge_types.h"
 
 #include <filesystem>
 #include <memory>
@@ -28,6 +29,9 @@ struct buzhi_ocr_engine {
     std::shared_ptr<paddle_infer::Predictor> det_predictor;
     std::shared_ptr<paddle_infer::Predictor> cls_predictor;
     std::shared_ptr<paddle_infer::Predictor> rec_predictor;
+    DetScratch det_scratch;
+    ClsBatchScratch cls_batch_scratch;
+    RecBatchScratch rec_batch_scratch;
 #endif
 };
 

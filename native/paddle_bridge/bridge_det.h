@@ -18,6 +18,7 @@ std::vector<BBox> run_det(
     const ModelPreprocessCfg& det_cfg,
     const NormalizeCfg& det_norm,
     const DetOptions& det_options,
+    DetScratch* scratch,
     std::string* err
 );
 

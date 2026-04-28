@@ -40,6 +40,7 @@ std::vector<BBox> run_det(
     const ModelPreprocessCfg& det_cfg,
     const NormalizeCfg& det_norm,
     const DetOptions& det_options,
+    DetScratch* scratch,
     std::string* err
 ) {
     const bool profile_stages = profile_stages_enabled();
@@ -58,28 +59,37 @@ std::vector<BBox> run_det(
            : 0);
     const int det_limit_side_len = effective_det_resize_long > 0 ? effective_det_resize_long : det_cfg.det_limit_side_len;
     const std::string det_limit_type = effective_det_resize_long > 0 ? "max" : det_cfg.det_limit_type;
+    DetScratch local_scratch;
+    DetScratch& buffers = scratch != nullptr ? *scratch : local_scratch;
     const auto preprocess_started = std::chrono::steady_clock::now();
-    const auto input = preprocess_det(
+    float* input = nullptr;
+    size_t input_len = 0;
+    if (!preprocess_det_into_buffer(
         img,
         det_limit_side_len,
         det_limit_type,
         det_cfg.det_max_side_limit,
         det_norm,
+        &buffers.input,
         &resized_h,
-        &resized_w
-    );
+        &resized_w,
+        &input,
+        &input_len,
+        err
+    )) {
+        set_det_error_if_empty(err, "det 입력 텐서를 구성할 수 없습니다");
+        return {};
+    }
     if (profile_stages) {
         preprocess_ms += elapsed_ms_since(preprocess_started);
     }
-    if (input.empty() || resized_h == 0 || resized_w == 0) {
+    if (input == nullptr || input_len == 0 || resized_h == 0 || resized_w == 0) {
         if (err != nullptr) {
             *err = "det 입력 텐서를 구성할 수 없습니다";
         }
         return {};
     }
-    std::vector<float> out;
-    std::vector<int> shape{1, 3, resized_h, resized_w};
-    std::vector<int> out_shape;
+    buffers.input_shape.assign({1, 3, resized_h, resized_w});
     const char* dump_det_raw = std::getenv("BUZHIDAO_PADDLE_FFI_DUMP_DET");
     const bool dump_det =
         dump_det_raw != nullptr &&
@@ -107,13 +117,24 @@ std::vector<BBox> run_det(
         }
     }
     const auto predictor_started = std::chrono::steady_clock::now();
-    if (!run_predictor(predictor, input, shape, out, out_shape, err)) {
+    size_t out_len = 0;
+    if (!run_predictor_into_buffer(
+            predictor,
+            input,
+            input_len,
+            buffers.input_shape,
+            &buffers.output,
+            &out_len,
+            buffers.output_shape,
+            err)) {
         set_det_error_if_empty(err, "det predictor 실행 실패");
         return {};
     }
     if (profile_stages) {
         predictor_ms += elapsed_ms_since(predictor_started);
     }
+    const float* out = buffers.output.get();
+    const auto& out_shape = buffers.output_shape;
     if (out_shape.size() < 3) {
         if (err != nullptr) {
             *err = "det 출력 shape가 유효하지 않습니다";
@@ -134,19 +155,20 @@ std::vector<BBox> run_det(
     if (out_shape.size() == 4) {
         const int c = out_shape[1];
         if (c > 1) {
-            if (out.size() < pred_area) {
+            if (out_len < pred_area) {
                 if (err != nullptr) {
                     *err = "det 출력 길이가 예측 맵보다 짧습니다";
                 }
                 return {};
             }
             const auto postprocess_started = std::chrono::steady_clock::now();
-            std::vector<float> single(pred_h * pred_w, 0.0f);
+            buffers.single_channel.assign(pred_h * pred_w, 0.0f);
+            auto& single = buffers.single_channel;
             for (int i = 0; i < pred_h * pred_w; ++i) {
                 float best = out[i];
                 for (int ch = 1; ch < c; ++ch) {
                     const size_t idx = static_cast<size_t>(ch) * pred_h * pred_w + i;
-                    if (idx < out.size()) {
+                    if (idx < out_len) {
                         best = std::max(best, out[idx]);
                     }
                 }
@@ -179,14 +201,14 @@ std::vector<BBox> run_det(
                ", resized=" + std::to_string(resized_w) + "x" + std::to_string(resized_h) +
                ", src=" + std::to_string(img.width) + "x" + std::to_string(img.height);
     });
-    if (out.size() < pred_area) {
+    if (out_len < pred_area) {
         if (err != nullptr) {
             *err = "det 출력 길이가 예측 맵보다 짧습니다";
         }
         return {};
     }
-    ensure_probability_map(out);
-    log_det_map_stats("run_det pred", out, pred_h, pred_w);
+    ensure_probability_map(buffers.output.get(), out_len);
+    log_det_map_stats("run_det pred", buffers.output.get(), out_len, pred_h, pred_w);
     if (dump_det) {
         const std::string dump_dir = debug_dump_dir();
         if (!dump_dir.empty()) {
@@ -207,7 +229,7 @@ std::vector<BBox> run_det(
                 ofs << "  \"input_shape\": [1,3," << resized_h << "," << resized_w << "],\n";
                 ofs << "  \"pred_shape\": [1,1," << pred_h << "," << pred_w << "],\n";
                 ofs << "  \"input_values\": [";
-                for (size_t i = 0; i < input.size(); ++i) {
+                for (size_t i = 0; i < input_len; ++i) {
                     if (i > 0) {
                         ofs << ",";
                     }
@@ -215,7 +237,7 @@ std::vector<BBox> run_det(
                 }
                 ofs << "],\n";
                 ofs << "  \"values\": [";
-                for (size_t i = 0; i < out.size(); ++i) {
+                for (size_t i = 0; i < out_len; ++i) {
                     if (i > 0) {
                         ofs << ",";
                     }
@@ -230,7 +252,7 @@ std::vector<BBox> run_det(
     }
 
     const auto postprocess_started = std::chrono::steady_clock::now();
-    auto boxes = db_postprocess(out, pred_h, pred_w, img.height, img.width, det_options);
+    auto boxes = db_postprocess(buffers.output.get(), out_len, pred_h, pred_w, img.height, img.width, det_options);
     if (profile_stages) {
         postprocess_ms += elapsed_ms_since(postprocess_started);
         std::ostringstream os;

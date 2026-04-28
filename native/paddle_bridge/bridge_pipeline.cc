@@ -120,8 +120,8 @@ bool run_cls_batches_into(
     const bool profile_stages = profile_stages_enabled();
     cls_results->assign(cls_inputs.size(), {0, 0.0f});
     constexpr size_t kClsBatchSize = 6;
-    ClsBatchScratch scratch;
-    std::vector<const Image*> batch_images;
+    ClsBatchScratch& scratch = engine->cls_batch_scratch;
+    std::vector<const Image*>& batch_images = scratch.batch_images;
     batch_images.reserve(kClsBatchSize);
     for (size_t start = 0; start < cls_inputs.size(); start += kClsBatchSize) {
         const size_t end = std::min(cls_inputs.size(), start + kClsBatchSize);
@@ -228,7 +228,6 @@ bool run_rec_batches_into(
         return false;
     }
     const bool profile_stages = profile_stages_enabled();
-    RecBatchScratch scratch;
     std::vector<const Image*> batch_images;
     batch_images.reserve(6);
     std::vector<RecDebugMeta> batch_meta;
@@ -266,7 +265,7 @@ bool run_rec_batches_into(
             engine->rec_dict,
             engine->rec_cfg,
             need_rec_debug_meta ? &batch_meta : nullptr,
-            &scratch,
+            &engine->rec_batch_scratch,
             &rec_err
         );
         if (profile_stages && rec_ms != nullptr) {
@@ -396,6 +395,7 @@ PipelineOutput run_pipeline(
         engine->det_cfg,
         engine->det_cfg.det_norm,
         engine->det_options,
+        &engine->det_scratch,
         &det_err
     );
     if (profile_stages) {

@@ -194,12 +194,14 @@ std::vector<std::pair<std::string, float>> run_rec_batch(
     double fill_ms = 0.0;
     double predictor_ms = 0.0;
     double decode_ms = 0.0;
-    std::vector<Image> prepared_inputs;
-    prepared_inputs.reserve(imgs.size());
-    std::vector<int> prepared_widths;
-    prepared_widths.reserve(imgs.size());
     RecBatchScratch local_scratch;
     RecBatchScratch& buffers = scratch != nullptr ? *scratch : local_scratch;
+    auto& prepared_inputs = buffers.prepared_inputs;
+    auto& prepared_widths = buffers.prepared_widths;
+    prepared_inputs.clear();
+    prepared_inputs.reserve(imgs.size());
+    prepared_widths.clear();
+    prepared_widths.reserve(imgs.size());
     int batch_w = 0;
     const auto prepare_started = std::chrono::steady_clock::now();
     for (const auto* img : imgs) {
@@ -239,14 +241,14 @@ std::vector<std::pair<std::string, float>> run_rec_batch(
         fill_ms += elapsed_ms_since(fill_started);
     }
 
-    std::vector<int> shape{batch_n, 3, rec_h, batch_w};
+    buffers.input_shape.assign({batch_n, 3, rec_h, batch_w});
     size_t out_len = 0;
     const auto predictor_started = std::chrono::steady_clock::now();
     if (!run_predictor_into_buffer(
             predictor,
             batch_input,
             batch_input_len,
-            shape,
+            buffers.input_shape,
             &buffers.output,
             &out_len,
             buffers.output_shape,

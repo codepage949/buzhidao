@@ -22,15 +22,20 @@ Image crop_to_bbox(const cv::Mat& img_bgr, const std::array<FloatPoint, 4>& pts,
         }
         return {0, 0, 0, {}};
     }
-    std::vector<cv::Point2f> crop_points;
-    crop_points.reserve(pts.size());
-    for (const auto& point : pts) {
-        crop_points.emplace_back(
-            static_cast<float>(static_cast<int>(point.x)),
-            static_cast<float>(static_cast<int>(point.y))
+    std::array<cv::Point2f, 4> crop_points{};
+    for (size_t i = 0; i < pts.size(); ++i) {
+        crop_points[i] = cv::Point2f(
+            static_cast<float>(static_cast<int>(pts[i].x)),
+            static_cast<float>(static_cast<int>(pts[i].y))
         );
     }
-    const cv::RotatedRect crop_box = cv::minAreaRect(crop_points);
+    const cv::Mat crop_points_view(
+        static_cast<int>(crop_points.size()),
+        1,
+        CV_32FC2,
+        crop_points.data()
+    );
+    const cv::RotatedRect crop_box = cv::minAreaRect(crop_points_view);
     cv::Point2f box_points[4];
     crop_box.points(box_points);
     const std::array<FloatPoint, 4> crop_corners{{

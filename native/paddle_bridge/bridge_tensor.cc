@@ -66,15 +66,45 @@ void fill_rec_tensor(const Image& resized, const NormalizeCfg& norm, int tensor_
     }
 }
 
-std::vector<float> preprocess_det(
+void fill_det_tensor(const Image& resized, const NormalizeCfg& norm, float* dst) {
+    const float det_scale = norm.scale;
+    const float det_std0 = std::fabs(norm.std[0]) > 1e-12f ? norm.std[0] : 1.0f;
+    const float det_std1 = std::fabs(norm.std[1]) > 1e-12f ? norm.std[1] : 1.0f;
+    const float det_std2 = std::fabs(norm.std[2]) > 1e-12f ? norm.std[2] : 1.0f;
+    const size_t hw_stride = static_cast<size_t>(resized.width * resized.height);
+    for (int y = 0; y < resized.height; ++y) {
+        for (int x = 0; x < resized.width; ++x) {
+            const size_t idx = static_cast<size_t>((y * resized.width + x) * 4);
+            const float b = image_blue_at(resized, idx) * det_scale - norm.mean[0];
+            const float g = image_green_at(resized, idx) * det_scale - norm.mean[1];
+            const float r = image_red_at(resized, idx) * det_scale - norm.mean[2];
+            const size_t hw = static_cast<size_t>(y * resized.width + x);
+            dst[0 * hw_stride + hw] = b / det_std0;
+            dst[1 * hw_stride + hw] = g / det_std1;
+            dst[2 * hw_stride + hw] = r / det_std2;
+        }
+    }
+}
+
+bool preprocess_det_into_buffer(
     const Image& img,
     int det_limit_side_len,
     const std::string& det_limit_type,
     int det_max_side_limit,
     const NormalizeCfg& norm,
+    FloatScratchBuffer* buffer,
     int* out_h,
-    int* out_w
+    int* out_w,
+    float** out_data,
+    size_t* out_len,
+    std::string* err
 ) {
+    if (buffer == nullptr || out_data == nullptr || out_len == nullptr) {
+        if (err != nullptr && err->empty()) {
+            *err = "det 입력 scratch buffer가 없습니다";
+        }
+        return false;
+    }
     const Image resized = resize_for_det(
         img,
         det_limit_side_len,
@@ -90,41 +120,64 @@ std::vector<float> preprocess_det(
                   ", max_side_limit=" + std::to_string(det_max_side_limit) +
                   ", resized=" + std::to_string(*out_w) + "x" + std::to_string(*out_h));
     }
-    std::vector<float> tensor(1u * 3u * static_cast<size_t>(resized.width * resized.height));
-    const float det_scale = norm.scale;
-    const float det_std0 = std::fabs(norm.std[0]) > 1e-12f ? norm.std[0] : 1.0f;
-    const float det_std1 = std::fabs(norm.std[1]) > 1e-12f ? norm.std[1] : 1.0f;
-    const float det_std2 = std::fabs(norm.std[2]) > 1e-12f ? norm.std[2] : 1.0f;
-    for (int y = 0; y < resized.height; ++y) {
-        for (int x = 0; x < resized.width; ++x) {
-            const size_t idx = static_cast<size_t>((y * resized.width + x) * 4);
-            const float b = image_blue_at(resized, idx) * det_scale - norm.mean[0];
-            const float g = image_green_at(resized, idx) * det_scale - norm.mean[1];
-            const float r = image_red_at(resized, idx) * det_scale - norm.mean[2];
-            const size_t hw = static_cast<size_t>(y * resized.width + x);
-            const size_t hw_stride = static_cast<size_t>(resized.width * resized.height);
-            tensor[0 * hw_stride + hw] = b / det_std0;
-            tensor[1 * hw_stride + hw] = g / det_std1;
-            tensor[2 * hw_stride + hw] = r / det_std2;
-        }
+    const size_t tensor_len = 1u * 3u * static_cast<size_t>(resized.width * resized.height);
+    if (!buffer->ensure(tensor_len, err)) {
+        return false;
     }
-    if (debug_enabled() && !tensor.empty()) {
+    float* tensor = buffer->get();
+    fill_det_tensor(resized, norm, tensor);
+    *out_data = tensor;
+    *out_len = tensor_len;
+    if (debug_enabled() && tensor_len > 0) {
         auto mn = tensor[0];
         auto mx = tensor[0];
         double sum = 0.0;
         double sumsq = 0.0;
-        for (const float v : tensor) {
+        for (size_t i = 0; i < tensor_len; ++i) {
+            const float v = tensor[i];
             mn = std::min(mn, v);
             mx = std::max(mx, v);
             sum += v;
             sumsq += v * v;
         }
-        const size_t center = tensor.size() / 2;
+        const size_t center = tensor_len / 2;
         debug_log(std::string("preprocess_det tensor stats mn=") + std::to_string(mn) +
-                  ", mx=" + std::to_string(mx) + ", mean=" + std::to_string(sum / tensor.size()) +
-                  ", rms=" + std::to_string(std::sqrt(sumsq / tensor.size())) +
+                  ", mx=" + std::to_string(mx) + ", mean=" + std::to_string(sum / tensor_len) +
+                  ", rms=" + std::to_string(std::sqrt(sumsq / tensor_len)) +
                   ", center=" + std::to_string(tensor[center]));
     }
+    return true;
+}
+
+std::vector<float> preprocess_det(
+    const Image& img,
+    int det_limit_side_len,
+    const std::string& det_limit_type,
+    int det_max_side_limit,
+    const NormalizeCfg& norm,
+    int* out_h,
+    int* out_w
+) {
+    FloatScratchBuffer buffer;
+    float* data = nullptr;
+    size_t len = 0;
+    std::string err;
+    if (!preprocess_det_into_buffer(
+            img,
+            det_limit_side_len,
+            det_limit_type,
+            det_max_side_limit,
+            norm,
+            &buffer,
+            out_h,
+            out_w,
+            &data,
+            &len,
+            &err)) {
+        return {};
+    }
+    std::vector<float> tensor(len);
+    std::copy(data, data + len, tensor.begin());
     return tensor;
 }
 

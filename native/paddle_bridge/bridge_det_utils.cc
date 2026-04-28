@@ -63,15 +63,19 @@ void sort_quad_boxes_like_sidecar(std::vector<BBox>* boxes) {
 }
 
 void ensure_probability_map(std::vector<float>& map) {
-    if (map.empty()) {
+    ensure_probability_map(map.data(), map.size());
+}
+
+void ensure_probability_map(float* map, size_t len) {
+    if (map == nullptr || len == 0) {
         return;
     }
-    auto minmax = std::minmax_element(map.begin(), map.end());
+    auto minmax = std::minmax_element(map, map + len);
     const float mn = *minmax.first;
     const float mx = *minmax.second;
     if (mn < 0.0f || mx > 1.0f) {
-        for (auto& v : map) {
-            v = 1.0f / (1.0f + std::exp(-v));
+        for (size_t i = 0; i < len; ++i) {
+            map[i] = 1.0f / (1.0f + std::exp(-map[i]));
         }
     }
 }
@@ -89,14 +93,19 @@ std::vector<std::vector<int>> neighbors8() {
 }
 
 void log_det_map_stats(const std::string& prefix, const std::vector<float>& pred, int h, int w) {
-    if (!debug_enabled() || pred.empty() || h <= 0 || w <= 0) {
+    log_det_map_stats(prefix, pred.data(), pred.size(), h, w);
+}
+
+void log_det_map_stats(const std::string& prefix, const float* pred, size_t len, int h, int w) {
+    if (!debug_enabled() || pred == nullptr || len == 0 || h <= 0 || w <= 0) {
         return;
     }
     float mn = pred[0];
     float mx = pred[0];
     double sum = 0.0;
     int positive = 0;
-    for (const float value : pred) {
+    for (size_t i = 0; i < len; ++i) {
+        const float value = pred[i];
         mn = std::min(mn, value);
         mx = std::max(mx, value);
         sum += value;
@@ -106,7 +115,7 @@ void log_det_map_stats(const std::string& prefix, const std::vector<float>& pred
     }
     debug_log(prefix + " h=" + std::to_string(h) + ", w=" + std::to_string(w) +
               ", min=" + std::to_string(mn) + ", max=" + std::to_string(mx) +
-              ", mean=" + std::to_string(sum / pred.size()) +
+              ", mean=" + std::to_string(sum / len) +
               ", pos_count=" + std::to_string(positive));
 }
 
@@ -283,11 +292,23 @@ std::vector<BBox> db_postprocess(
     int src_w,
     const DetOptions& options
 ) {
-    if (pred.empty() || pred_h <= 0 || pred_w <= 0) {
+    return db_postprocess(pred.data(), pred.size(), pred_h, pred_w, src_h, src_w, options);
+}
+
+std::vector<BBox> db_postprocess(
+    const float* pred,
+    size_t pred_len,
+    int pred_h,
+    int pred_w,
+    int src_h,
+    int src_w,
+    const DetOptions& options
+) {
+    if (pred == nullptr || pred_len == 0 || pred_h <= 0 || pred_w <= 0) {
         return {};
     }
 #if defined(BUZHIDAO_HAVE_OPENCV)
-    cv::Mat pred_mat(pred_h, pred_w, CV_32FC1, const_cast<float*>(pred.data()));
+    cv::Mat pred_mat(pred_h, pred_w, CV_32FC1, const_cast<float*>(pred));
     cv::Mat bitmap;
     cv::threshold(pred_mat, bitmap, options.threshold, 1.0, cv::THRESH_BINARY);
     bitmap.convertTo(bitmap, CV_8UC1, 255.0);
@@ -357,7 +378,7 @@ std::vector<BBox> db_postprocess(
         }
 
         ScoreBoxDebug score_debug{};
-        const float score = score_box(pred, pred_h, pred_w, rect_pts, &score_debug);
+        const float score = score_box(pred, pred_len, pred_h, pred_w, rect_pts, &score_debug);
         debug_candidate.score_x0 = score_debug.x0;
         debug_candidate.score_y0 = score_debug.y0;
         debug_candidate.score_x1 = score_debug.x1;
@@ -595,7 +616,7 @@ std::vector<BBox> db_postprocess(
                 continue;
             }
             ScoreBoxDebug score_debug{};
-            const float s = score_box(pred, pred_h, pred_w, rect_pts, &score_debug);
+            const float s = score_box(pred, pred_len, pred_h, pred_w, rect_pts, &score_debug);
             debug_candidate.score_x0 = score_debug.x0;
             debug_candidate.score_y0 = score_debug.y0;
             debug_candidate.score_x1 = score_debug.x1;
@@ -813,7 +834,18 @@ float score_box(
     const std::array<FloatPoint, 4>& box,
     ScoreBoxDebug* debug
 ) {
-    if (pred.empty() || pred_h <= 0 || pred_w <= 0) {
+    return score_box(pred.data(), pred.size(), pred_h, pred_w, box, debug);
+}
+
+float score_box(
+    const float* pred,
+    size_t pred_len,
+    int pred_h,
+    int pred_w,
+    const std::array<FloatPoint, 4>& box,
+    ScoreBoxDebug* debug
+) {
+    if (pred == nullptr || pred_len == 0 || pred_h <= 0 || pred_w <= 0) {
         return 0.0f;
     }
     float min_x = std::numeric_limits<float>::max();
@@ -849,7 +881,7 @@ float score_box(
     const std::vector<std::vector<cv::Point>> polys{shifted};
     cv::fillPoly(mask, polys, cv::Scalar(1));
 
-    cv::Mat pred_mat(pred_h, pred_w, CV_32FC1, const_cast<float*>(pred.data()));
+    cv::Mat pred_mat(pred_h, pred_w, CV_32FC1, const_cast<float*>(pred));
     const cv::Rect roi(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
     const cv::Scalar mean_score = cv::mean(pred_mat(roi), mask);
     const int count = cv::countNonZero(mask);

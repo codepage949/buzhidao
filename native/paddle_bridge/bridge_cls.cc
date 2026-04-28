@@ -80,13 +80,13 @@ std::vector<std::pair<int, float>> run_cls_batch(
         );
     }
 
-    std::vector<int> shape{batch_n, 3, target_h, target_w};
+    buffers.input_shape.assign({batch_n, 3, target_h, target_w});
     size_t out_len = 0;
     if (!run_predictor_into_buffer(
             predictor,
             batch_input,
             batch_input_len,
-            shape,
+            buffers.input_shape,
             &buffers.output,
             &out_len,
             buffers.output_shape,

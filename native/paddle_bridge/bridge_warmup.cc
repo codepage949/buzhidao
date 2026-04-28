@@ -20,6 +20,7 @@ std::vector<BBox> run_det(
     const ModelPreprocessCfg& det_cfg,
     const NormalizeCfg& norm,
     const DetOptions& options,
+    DetScratch* scratch,
     std::string* err
 );
 
@@ -57,6 +58,7 @@ bool warmup_det_predictor(buzhi_ocr_engine* engine, std::string* err) {
         engine->det_cfg,
         engine->det_cfg.det_norm,
         engine->det_options,
+        &engine->det_scratch,
         &det_err
     );
     if (!det_err.empty()) {
@@ -114,7 +116,7 @@ bool warmup_rec_predictor(buzhi_ocr_engine* engine, std::string* err) {
         engine->rec_dict,
         engine->rec_cfg,
         nullptr,
-        nullptr,
+        &engine->rec_batch_scratch,
         &rec_err
     );
     if (!rec_err.empty()) {
