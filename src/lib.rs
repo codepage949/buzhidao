@@ -29,8 +29,8 @@ use crate::platform::{
 };
 use crate::popup::calc_popup_pos;
 use crate::services::{
-    call_ai, capture_screen, crop_capture_to_region, offset_ocr_result, run_ocr, CaptureInfo,
-    OcrResultPayload,
+    call_ai, capture_screen, create_ai_client, crop_capture_to_region, offset_ocr_result, run_ocr,
+    CaptureInfo, OcrResultPayload,
 };
 use crate::window::{focus_active_window, focus_window, hide_window};
 
@@ -100,6 +100,7 @@ struct LoadingStatusPayload {
 }
 
 struct TranslationRequestSeq(AtomicU64);
+struct TranslationTaskState(Mutex<Option<tokio::task::AbortHandle>>);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +129,31 @@ fn ocr_backend_snapshot(app: &AppHandle) -> Result<Arc<OcrBackend>, String> {
         .read()
         .map_err(|_| "OCR 엔진 상태 읽기 잠금 실패".to_string())
         .and_then(|guard| guard.as_ref().map(Arc::clone).map_err(Clone::clone))
+}
+
+fn replace_translation_task(
+    slot: &Mutex<Option<tokio::task::AbortHandle>>,
+    next: tokio::task::AbortHandle,
+) -> Result<bool, String> {
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "번역 작업 상태 잠금 실패".to_string())?;
+    let aborted_previous = guard.take().is_some_and(|handle| {
+        handle.abort();
+        true
+    });
+    *guard = Some(next);
+    Ok(aborted_previous)
+}
+
+fn abort_translation_task(slot: &Mutex<Option<tokio::task::AbortHandle>>) -> Result<bool, String> {
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "번역 작업 상태 잠금 실패".to_string())?;
+    Ok(guard.take().is_some_and(|handle| {
+        handle.abort();
+        true
+    }))
 }
 
 fn show_ocr_device_setting(cfg: &Config) -> bool {
@@ -362,30 +388,31 @@ async fn select_text(
 
     let cfg = config_snapshot(&app)?;
     let client = app.state::<reqwest::Client>().inner().clone();
-    match call_ai(&client, &cfg, &text).await {
-        Ok(result) => {
-            popup
-                .emit(
+    let task_popup = popup.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        match call_ai(&client, &cfg, &text).await {
+            Ok(result) => {
+                let _ = task_popup.emit(
                     "translation_result",
                     TranslationContentPayload {
                         request_id,
                         content: result,
                     },
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        Err(e) => {
-            popup
-                .emit(
+                );
+            }
+            Err(e) => {
+                let _ = task_popup.emit(
                     "translation_error",
                     TranslationContentPayload {
                         request_id,
                         content: e,
                     },
-                )
-                .map_err(|e2| e2.to_string())?;
+                );
+            }
         }
-    }
+    });
+    let task_state = app.state::<TranslationTaskState>();
+    let _ = replace_translation_task(&task_state.0, task.inner().abort_handle())?;
 
     Ok(())
 }
@@ -393,6 +420,8 @@ async fn select_text(
 /// 오버레이 닫기: 오버레이와 팝업을 함께 숨긴다.
 #[tauri::command]
 async fn close_overlay(app: AppHandle) -> Result<(), String> {
+    let task_state = app.state::<TranslationTaskState>();
+    let _ = abort_translation_task(&task_state.0)?;
     hide_window(&app, "overlay");
     hide_window(&app, "popup");
     clear_pending_capture(&app);
@@ -405,6 +434,8 @@ async fn close_overlay(app: AppHandle) -> Result<(), String> {
 /// 팝업만 닫기: 팝업을 숨기고 오버레이 포커스를 복구한다.
 #[tauri::command]
 async fn close_popup(app: AppHandle) -> Result<(), String> {
+    let task_state = app.state::<TranslationTaskState>();
+    let _ = abort_translation_task(&task_state.0)?;
     hide_window(&app, "popup");
     focus_window(&app, "overlay");
     Ok(())
@@ -814,7 +845,7 @@ pub fn run() {
             focus_active_window(app);
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .manage(reqwest::Client::new())
+        .manage(create_ai_client())
         .manage(PendingCapture(Mutex::new(None)))
         .manage(PendingSettingsNotice(Mutex::new(None)))
         .manage(LoadingStatusState(Mutex::new(LoadingStatusPayload {
@@ -823,6 +854,7 @@ pub fn run() {
         })))
         .manage(OcrJobGen(AtomicU64::new(0)))
         .manage(TranslationRequestSeq(AtomicU64::new(0)))
+        .manage(TranslationTaskState(Mutex::new(None)))
         .manage(CaptureRetryState {
             ocr_in_flight: AtomicBool::new(false),
             pending_retry: AtomicBool::new(false),
@@ -960,9 +992,10 @@ mod tests {
     use super::{
         build_settings_notice_payload, clone_pending_capture, decide_capture_hotkey_action,
         format_ocr_app_stage_log, is_release_ocr_smoke_requested,
-        missing_prtsc_required_setting_keys, missing_prtsc_required_settings, should_emit_ocr,
-        show_ocr_device_setting, take_pending_settings_notice_slot, CaptureHotkeyAction,
-        OcrAppStageLog, SettingsNoticePayload, RELEASE_OCR_SMOKE_ARG,
+        missing_prtsc_required_setting_keys, missing_prtsc_required_settings,
+        replace_translation_task, should_emit_ocr, show_ocr_device_setting,
+        take_pending_settings_notice_slot, CaptureHotkeyAction, OcrAppStageLog,
+        SettingsNoticePayload, RELEASE_OCR_SMOKE_ARG,
     };
     use crate::config::Config;
     use crate::paddle_models::{
@@ -1022,6 +1055,31 @@ mod tests {
     fn 세대가_다르면_ocr_결과를_버린다() {
         assert!(!should_emit_ocr(7, 8));
         assert!(!should_emit_ocr(0, 1));
+    }
+
+    #[tokio::test]
+    async fn 새_번역_작업은_이전_작업을_취소한다() {
+        let slot = Mutex::new(None);
+        let previous = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let next = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+
+        let first_replaced =
+            replace_translation_task(&slot, previous.abort_handle()).expect("첫 작업 저장 실패");
+        let second_replaced =
+            replace_translation_task(&slot, next.abort_handle()).expect("다음 작업 저장 실패");
+
+        assert!(!first_replaced);
+        assert!(second_replaced);
+        assert!(previous
+            .await
+            .expect_err("이전 작업은 취소되어야 한다")
+            .is_cancelled());
+
+        next.abort();
     }
 
     #[test]

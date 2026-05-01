@@ -221,3 +221,11 @@ Windows GitHub Actions runner의 Python stdout/stderr 기본 인코딩이 cp1252
 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`와
 `sys.stderr.reconfigure(encoding="utf-8", errors="replace")`를 적용하고,
 단위 테스트로 재설정 호출을 고정할 것.
+
+### Rust 단일 파일 포맷 시 하위 모듈 포맷 전파 주의
+
+`rustfmt src/lib.rs`처럼 crate 루트 파일을 직접 지정하면, 대상 파일만 포맷하려는 의도와 달리
+하위 `mod` 파일까지 함께 포맷될 수 있다. 이 경우 작업 범위 밖 파일에 불필요한 diff가 생긴다.
+
+→ 특정 파일만 포맷해야 할 때는 `rustfmt --edition 2021 --config skip_children=true <files>`처럼
+하위 모듈 포맷 전파를 막거나, `cargo fmt` 사용 후 범위 밖 diff를 반드시 확인하고 되돌릴 것.
